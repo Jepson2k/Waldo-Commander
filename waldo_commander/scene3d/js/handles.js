@@ -3,8 +3,12 @@
 // test can drive it with its own clock.
 
 export const GIZMO = "gizmo";
-// How far a press may wander and still be a click, in pixels.
-export const TAP_PX = 6;
+// How far a press may wander and still be a click, in pixels: a finger
+// wanders further than a mouse or a pen.
+const TAP_PX = { mouse: 6, pen: 6, touch: 10 };
+export const tapPx = (pointerType) => TAP_PX[pointerType] ?? TAP_PX.mouse;
+// How far from a small handle a finger may land and still take it, in pixels.
+export const FINGER_PX = 24;
 
 export const minus = (s) => s.replace(/-/g, "−");
 export const signed = (v, digits = 1) => minus(`${v >= 0 && !Object.is(v, -0) ? "+" : ""}${v.toFixed(digits)}`);

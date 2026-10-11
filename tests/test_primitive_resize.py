@@ -34,7 +34,7 @@ async def test_primitive_resize_faces_center_radius_cancel_and_history(user):
             and handle.shapes[-1].kind == kind
             and view._selected_objects == [f"shape:{handle.shapes[-1].name}"],
         )
-        user.find(marker="object-transform").elements.pop().set_value("translate")
+        user.find(marker="object-mode-translate").click()
         field(user, "object-rx", 20)
         await confirmed(
             view, lambda: math.isclose(handle.shapes[-1].pose[3], math.radians(20))
@@ -43,7 +43,7 @@ async def test_primitive_resize_faces_center_radius_cancel_and_history(user):
         await confirmed(
             view, lambda: math.isclose(handle.shapes[-1].pose[5], math.radians(35))
         )
-        user.find(marker="object-transform").elements.pop().set_value("resize")
+        user.find(marker="object-mode-resize").click()
         initial = handle.shapes[-1]
         initial_count = len(view.object_history.undo_stack)
 

@@ -12,7 +12,7 @@ import { setStyle } from "./dom.js";
 
 export const GAP = 12;
 // The cards Python builds over the view; the view places them.
-const HOSTED = { inspector: ".wc-object-inspector", teaching: ".wc-surface-teaching", library: ".wc-workcell-library" };
+const HOSTED = { teaching: ".wc-surface-teaching" };
 const HOSTED_ANY = Object.values(HOSTED).join(",");
 
 const point = new THREE.Vector3();
@@ -246,7 +246,7 @@ export class Overlays {
   // that order down, each as tall as the space below it allows.
   layoutTopLeft() {
     let top = GAP;
-    for (const name of ["teaching", "library"]) {
+    for (const name of ["teaching"]) {
       const card = this.card(name);
       if (!card) continue;
       const left = this.clearLeft(top, top + card.h);

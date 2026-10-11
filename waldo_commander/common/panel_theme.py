@@ -140,4 +140,39 @@ def inject_panel_css() -> None:
 .editor-toolbar-menu .q-item { min-height: 36px; }
 .event-detail-grid { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 4px 12px; }
 .event-detail-grid > * { overflow-wrap: anywhere; }
+/* The scene panel: the scene's objects as a list, the selection's
+   properties under it. A row's toggles show on hover, and always while on
+   or under a finger. */
+.scene-panel { display: flex; flex-direction: column; gap: 0; }
+.scene-panel-head { flex-shrink: 0; padding: 4px 4px 4px 12px; border-bottom: 1px solid var(--wc-glass-border); }
+.scene-panel-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; gap: 0; padding-bottom: 8px; }
+.scene-tree { gap: 0; padding: 2px 4px; }
+.scene-group { min-height: 28px; padding: 8px 4px 2px 8px; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--wc-text-muted); }
+.scene-count { font-variant-numeric: tabular-nums; font-weight: 500; }
+.scene-row { min-height: 30px; padding: 0 2px 0 8px; gap: 8px; border-radius: var(--wc-radius-sm); cursor: pointer; font-size: 13px; }
+.scene-row:hover { background: var(--wc-state-hover); }
+.scene-row--selected { background: var(--wc-state-selected); box-shadow: inset 2px 0 0 var(--wc-action); }
+.scene-row--hidden .scene-row-name, .scene-row--hidden .scene-row-kind { color: var(--wc-text-disabled); }
+.scene-row-kind { color: var(--wc-scene-shape); flex-shrink: 0; }
+.scene-row--proposed .scene-row-kind { color: var(--wc-scene-shape-proposed); }
+.scene-row-name { min-width: 0; }
+.scene-row-detail { min-width: 0; font-size: 12px; color: var(--wc-text-muted); }
+.scene-toggle { opacity: 0; color: var(--wc-text-muted); transition: opacity var(--wc-duration-fast); }
+.scene-row:hover .scene-toggle, .scene-group:hover .scene-toggle, .scene-toggle.on, .scene-toggle:focus-visible { opacity: 1; }
+@media (pointer: coarse) { .scene-toggle { opacity: 1; } .scene-row { min-height: 40px; } }
+.scene-empty { padding: 2px 8px 6px; font-size: 12px; color: var(--wc-text-muted); }
+.scene-properties { gap: 4px; padding: 8px 12px 0; border-top: 1px solid var(--wc-glass-border); margin-top: 6px; }
+.scene-properties:empty { display: none; }
+.scene-name { font-weight: 600; }
+.scene-name .q-field__native { font-weight: 600; }
+.scene-field-row { gap: 4px; }
+.scene-field-icon { flex-shrink: 0; width: 22px; color: var(--wc-text-muted); }
+.scene-field { background: var(--wc-well); border-radius: var(--wc-radius-sm); padding: 0 6px; font-variant-numeric: tabular-nums; }
+.scene-field .q-field__prefix { padding-right: 4px; color: var(--wc-text-muted); font-weight: 600; }
+.scene-field.axis-x .q-field__prefix { color: var(--wc-axis-x-text); }
+.scene-field.axis-y .q-field__prefix { color: var(--wc-axis-y-text); }
+.scene-field.axis-z .q-field__prefix { color: var(--wc-axis-z-text); }
+.scene-library { gap: 4px; padding: 6px 12px 8px; border-bottom: 1px solid var(--wc-glass-border); }
+.scene-library:empty { display: none; }
+.scene-section { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--wc-text-muted); }
 """)

@@ -96,8 +96,6 @@ class ShapeEditingMixin:
     _cancel_shape_drawing: Any
     _selected_objects: list[str]
     _hidden_objects: set[str]
-    _object_orientation: Any
-    _show_object_history: bool
     _refresh_object_inspector: Any
 
     def _init_shape_editing(self) -> None:
@@ -593,13 +591,11 @@ class ShapeEditingMixin:
             return
         if self._shape_move_active == name:
             self._end_shape_move()
-        if await self._commit_objects(
+        await self._commit_objects(
             "Delete object",
             [s for s in handle.shapes if s.name != name],
             self.object_history.context(),
-        ):
-            self._show_object_history = True
-            self._refresh_object_inspector()
+        )
 
     # ------------------------------------------------------------------
     # Drag-to-move
@@ -719,12 +715,6 @@ class ShapeEditingMixin:
             admitted = self._resize_admit(gesture, args)
         else:
             admitted = self._move_admit(gesture, args)
-        if (
-            admitted
-            and gesture.data["mode"] == "rotate"
-            and self._object_orientation is not None
-        ):
-            self._object_orientation.open()
         return admitted
 
     def _group_admit(self, gesture: Any, args: dict[str, Any]) -> bool:

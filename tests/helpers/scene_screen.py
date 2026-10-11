@@ -483,29 +483,12 @@ def fill(screen, marker, value):
     """Type ``value`` into the input marked ``marker`` and press Enter. A
     card being rebuilt or seated can briefly hold an input that takes no
     keys, so the input is looked up again until one does."""
-    opened = False
 
     def typed(_) -> bool:
-        nonlocal opened
         try:
             element = marked_element(screen, marker)
             if element.tag_name != "input":
                 element = element.find_element(By.CSS_SELECTOR, "input")
-            if not element.is_displayed() and marker in (
-                "object-rx",
-                "object-ry",
-                "object-rz",
-            ):
-                # A short card scrolls, and its sticky actions can cover the
-                # header; clicked again while opening, it would close.
-                if not opened:
-                    screen.selenium.execute_script(
-                        "arguments[0].scrollIntoView({block: 'center'})",
-                        marked_element(screen, "object-orientation"),
-                    )
-                    click_marked(screen, "object-orientation")
-                    opened = True
-                return False
             screen.selenium.execute_script(
                 "arguments[0].scrollIntoView({block: 'center'})", element
             )
@@ -584,12 +567,7 @@ def create_shape(screen, kind, name):
     """Place a ``kind`` keep-out named ``name`` on the floor, turn it and
     open its resize handles."""
     # An earlier object left selected keeps its handles out over the floor.
-    if run_in_app(lambda: bool(ui_state.urdf_scene._selected_objects)):
-        click_marked(screen, "object-close")
-        wait(screen).until(
-            lambda _: not run_in_app(lambda: ui_state.urdf_scene._selected_objects)
-        )
-        wait_for_scene_idle(screen)
+    clear_selection(screen)
     point = wait(screen).until(lambda _: probe(screen, "floorSpot"))
     place_shape(screen, kind, *point[:2], name)
     object_mode(screen, "Move")
@@ -603,14 +581,12 @@ def create_shape(screen, kind, name):
 
 def object_mode(screen, label):
     """Switch the selected object's handles to ``label``: Move or Resize.
-    The inspector is rebuilt as edits land, so the toggle is looked up anew."""
+    The properties are rebuilt as edits land, so the button is looked up anew."""
+    marker = {"Move": "object-mode-translate", "Resize": "object-mode-resize"}[label]
 
     def clicked(_) -> bool:
         try:
-            button = marked_element(screen, "object-transform").find_element(
-                By.XPATH, f".//button[.//*[normalize-space()='{label}']]"
-            )
-            # A short card scrolls, and its other rows can cover the toggle.
+            button = marked_element(screen, marker)
             screen.selenium.execute_script(
                 "arguments[0].scrollIntoView({block: 'center'})", button
             )
@@ -627,6 +603,22 @@ def object_mode(screen, label):
     wait(screen).until(clicked)
 
 
+def clear_selection(screen):
+    """Clear the object selection with a click on empty space in the view."""
+    if not run_in_app(lambda: bool(ui_state.urdf_scene._selected_objects)):
+        return
+    # A menu still closing takes the click meant for the view.
+    wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+    x, y = wait(screen).until(lambda _: probe(screen, "emptySpot"))[:2]
+    action = ActionChains(screen.selenium)
+    pointer_to(screen, x, y, action)
+    action.click().perform()
+    wait(screen).until(
+        lambda _: not run_in_app(lambda: ui_state.urdf_scene._selected_objects)
+    )
+    wait_for_scene_idle(screen)
+
+
 def path_point(screen, command, fraction=0.5):
     """The pixel ``fraction`` of the way along ``command``'s drawn path."""
     points = scene_js(screen, "return S.pathPixels(0, arguments[0])", command)
@@ -634,22 +626,40 @@ def path_point(screen, command, fraction=0.5):
     return points[round((len(points) - 1) * fraction)]
 
 
-def camera_menu(screen):
-    """Open the camera menu and wait for it to finish appearing."""
-    click_marked(screen, "camera-menu")
-    wait(screen).until(
-        lambda _: screen.selenium.execute_script("""
-      const menu=document.querySelector('.q-menu');
-      return menu && getComputedStyle(menu).opacity === '1' &&
-        !menu.getAnimations({subtree:true}).some(a=>a.playState==='running');
-    """)
-    )
-
-
 def camera_action(screen, name):
-    """Run the camera menu's ``name`` action."""
-    camera_menu(screen)
+    """Run the camera's ``name`` action the way a user would: its button
+    under the view cube, a press on the cube for a view direction, or
+    Shift+F for the previous view."""
+    if name == "back":
+        ActionChains(screen.selenium).key_down(Keys.SHIFT).send_keys("f").key_up(
+            Keys.SHIFT
+        ).perform()
+        return
+    if name in VIEW_DIRECTIONS:
+        cube_view(screen, VIEW_DIRECTIONS[name])
+        return
     click_marked(screen, f"camera-{name}")
+
+
+VIEW_DIRECTIONS = {
+    "front": [0, -1, 0],
+    "back-face": [0, 1, 0],
+    "right": [1, 0, 0],
+    "left": [-1, 0, 0],
+    "top": [0, 0, 1],
+    "bottom": [0, 0, -1],
+}
+
+
+def cube_view(screen, direction):
+    """Press the view cube where it gives ``direction`` (a face, edge or
+    corner as -1, 0 and 1 along each axis)."""
+    x, y, _ = wait(screen).until(
+        lambda _: scene_js(screen, "return S.cubeSpot(arguments[0])", direction)
+    )
+    action = ActionChains(screen.selenium)
+    pointer_to(screen, x, y, action)
+    action.click().perform()
 
 
 def camera_settled(screen):
@@ -669,18 +679,11 @@ def camera_settled(screen):
 
 
 def set_projection(screen, label):
-    """Switch the camera to ``label`` projection through its menu."""
-    camera_menu(screen)
-    marked_element(screen, "camera-projection").find_element(
-        By.XPATH, f".//button[.//*[text()='{label}']]"
-    ).click()
+    """Switch the camera to ``label`` projection with its button."""
+    click_marked(screen, f"camera-{label.lower()}")
     wait(screen).until(
         lambda _: scene_js(screen, "return !!S.camera.isOrthographicCamera")
         == (label == "Orthographic")
-    )
-    click_marked(screen, "camera-menu")
-    wait(screen).until(
-        lambda _: not screen.selenium.find_elements(By.CSS_SELECTOR, ".q-menu")
     )
     wait_for_scene_idle(screen)
 

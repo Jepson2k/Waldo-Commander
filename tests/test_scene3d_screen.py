@@ -19,10 +19,12 @@ from starlette.responses import Response
 from urchin import URDF
 
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 
-from tests.helpers.browser_helpers import js, run_in_app
+from tests.helpers.browser_helpers import js, run_in_app, viewport
 from tests.helpers.browser_session import no_visible, wait
-from tests.helpers.scene_surface import scene_js
+from tests.helpers.scene_surface import pointer_to, scene_js
 from waldo_commander.common.theme import SceneColors, hex_of
 from waldo_commander.scene3d import ClipPlane, Node, WcScene
 
@@ -148,6 +150,7 @@ class _Recorder:
 
     def __init__(self) -> None:
         self.log: list[tuple[str, Any]] = []
+        self.ended: list[dict[str, Any] | None] = []
 
     def admit(self, gesture: Any, args: dict[str, Any]) -> bool:
         self.log.append(("admit", gesture.drag))
@@ -157,6 +160,7 @@ class _Recorder:
         self.log.append(("move", gesture.drag))
 
     def end(self, gesture: Any, args: dict[str, Any] | None, aborted: bool) -> None:
+        self.ended.append(args)
         self.log.append(("end", aborted))
 
 
@@ -279,6 +283,101 @@ def _show_gizmo(screen: Screen) -> tuple[float, float, float, float]:
     return wait(screen, 5).until(
         lambda _: scene_js(screen, "return S.arrowTip('tcp:ball')")
     )
+
+
+def _tap(screen: Screen, x: float, y: float) -> None:
+    _touch(screen, "touchStart", [(1, x, y)])
+    _touch(screen, "touchEnd", [])
+
+
+# The change being typed on a handle, and the keys beside it.
+_ENTRY = ".wc-gizmo-field:not([hidden]) input:not([hidden])"
+_KEYS = (
+    "return [...document.querySelectorAll("
+    "'.wc-gizmo-field:not([hidden]) .wc-gizmo-field-keys button')]"
+    ".filter(b => b.getClientRects().length).map(b => { const r ="
+    " b.getBoundingClientRect(); return {text: b.textContent, x: r.left +"
+    " r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height}; })"
+)
+
+
+def _key(screen: Screen, text: str) -> tuple[float, float]:
+    """Where the key showing *text* beside the typed change is, once the
+    field has stopped moving with its handle."""
+    last: list[tuple[float, float]] = []
+
+    def still(_) -> tuple[float, float] | None:
+        key = next(k for k in js(screen, _KEYS) if k["text"] == text)
+        at = (key["x"], key["y"])
+        settled = bool(last) and last[-1] == at
+        last.append(at)
+        return at if settled else None
+
+    return wait(screen, 5).until(still)
+
+
+def _entry(screen: Screen) -> str | None:
+    """What the change being typed on a handle is called, if one is."""
+    return js(
+        screen,
+        f"const i = document.querySelector('{_ENTRY}');"
+        " return i && i.getAttribute('aria-label');",
+    )
+
+
+def _clear_spot(screen: Screen) -> list[int] | None:
+    """Bare canvas with no gizmo handle within a finger's reach."""
+    return scene_js(
+        screen,
+        "const r = S.canvas.getBoundingClientRect();"
+        "for (let fy = 0.3; fy <= 0.7; fy += 0.1) for (let fx = 0.2; fx <= 0.8; fx += 0.1) {"
+        " const x = Math.round(r.left + fx * r.width), y = Math.round(r.top + fy * r.height);"
+        " const p = S.pick(x, y);"
+        " if (p.covered || p.names.length || p.handles.length) continue;"
+        " let near = false;"
+        " for (let k = 0; k < 16 && !near; k++) for (const d of [8, 16, 24, 32])"
+        "  near ||= S.pick(x + d * Math.cos(k * Math.PI / 8), y + d * Math.sin(k * Math.PI / 8)).handles.length > 0;"
+        " if (!near) return [x, y];"
+        "}"
+        "return null;",
+    )
+
+
+def _beside_arrow(
+    screen: Screen, x: float, y: float, dx: float, dy: float
+) -> list[int] | None:
+    """A pixel 12 to 16 px to the side of the X arrow near (x, y), where a
+    mouse takes nothing and a finger takes the X arrow first."""
+    return scene_js(
+        screen,
+        "const [x, y, dx, dy] = arguments, p = getElement(S.root).core.pointer;"
+        "for (const along of [0, -4, 4, -8, 8]) for (const off of [12, 14, 16])"
+        " for (const side of [1, -1]) {"
+        "  const sx = Math.round(x + dx * along - dy * off * side);"
+        "  const sy = Math.round(y + dy * along + dx * off * side);"
+        "  if (document.elementFromPoint(sx, sy) !== S.canvas) continue;"
+        "  if (p.handlesOn(sx, sy).length) continue;"
+        "  const f = p.handlesAt(sx, sy, 'touch')[0];"
+        "  if (f && f.axis === 'X' && f.mode === 'translate') return [sx, sy];"
+        " }"
+        "return null;",
+        x,
+        y,
+        dx,
+        dy,
+    )
+
+
+def _look_at_tool(screen: Screen, distance: float) -> None:
+    """The camera *distance* m from the tool, along the way it looks now, so
+    the gizmo's handles are drawn large enough to pick a pixel beside one."""
+    pose = np.asarray(scene_js(screen, "return S.cameraPose()"))
+    tool = _world(screen, ["tcp:ball"])["tcp:ball"][:3, 3]
+    eye = pose[:3] - pose[3:]
+    eye = tool + eye / np.linalg.norm(eye) * distance
+    frames = scene_js(screen, "return S.frames()")
+    scene_js(screen, "S.setCameraPose(arguments[0])", [*eye.tolist(), *tool.tolist()])
+    wait(screen, 5).until(lambda _: scene_js(screen, "return S.frames()") > frames)
 
 
 @pytest.fixture(scope="class")
@@ -693,7 +792,7 @@ class TestSceneElement:
             x, y, dx, dy = _show_gizmo(page)
             run_in_app(tcp.log.clear)
             actions = ActionChains(page.selenium, duration=20)
-            actions.move_by_offset(0, 0)
+            pointer_to(page, x, y, actions)
             actions.perform()
             page.selenium.execute_cdp_cmd(
                 "Input.dispatchMouseEvent",
@@ -1025,6 +1124,25 @@ class TestSceneElement:
         )
         wait(page, 5).until(lambda _: no_visible(page, ".q-menu"))
 
+        # A request sent under an epoch the app has already left is asked
+        # again under each new one, however many come before the app answers.
+        n = len(contexts)
+        scene = run_in_app(_scene)
+        epoch = run_in_app(lambda: scene.gestures.epoch)
+        scene_js(
+            page, "getElement(S.root).core.gestures.epoch = arguments[0]", epoch - 1
+        )
+        right_click(x, y)
+        time.sleep(0.3)
+        assert len(contexts) == n, "a request under an old epoch was answered"
+        run_in_app(lambda: (scene.gestures.bump(), scene.gestures.bump()))
+        wait(page, 5).until(lambda _: len(contexts) == n + 1)
+        wait(page, 5).until(lambda _: js(page, items))
+        scene_js(
+            page, "getElement(" + str(run_in_app(lambda: _page["menu"].id)) + ").hide()"
+        )
+        wait(page, 5).until(lambda _: no_visible(page, ".q-menu"))
+
         # A touch held still opens it, and is no tap.
         n = len(contexts)
         _touch(page, "touchStart", [(3, x, y)])
@@ -1032,3 +1150,150 @@ class TestSceneElement:
         _touch(page, "touchEnd", [])
         wait(page, 5).until(lambda _: len(contexts) == n + 1)
         wait(page, 5).until(lambda _: js(page, items))
+
+    def test_a_finger_takes_a_handle_beside_it_and_a_second_finger_takes_none(
+        self, page: Screen
+    ) -> None:
+        arm = run_in_app(_arm)
+        tcp = arm["recorders"]["tcp"]
+        scene_js(
+            page, "getElement(" + str(run_in_app(lambda: _page["menu"].id)) + ").hide()"
+        )
+        wait(page, 5).until(lambda _: no_visible(page, ".q-menu"))
+        camera = scene_js(page, "return S.cameraPose()")
+
+        def put_away() -> None:
+            page.selenium.find_element(By.CSS_SELECTOR, _ENTRY).send_keys(Keys.ESCAPE)
+            wait(page, 5).until(lambda _: _entry(page) is None)
+
+        try:
+            # A second finger landing on a handle while the first is down on
+            # bare canvas turns the camera with it; it grabs nothing.
+            x, y, dx, dy = _show_gizmo(page)
+            spot = wait(page, 5).until(lambda _: _clear_spot(page))
+            assert spot
+            run_in_app(tcp.log.clear)
+            _touch(page, "touchStart", [(1, *spot)])
+            _touch(page, "touchStart", [(1, *spot), (2, x, y)])
+            for k in range(1, 5):
+                _touch(
+                    page,
+                    "touchMove",
+                    [(1, *spot), (2, x + dx * 10 * k, y + dy * 10 * k)],
+                )
+            _touch(page, "touchEnd", [])
+            time.sleep(0.3)
+            assert tcp.log == [], "a second finger grabbed the gizmo"
+            assert _entry(page) is None
+            scene_js(page, "S.setCameraPose(arguments[0])", camera)
+
+            # A finger 14 px beside the arrow takes it; a mouse there takes
+            # nothing.
+            _look_at_tool(page, 0.3)
+            x, y, dx, dy = _show_gizmo(page)
+            beside = _beside_arrow(page, x, y, dx, dy)
+            assert beside, "no pixel beside the X arrow clear of the other handles"
+            run_in_app(tcp.log.clear)
+            _tap(page, *beside)
+            wait(page, 5).until(lambda _: _entry(page) == "X change in millimetres")
+            wait(page, 5).until(lambda _: ("end", True) in tcp.log)
+            assert tcp.log[0][0] == "admit" and tcp.log[-1] == ("end", True), tcp.log
+            put_away()
+            run_in_app(tcp.log.clear)
+            for kind in ("mousePressed", "mouseReleased"):
+                page.selenium.execute_cdp_cmd(
+                    "Input.dispatchMouseEvent",
+                    {
+                        "type": kind,
+                        "x": beside[0],
+                        "y": beside[1],
+                        "button": "left",
+                        "clickCount": 1,
+                    },
+                )
+            time.sleep(0.3)
+            assert tcp.log == [] and _entry(page) is None, tcp.log
+
+            # A finger's tap may wander 8 px and still be a tap: the arrow
+            # takes a typed change, and the drag it began moves nothing.
+            x, y, dx, dy = _show_gizmo(page)
+            run_in_app(tcp.log.clear)
+            _touch(page, "touchStart", [(1, x, y)])
+            _touch(page, "touchMove", [(1, x + dx * 8, y + dy * 8)])
+            _touch(page, "touchEnd", [])
+            wait(page, 5).until(lambda _: _entry(page) == "X change in millimetres")
+            wait(page, 5).until(lambda _: ("end", True) in tcp.log)
+            assert [e for e in tcp.log if e[0] == "end"] == [("end", True)], tcp.log
+            put_away()
+        finally:
+            _rest_pointer(page)
+            scene_js(page, "S.setCameraPose(arguments[0])", camera)
+
+    def test_a_typed_change_takes_sign_and_apply_keys_under_touch(
+        self, page: Screen
+    ) -> None:
+        arm = run_in_app(_arm)
+        tcp = arm["recorders"]["tcp"]
+        driver = page.selenium
+        pose = ("x", "y", "z", "rx", "ry", "rz")
+        applied: dict[str, dict[str, float]] = {}
+        with viewport(page, 1024, 768, mobile=True):
+            driver.execute_cdp_cmd(
+                "Emulation.setTouchEmulationEnabled",
+                {"enabled": True, "maxTouchPoints": 1},
+            )
+            try:
+                for way in ("keys", "enter"):
+                    x, y, _dx, _dy = _show_gizmo(page)
+                    run_in_app(tcp.log.clear)
+                    run_in_app(tcp.ended.clear)
+                    _tap(page, x, y)
+                    wait(page, 5).until(
+                        lambda _: _entry(page) == "X change in millimetres"
+                    )
+                    field = driver.find_element(By.CSS_SELECTOR, _ENTRY)
+                    if way == "keys":
+                        # A finger's keypad may have neither a minus nor Enter.
+                        keys = wait(page, 5).until(
+                            lambda _: (k := js(page, _KEYS)) and len(k) == 2 and k
+                        )
+                        assert [k["text"] for k in keys] == ["±", "✓"], keys
+                        assert min(min(k["w"], k["h"]) for k in keys) >= 36, keys
+                        field.clear()
+                        field.send_keys("5")
+                        # The field rides on its handle, which may still be
+                        # settling: each key is found where it is now.
+                        _tap(page, *_key(page, "±"))
+                        wait(page, 5).until(
+                            lambda _: field.get_attribute("value") == "-5"
+                        )
+                        _tap(page, *_key(page, "✓"))
+                    else:
+                        field.clear()
+                        field.send_keys("-5", Keys.ENTER)
+                    wait(page, 5).until(lambda _: ("end", False) in tcp.log)
+                    assert _entry(page) is None
+                    applied[way] = {k: tcp.ended[-1][k] for k in pose}
+
+                    # Once the ball is back, a tap on bare canvas puts away
+                    # the applied value and the gizmo, for the next round.
+                    wait(page, 5).until(
+                        lambda _: scene_js(
+                            page,
+                            "return S.pick(arguments[0], arguments[1]).handles.length",
+                            x,
+                            y,
+                        )
+                    )
+                    spot = wait(page, 5).until(lambda _: _clear_spot(page))
+                    assert spot
+                    _tap(page, *spot)
+                    _rest_pointer(page)
+                    wait(page, 5).until(lambda _: _handles(page) == [])
+            finally:
+                driver.execute_cdp_cmd(
+                    "Emulation.setTouchEmulationEnabled", {"enabled": False}
+                )
+                _rest_pointer(page)
+        assert applied["keys"]["x"] == pytest.approx(-0.005, abs=1e-6), applied
+        assert applied["keys"] == pytest.approx(applied["enter"], abs=1e-9), applied

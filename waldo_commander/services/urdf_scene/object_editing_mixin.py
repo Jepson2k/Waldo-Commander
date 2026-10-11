@@ -3,18 +3,35 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 import math
 from collections.abc import Callable
 from typing import Any
 
+from .config import DRAFT_PREFIX
 from .shape_drawing_mixin import ShapeDrawingMixin
 from .shape_editing_mixin import RESIZE_AXES, object_label
 
+import waldoctl
 from nicegui import background_tasks, ui
 from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, param_names
 
 from waldo_commander.services.scene_history import SceneHistory
 from waldo_commander.state import ui_state
+
+# What the scene panel's list shows each kind of object as.
+_KIND_ICONS = {
+    "box": "check_box_outline_blank",
+    "cylinder": "sym_o_database",
+    "sphere": "radio_button_unchecked",
+}
+_DRAWABLE = ("box", "cylinder", "sphere")
+_DIMENSION_PREFIXES = {"radius": "R", "length": "L"}
+_RESIZE_TIPS = {
+    "box": "Resize: drag a face; Shift resizes from the centre",
+    "cylinder": "Resize: drag the radius or an end",
+    "sphere": "Resize: drag the radius",
+}
 
 
 def _shown(value: float, scale: float) -> float:
@@ -39,10 +56,7 @@ class _InspectorControls:
         self.editable_elements: list[Any] = []
         self.values: dict[str, tuple[Any, Callable[[Any], Any]]] = {}
         self.shown: dict[str, Any] = {}
-        self.undo: Any = None
-        self.redo: Any = None
         self.feedback: Any = None
-        self.names: Any = None
 
     def editable(self, element: Any, readonly: bool) -> Any:
         element.set_enabled(not readonly)
@@ -55,7 +69,7 @@ class _InspectorControls:
 
 class ObjectEditingMixin(ShapeDrawingMixin):
     inspection: Any
-    _scene_wrapper: Any
+    _install_ground: set[str]
     cancel_target_edit: Any
     _editing_unified_target: bool
     _end_editing_session: Any
@@ -66,14 +80,11 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         self._selected_objects: list[str] = []
         self._hidden_objects: set[str] = set()
         self._locked_objects: set[str] = set()
-        self._object_inspector = None
+        self._mounted_panel = None
+        self._object_tree_key = None
         self._object_inspector_key = None
         self._inspector_controls = _InspectorControls()
-        self._object_orientation = None
-        self._object_orientation_selection: tuple[str, ...] = ()
         self._object_mode = "translate"
-        self._object_overlaps: list[str] = []
-        self._show_object_history = False
         self._isolated_view = False
         self._object_renames = ()
 
@@ -90,20 +101,6 @@ class ObjectEditingMixin(ShapeDrawingMixin):
     def _toggle_isolation(self):
         self.scene.run_method(
             "camera_action", "restore_objects" if self._isolated_view else "isolate"
-        )
-
-    def _isolation_action(self):
-        """The actions menu's entry that isolates the selection, or shows
-        every object again."""
-        ui.menu_item(
-            "Show all objects" if self._isolated_view else "Isolate selection",
-            on_click=self._toggle_isolation,
-        ).mark("object-isolate").set_enabled(
-            self._isolated_view
-            or any(
-                item["id"] in self._selected_objects
-                for item in self._object_entities()["items"]
-            )
         )
 
     def _object_entities(self) -> dict:
@@ -143,7 +140,6 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             for h in args.get("hits", [])
             if isinstance(h, dict) and h.get("id") in self._shape_objects
         ]
-        self._object_overlaps = list(dict.fromkeys(hits))
         if not hits and self._editing_unified_target:
             # A click on nothing puts a target edit away, keeping it.
             self._end_editing_session()
@@ -158,7 +154,6 @@ class ObjectEditingMixin(ShapeDrawingMixin):
 
     def _select_objects(self, selected) -> None:
         self._cancel_shape_drawing()
-        self._show_object_history = False
         self._end_shape_move()
         self._selected_objects = [
             key for key in selected if self._object_shape(key) is not None
@@ -183,6 +178,8 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             self._start_shape_move(key[len(SHAPE_PREFIX) :])
         self._push_interaction()
         self._refresh_object_inspector()
+        if self._selected_objects and (panel := self._scene_panel()) is not None:
+            panel.open()
 
     def _prune_object_marks(self, handle) -> None:
         """Hidden and locked follow a rename and go with their object, so a
@@ -209,9 +206,77 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                 node.visible(False)
         self._hidden_objects = hidden
 
+    def _scene_panel(self):
+        """The page's scene panel, its toolbar and body filled by this scene;
+        None on a page without one."""
+        panel = ui_state.scene_panel
+        if (
+            panel is None
+            or panel.body.is_deleted
+            or panel.body.client is not self.scene.client
+        ):
+            return None
+        if self._mounted_panel is not panel:
+            self._mount_scene_panel(panel)
+        return panel
+
+    def _mount_scene_panel(self, panel) -> None:
+        from waldo_commander.components.world_library import show_world_library
+
+        self._mounted_panel = panel
+        self._object_tree_key = None
+        self._object_inspector_key = None
+        flat = "flat round dense color=wc-text"
+        with panel.tools:
+            with (
+                ui.button(icon="add_box")
+                .props(flat)
+                .tooltip("Draw a keep-out on the floor")
+                .mark("scene-draw"),
+                ui.menu().props('anchor="bottom right" self="top right"'),
+            ):
+                for kind in _DRAWABLE:
+                    with (
+                        ui.menu_item(on_click=lambda k=kind: self._draw_on_floor(k))
+                        .props("dense")
+                        .mark(f"scene-panel-draw-{kind}"),
+                        ui.row().classes("items-center no-wrap gap-2"),
+                    ):
+                        ui.icon(_KIND_ICONS[kind], size="20px")
+                        ui.label(kind.capitalize())
+            ui.button(
+                icon="inventory_2", on_click=lambda: show_world_library(self)
+            ).props(flat).tooltip("Workcells: save, load and insert").mark(
+                "scene-workcells"
+            )
+            self._history_buttons = (
+                ui.button(icon="undo", on_click=lambda: self._restore_objects(False))
+                .props(flat)
+                .tooltip("Undo object edit · Ctrl+Z")
+                .mark("object-undo"),
+                ui.button(icon="redo", on_click=lambda: self._restore_objects(True))
+                .props(flat)
+                .tooltip("Redo object edit · Ctrl+Shift+Z")
+                .mark("object-redo"),
+            )
+        with panel.body:
+            self._library_host = ui.column().classes("w-full gap-0")
+            self._object_tree = (
+                ui.column().classes("scene-tree w-full").mark("scene-tree")
+            )
+            self._object_properties = ui.column().classes("scene-properties w-full")
+
+    def _draw_on_floor(self, kind: str) -> None:
+        self._start_shape_drawing(
+            kind,
+            {"origin": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "label": "Floor"},
+            self.object_history.context(),
+        )
+
     def _refresh_object_inspector(self, *, reset_values: bool = False) -> None:
-        """Show the selection's inspector; *reset_values* puts every field
-        back to the object's value after an edit was refused."""
+        """Bring the scene panel up to the scene: its list of objects and the
+        selection's properties; *reset_values* puts every field back to the
+        object's value after an edit was refused."""
         if self.scene is None or self.scene.is_deleted:
             return
         self.object_history.validate()
@@ -224,6 +289,9 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             if (shape := self._object_shape(key)) is not None
         ]
         self._selected_objects = [key for key, _ in selected]
+        panel = self._scene_panel()
+        if panel is None:
+            return
         history = self.object_history
         status = (
             history.busy,
@@ -232,75 +300,37 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             len(history.redo_stack),
             handle is not None and handle.confirmed,
         )
-        # What the card is built from; status and shape values are updated
-        # in place, so an edit does not rebuild the field being typed in.
+        undo, redo = self._history_buttons
+        undo.set_enabled(bool(history.undo_stack) and not history.busy)
+        redo.set_enabled(bool(history.redo_stack) and not history.busy)
+        self._refresh_object_tree(handle)
+        # What the properties are built from; status and shape values are
+        # updated in place, so an edit does not rebuild the field being typed in.
         structure = (
             tuple((k, s.kind, s.attachment is not None) for k, s in selected),
-            frozenset(self._hidden_objects),
+            frozenset(k for k, _ in selected if k in self._hidden_objects),
             self._isolated_view,
             frozenset(self._locked_objects),
             self._object_mode,
-            self._show_object_history,
-            tuple(self._object_overlaps),
             self._attachment_form,
-            None if selected else status,
         )
         if structure == self._object_inspector_key:
-            if selected and self._object_inspector is not None:
+            if selected:
                 self._update_object_inspector(selected, status, reset_values)
             return
         self._object_inspector_key = structure
         controls = self._inspector_controls = _InspectorControls()
-        selection = tuple(entity for entity, _ in selected)
-        orientation = self._object_orientation
-        orientation_open = (
-            selection == self._object_orientation_selection
-            and orientation is not None
-            and orientation.value
-        )
-        self._object_orientation_selection = selection
-        self._object_orientation = None
-        if self._object_inspector is not None:
-            self._object_inspector.delete()
-            self._object_inspector = None
+        properties = self._object_properties
+        properties.clear()
         if not selected:
-            history_visible = self._show_object_history and (
-                history.undo_stack or history.redo_stack
-            )
-            if history_visible or self._hidden_objects or self._isolated_view:
-                with self.scene.client, self._scene_wrapper:
-                    self._object_inspector = (
-                        ui.row()
-                        .classes(
-                            "wc-object-inspector overlay-card absolute p-2 pointer-events-auto items-center"
-                        )
-                        .style("z-index:35;visibility:hidden")
-                    )
-                    with self._object_inspector:
-                        if history_visible:
-                            ui.label("Object history").classes("text-sm")
-                            ui.button(
-                                "Undo", on_click=lambda: self._restore_objects(False)
-                            ).props("flat no-caps color=wc-action").mark(
-                                "object-undo"
-                            ).set_enabled(bool(history.undo_stack) and not history.busy)
-                            ui.button(
-                                "Redo", on_click=lambda: self._restore_objects(True)
-                            ).props("flat no-caps color=wc-action").mark(
-                                "object-redo"
-                            ).set_enabled(bool(history.redo_stack) and not history.busy)
-                            ui.button(
-                                icon="close", on_click=lambda: self._select_objects([])
-                            ).props("flat round dense color=wc-text").tooltip("Dismiss")
-                        self._show_hidden_action()
-                        if self._isolated_view:
-                            ui.button(
-                                "Show all objects",
-                                icon="select_all",
-                                on_click=self._toggle_isolation,
-                            ).props("flat dense no-caps color=wc-text").mark(
-                                "object-isolate"
-                            )
+            if self._isolated_view:
+                with properties, ui.row().classes("w-full items-center no-wrap"):
+                    ui.label("Isolated").classes("scene-section flex-1")
+                    ui.button(
+                        "Show all",
+                        icon="flip_to_front",
+                        on_click=self._toggle_isolation,
+                    ).props("flat dense no-caps color=wc-action").mark("object-isolate")
             return
         controls.locked = any(
             not k.startswith(SHAPE_PREFIX)
@@ -309,280 +339,400 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             for k, s in selected
         )
         readonly = history.busy or controls.locked
-        with self.scene.client, self._scene_wrapper:
-            self._object_inspector = (
-                ui.column()
-                .classes(
-                    "wc-object-inspector overlay-card absolute p-2 pointer-events-auto"
-                )
-                .style("width:260px;overflow:auto;z-index:35;gap:4px;visibility:hidden")
-                .mark("object-inspector")
-            )
-            with self._object_inspector:
-                with ui.row().classes("w-full items-center no-wrap"):
-                    with ui.row().classes("flex-1 items-baseline no-wrap gap-1"):
-                        ui.label(_selection_title([s for _, s in selected])).classes(
-                            "font-medium"
-                        ).mark("object-title")
-                        if len(selected) == 1:
-                            ui.label(selected[0][1].kind).classes(
-                                "text-xs text-wc-text-muted"
-                            )
-                    ui.button(
-                        icon="center_focus_strong",
-                        on_click=lambda: self.scene.run_method(
-                            "camera_action", "focus"
-                        ),
-                    ).props("flat round dense color=wc-text").tooltip(
-                        "Focus selection"
-                    ).mark("object-focus")
-                    ui.button(
-                        icon="close", on_click=lambda: self._select_objects([])
-                    ).props("flat round dense color=wc-text").tooltip(
-                        "Clear selection"
-                    ).mark("object-close")
-                if len(self._object_overlaps) > 1:
-                    with ui.expansion("Objects under pointer").classes("w-full"):
-                        for overlap in self._object_overlaps:
-                            ui.button(
-                                overlap.split(":", 1)[-1],
-                                on_click=lambda _, k=overlap: self._select_objects([k]),
-                            ).props("flat no-caps color=wc-text")
-                if len(selected) > 1:
-                    controls.names = ui.label(
-                        " · ".join(s.name for _, s in selected)
-                    ).classes("text-sm")
-                    ui.label(
-                        "They move and turn together. Select one to resize it."
-                    ).classes("text-xs text-wc-text-muted")
+        flat = "flat round dense color=wc-text"
+        with properties, ui.column().classes("w-full gap-1").mark("object-inspector"):
+            with ui.row().classes("w-full items-center no-wrap gap-0"):
                 if len(selected) == 1:
                     entity, shape = selected[0]
                     name = (
-                        ui.input("Name", value=shape.name)
-                        .props("dense outlined")
-                        .classes("w-full")
+                        ui.input(value=shape.name)
+                        .props("dense borderless hide-bottom-space")
+                        .classes("scene-name flex-1 min-w-0")
+                        .tooltip(object_label(shape))
                         .mark("object-name")
                     )
                     controls.editable(name, readonly)
                     controls.track(name, "name", lambda s: s.name)
-                    name.on(
-                        "blur",
-                        lambda: self._object_patch(
-                            entity, name=str(name.value).strip()
-                        ),
-                    )
-                    name.on(
-                        "keydown.enter",
-                        lambda: self._object_patch(
-                            entity, name=str(name.value).strip()
-                        ),
-                    )
-                    if entity.startswith(INSTALL_PREFIX):
-                        ui.label("Installation · read only").classes(
-                            "text-xs text-wc-text-muted"
-                        )
-                    elif shape.attachment is not None:
-                        ui.label(
-                            "Flange attachment · reconcile or detach from Object actions"
-                        ).classes("text-xs text-wc-text-muted")
-                    mode = (
-                        ui.toggle(
-                            {
-                                "translate": "Move",
-                                **(
-                                    {"resize": "Resize"}
-                                    if shape.kind in RESIZE_AXES
-                                    else {}
-                                ),
-                            },
-                            value=self._object_mode,
-                            on_change=lambda e: self._set_object_mode(e.value),
-                        )
-                        .props(
-                            "no-caps dense color=wc-control text-color=wc-text toggle-color=wc-action toggle-text-color=wc-on-bright"
-                        )
-                        .mark("object-transform")
-                    )
-                    controls.editable(mode, readonly)
-                    resizing = self._object_mode == "resize"
-                    if resizing:
-                        ui.label(
-                            "Drag a face · Shift: resize from center · Esc: cancel"
-                            if shape.kind == "box"
-                            else "Drag a radius handle · Esc: cancel"
-                            if shape.kind == "sphere"
-                            else "Drag radius / end handles · Esc: cancel"
-                        ).classes("text-xs text-wc-text-muted")
-                        self._object_dimensions(shape, entity, readonly, controls)
-                    for axes, values, offset, scale in (
-                        ()
-                        if resizing
-                        else (
-                            (("X", "Y", "Z"), shape.pose[:3], 0, 1000),
-                            (("Rx", "Ry", "Rz"), shape.pose[3:], 3, 180 / math.pi),
-                        )
-                    ):
-                        section = (
-                            ui.expansion("Orientation", value=orientation_open)
-                            .props("dense header-class=text-xs")
-                            .classes("w-full wc-object-orientation")
-                            .mark("object-orientation")
-                            if offset == 3
-                            else ui.column().classes("w-full gap-0")
-                        )
-                        if offset == 3:
-                            self._object_orientation = section
-                        with section, ui.row().classes("w-full no-wrap gap-1"):
-                            for index, (axis, value) in enumerate(zip(axes, values)):
-                                field = (
-                                    ui.number(
-                                        f"{axis} · {'mm' if offset == 0 else '°'}",
-                                        value=_shown(value, scale),
-                                    )
-                                    .props("dense borderless hide-bottom-space")
-                                    .classes("min-w-0 flex-1")
-                                    .mark(f"object-{axis.lower()}")
-                                )
-                                controls.editable(field, readonly)
-                                controls.track(
-                                    field,
-                                    f"pose{offset + index}",
-                                    lambda s, i=offset + index, k=scale: _shown(
-                                        s.pose[i], k
-                                    ),
-                                )
-
-                                async def callback(
-                                    _, f=field, i=offset + index, k=scale
-                                ):
-                                    await self._object_pose(entity, i, f.value, k)
-
-                                field.on("blur", callback)
-                                field.on("keydown.enter", callback)
-                    with ui.expansion("More properties").classes("w-full"):
-                        if not resizing:
-                            self._object_dimensions(shape, entity, readonly, controls)
-                        collision = (
-                            ui.switch(
-                                "Participates in collision checks",
-                                value=shape.collision,
-                                on_change=lambda e: self._object_patch(
-                                    entity, collision=bool(e.value)
-                                ),
-                            )
-                            .props("dense")
-                            .mark("object-collision")
-                        )
-                        controls.editable(collision, readonly)
-                        controls.track(collision, "collision", lambda s: s.collision)
-                        margin = (
-                            ui.number(
-                                "Clearance · mm (blank = default)",
-                                value=None
-                                if shape.margin is None
-                                else _shown(shape.margin, 1000),
-                            )
-                            .props("dense outlined")
-                            .classes("w-full")
-                            .mark("object-margin")
-                        )
-                        controls.editable(margin, readonly)
-                        controls.track(
-                            margin,
-                            "margin",
-                            lambda s: None
-                            if s.margin is None
-                            else _shown(s.margin, 1000),
-                        )
-                        margin.on(
-                            "blur",
-                            lambda: self._object_number(
-                                entity,
-                                "margin",
-                                margin.value,
-                                1000,
-                                optional=True,
+                    for event in ("blur", "keydown.enter"):
+                        name.on(
+                            event,
+                            lambda: self._object_patch(
+                                entity, name=str(name.value).strip()
                             ),
                         )
-                    if self._attachment_form and self._attachment_form[0] == entity:
-                        self._attachment_section(entity, shape)
+                else:
+                    with (
+                        ui.label(_selection_title([s for _, s in selected]))
+                        .classes("scene-name flex-1 min-w-0 truncate")
+                        .mark("object-title")
+                    ):
+                        ui.tooltip(
+                            "They move and turn together. Select one to edit its values."
+                        )
+                if why := self._readonly_reason(selected):
+                    ui.icon("lock", size="18px").classes(
+                        "text-wc-text-muted px-1"
+                    ).tooltip(why).mark("object-readonly")
+                ui.button(
+                    icon="center_focus_strong",
+                    on_click=lambda: self.scene.run_method("camera_action", "focus"),
+                ).props(flat).tooltip("Focus · F").mark("object-focus")
+                shown = {item["id"] for item in self._object_entities()["items"]}
+                ui.button(icon="flip_to_front", on_click=self._toggle_isolation).props(
+                    f"flat round dense color={'wc-action' if self._isolated_view else 'wc-text'}"
+                ).tooltip(
+                    "Show all objects" if self._isolated_view else "Isolate"
+                ).mark("object-isolate").set_enabled(
+                    self._isolated_view or any(k in shown for k, _ in selected)
+                )
+                controls.editable(
+                    ui.button(icon="content_copy", on_click=self._duplicate_objects)
+                    .props(flat)
+                    .tooltip("Duplicate")
+                    .mark("object-duplicate"),
+                    readonly,
+                )
                 with (
-                    ui.column()
-                    .classes("w-full sticky bottom-0 bg-wc-surface")
-                    .style("gap:4px;flex-shrink:0;padding-top:4px")
+                    ui.button(icon="more_vert")
+                    .props(flat)
+                    .tooltip("More")
+                    .mark("object-actions"),
+                    ui.menu(),
                 ):
-                    with ui.row().classes("w-full items-center no-wrap").style("gap:0"):
+                    hidden = all(k in self._hidden_objects for k, _ in selected)
+                    ui.menu_item(
+                        "Show" if hidden else "Hide",
+                        on_click=lambda: self._set_hidden(
+                            [k for k, _ in selected], not hidden
+                        ),
+                    ).mark("object-hide")
+                    locked = all(k in self._locked_objects for k, _ in selected)
+                    ui.menu_item(
+                        "Unlock" if locked else "Lock",
+                        on_click=lambda: self._set_locked(
+                            [k for k, _ in selected], not locked
+                        ),
+                    ).mark("object-lock")
+                    self._attachment_actions(selected, history.busy)
+                    ui.separator()
+                    controls.editable(
+                        ui.menu_item("Delete", on_click=self._delete_objects)
+                        .classes("text-wc-error")
+                        .mark("object-delete"),
+                        readonly,
+                    )
+            if len(selected) == 1:
+                entity, shape = selected[0]
+                modes = [("translate", "open_with", "Move and turn with the handles")]
+                if shape.kind in RESIZE_AXES:
+                    modes.append(("resize", "open_in_full", _RESIZE_TIPS[shape.kind]))
+                with (
+                    ui.button_group()
+                    .props("unelevated rounded")
+                    .classes("self-start")
+                    .mark("object-transform")
+                ):
+                    for value, icon, tip in modes:
+                        on = self._object_mode == value
                         controls.editable(
                             ui.button(
-                                icon="content_copy", on_click=self._duplicate_objects
+                                icon=icon,
+                                on_click=lambda v=value: self._set_object_mode(v),
                             )
-                            .props("flat round dense color=wc-text")
-                            .tooltip("Duplicate selection")
-                            .mark("object-duplicate"),
+                            .props(
+                                "dense unelevated "
+                                + (
+                                    "color=wc-action text-color=wc-on-bright"
+                                    if on
+                                    else "color=wc-control text-color=wc-text"
+                                )
+                            )
+                            .tooltip(tip)
+                            .mark(f"object-mode-{value}"),
                             readonly,
                         )
-                        with (
-                            ui.button(icon="more_horiz")
-                            .props("flat round dense color=wc-text")
-                            .tooltip("Object actions")
-                            .mark("object-actions")
-                        ):
-                            with ui.menu():
-                                self._isolation_action()
-                                hidden = all(
-                                    k in self._hidden_objects for k, _ in selected
-                                )
-                                ui.menu_item(
-                                    "Show" if hidden else "Hide",
-                                    on_click=self._toggle_object_visibility,
-                                ).mark("object-hide")
-                                locked = all(
-                                    k in self._locked_objects for k, _ in selected
-                                )
-                                ui.menu_item(
-                                    "Unlock" if locked else "Lock",
-                                    on_click=self._toggle_object_lock,
-                                ).mark("object-lock")
-                                self._attachment_actions(selected, history.busy)
-                                ui.separator()
-                                controls.editable(
-                                    ui.menu_item(
-                                        "Delete", on_click=self._delete_objects
-                                    )
-                                    .classes("text-wc-error")
-                                    .mark("object-delete"),
-                                    readonly,
-                                )
-                        ui.space()
-                        controls.undo = (
-                            ui.button(
-                                icon="undo",
-                                on_click=lambda: self._restore_objects(False),
-                            )
-                            .props("flat round dense color=wc-text")
-                            .tooltip("Undo object edit")
-                            .mark("object-undo")
+                for icon, tip, axes, values, offset, scale in (
+                    (
+                        "my_location",
+                        "Position · mm",
+                        ("X", "Y", "Z"),
+                        shape.pose[:3],
+                        0,
+                        1000,
+                    ),
+                    (
+                        "rotate_right",
+                        "Rotation · °",
+                        ("X", "Y", "Z"),
+                        shape.pose[3:],
+                        3,
+                        180 / math.pi,
+                    ),
+                ):
+                    with ui.row().classes(
+                        "scene-field-row w-full no-wrap items-center"
+                    ):
+                        ui.icon(icon, size="18px").classes("scene-field-icon").tooltip(
+                            tip
                         )
-                        controls.redo = (
-                            ui.button(
-                                icon="redo",
-                                on_click=lambda: self._restore_objects(True),
+                        for index, (axis, value) in enumerate(zip(axes, values)):
+                            field = (
+                                ui.number(value=_shown(value, scale), prefix=axis)
+                                .props("dense borderless hide-bottom-space")
+                                .classes(
+                                    f"scene-field axis-{axis.lower()} min-w-0 flex-1"
+                                )
+                                .mark(
+                                    f"object-{('' if offset == 0 else 'r') + axis.lower()}"
+                                )
                             )
-                            .props("flat round dense color=wc-text")
-                            .tooltip("Redo object edit")
-                            .mark("object-redo")
+                            controls.editable(field, readonly)
+                            controls.track(
+                                field,
+                                f"pose{offset + index}",
+                                lambda s, i=offset + index, k=scale: _shown(
+                                    s.pose[i], k
+                                ),
+                            )
+
+                            async def callback(_, f=field, i=offset + index, k=scale):
+                                await self._object_pose(entity, i, f.value, k)
+
+                            field.on("blur", callback)
+                            field.on("keydown.enter", callback)
+                self._object_dimensions(shape, entity, readonly, controls)
+                with ui.row().classes("scene-field-row w-full no-wrap items-center"):
+                    collision = (
+                        ui.switch(
+                            "Collision",
+                            value=shape.collision,
+                            on_change=lambda e: self._object_patch(
+                                entity, collision=bool(e.value)
+                            ),
                         )
-                    controls.feedback = (
-                        ui.label()
-                        .classes("text-xs text-wc-text-muted")
-                        .mark("object-feedback")
+                        .props("dense")
+                        .tooltip("Checked for collisions")
+                        .mark("object-collision")
                     )
-                    if any(k in self._hidden_objects for k, _ in selected):
-                        ui.label(
-                            "Hidden in this view · collision remains active"
-                        ).classes("text-xs text-wc-text-muted")
-                    self._show_hidden_action()
+                    controls.editable(collision, readonly)
+                    controls.track(collision, "collision", lambda s: s.collision)
+                    margin = (
+                        ui.number(
+                            value=None
+                            if shape.margin is None
+                            else _shown(shape.margin, 1000),
+                            prefix="Clearance",
+                            suffix="mm",
+                            placeholder="default",
+                        )
+                        .props("dense borderless hide-bottom-space")
+                        .classes("scene-field min-w-0 flex-1")
+                        .tooltip(
+                            "Extra distance kept from the arm; blank for the default"
+                        )
+                        .mark("object-margin")
+                    )
+                    controls.editable(margin, readonly)
+                    controls.track(
+                        margin,
+                        "margin",
+                        lambda s: None if s.margin is None else _shown(s.margin, 1000),
+                    )
+                    margin.on(
+                        "blur",
+                        lambda: self._object_number(
+                            entity, "margin", margin.value, 1000, optional=True
+                        ),
+                    )
+                if self._attachment_form and self._attachment_form[0] == entity:
+                    self._attachment_section(entity, shape)
+            controls.feedback = (
+                ui.label().classes("text-xs text-wc-text-muted").mark("object-feedback")
+            )
         self._update_object_inspector(selected, status, True)
+
+    def _readonly_reason(self, selected) -> str:
+        """Why the selection's values cannot be edited, or ""."""
+        if any(not k.startswith(SHAPE_PREFIX) for k, _ in selected):
+            return "Installation · from the robot config"
+        if any(k in self._locked_objects for k, _ in selected):
+            return "Locked · unlock from More"
+        if any(s.attachment is not None for _, s in selected):
+            return "Attached to the flange · reconcile or detach from More"
+        return ""
+
+    def _refresh_object_tree(self, handle) -> None:
+        """The list of the scene's objects, rebuilt when what it shows changes."""
+        layers = (
+            ()
+            if handle is None
+            else (
+                ("Keep-outs", SHAPE_PREFIX, tuple(handle.shapes)),
+                (
+                    "Installation",
+                    INSTALL_PREFIX,
+                    tuple(
+                        s
+                        for s in handle.installation
+                        if f"{INSTALL_PREFIX}{s.name}" not in self._install_ground
+                    ),
+                ),
+                (
+                    "Proposed installation",
+                    DRAFT_PREFIX,
+                    tuple(handle.installation_draft),
+                ),
+            )
+        )
+        tool = waldoctl.commander.status.tool.key
+        key = (
+            tuple(
+                (
+                    title,
+                    prefix,
+                    tuple((s.name, s.kind, s.attachment is not None) for s in shapes),
+                )
+                for title, prefix, shapes in layers
+            ),
+            tuple(self._selected_objects),
+            frozenset(self._hidden_objects),
+            frozenset(self._locked_objects),
+            tool,
+        )
+        if key == self._object_tree_key:
+            return
+        self._object_tree_key = key
+        tree = self._object_tree
+        tree.clear()
+        with tree:
+            self._tree_robot_row(tool)
+            for title, prefix, shapes in layers:
+                if not shapes and prefix != SHAPE_PREFIX:
+                    continue
+                keys = [f"{prefix}{s.name}" for s in shapes]
+                with ui.row().classes("scene-group w-full items-center no-wrap"):
+                    ui.label(title).classes("flex-1")
+                    ui.label(str(len(shapes))).classes("scene-count")
+                    if keys and prefix != DRAFT_PREFIX:
+                        hidden = all(k in self._hidden_objects for k in keys)
+                        ui.button(
+                            icon="visibility_off" if hidden else "visibility",
+                            on_click=lambda ks=keys, h=hidden: self._set_hidden(
+                                ks, not h
+                            ),
+                        ).props("flat round dense size=sm color=wc-text").classes(
+                            "scene-toggle" + (" on" if hidden else "")
+                        ).tooltip("Show all" if hidden else "Hide all").mark(
+                            f"scene-hide-all-{prefix.rstrip(':')}"
+                        )
+                if prefix == SHAPE_PREFIX and not shapes:
+                    ui.label("Draw one with + above, or right-click the floor").classes(
+                        "scene-empty"
+                    )
+                for shape in shapes:
+                    self._tree_row(prefix, shape)
+
+    def _tree_robot_row(self, tool: str) -> None:
+        robot = ui_state.active_robot
+        try:
+            tool_name = robot.tools[tool].display_name if tool != "NONE" else ""
+        except KeyError:
+            tool_name = tool
+        with (
+            ui.row()
+            .classes("scene-row w-full items-center no-wrap")
+            .mark("scene-robot")
+        ):
+            ui.icon("precision_manufacturing", size="18px").classes("scene-row-kind")
+            ui.label(robot.name).classes("scene-row-name")
+            if tool_name:
+                ui.label(tool_name).classes("scene-row-detail truncate").mark(
+                    "scene-robot-tool"
+                )
+            ui.space()
+            ui.button(
+                icon="center_focus_strong",
+                on_click=lambda: (
+                    self._select_objects([]),
+                    self.scene.run_method("camera_action", "focus"),
+                ),
+            ).props("flat round dense size=sm color=wc-text").classes(
+                "scene-toggle"
+            ).tooltip("Focus the robot")
+
+    def _tree_row(self, prefix: str, shape) -> None:
+        key = f"{prefix}{shape.name}"
+        selected = key in self._selected_objects
+        hidden = key in self._hidden_objects
+        row = (
+            ui.row()
+            .classes(
+                "scene-row w-full items-center no-wrap"
+                + (" scene-row--selected" if selected else "")
+                + (" scene-row--hidden" if hidden else "")
+                + (" scene-row--proposed" if prefix == DRAFT_PREFIX else "")
+            )
+            .mark(f"scene-row-{shape.name}")
+        )
+        with row:
+            ui.icon(_KIND_ICONS.get(shape.kind, "category"), size="18px").classes(
+                "scene-row-kind"
+            ).tooltip(object_label(shape))
+            ui.label(shape.name).classes("scene-row-name truncate")
+            if shape.attachment is not None:
+                ui.icon("link", size="16px").classes("text-wc-text-muted").tooltip(
+                    "Attached to the flange"
+                )
+            ui.space()
+            if prefix == DRAFT_PREFIX:
+                with (
+                    ui.button(icon="more_vert")
+                    .props("flat round dense size=sm color=wc-text")
+                    .classes("scene-toggle on")
+                    .on("click.stop", lambda: None),
+                    ui.menu(),
+                ):
+                    self._populate_draft_menu(shape.name)
+                return
+            if prefix == SHAPE_PREFIX:
+                locked = key in self._locked_objects
+                ui.button(icon="lock" if locked else "lock_open").props(
+                    "flat round dense size=sm color=wc-text"
+                ).classes("scene-toggle" + (" on" if locked else "")).tooltip(
+                    "Unlock" if locked else "Lock"
+                ).on("click.stop", lambda: self._set_locked([key], not locked)).mark(
+                    f"scene-lock-{shape.name}"
+                )
+            else:
+                ui.icon("lock", size="16px").classes("scene-toggle on px-1").tooltip(
+                    "Installation · from the robot config"
+                )
+            ui.button(icon="visibility_off" if hidden else "visibility").props(
+                "flat round dense size=sm color=wc-text"
+            ).classes("scene-toggle" + (" on" if hidden else "")).tooltip(
+                "Show" if hidden else "Hide · still checked for collisions"
+            ).on("click.stop", lambda: self._set_hidden([key], not hidden)).mark(
+                f"scene-eye-{shape.name}"
+            )
+        row.on(
+            "click",
+            lambda e: self._pick_from_tree(key, e.args),
+            ["ctrlKey", "metaKey", "shiftKey"],
+        )
+        glow = f"getElement({self.scene.id}).glow_object"
+        row.on("mouseenter", js_handler=f"() => {glow}({json.dumps(key)})")
+        row.on("mouseleave", js_handler=f"() => {glow}(null)")
+
+    def _pick_from_tree(self, key: str, args) -> None:
+        extend = isinstance(args, dict) and any(
+            args.get(k) for k in ("ctrlKey", "metaKey", "shiftKey")
+        )
+        if not extend:
+            self._select_objects([key])
+        elif key in self._selected_objects:
+            self._select_objects([k for k in self._selected_objects if k != key])
+        else:
+            self._select_objects([*self._selected_objects, key])
 
     def _attachment_actions(self, selected, busy) -> None:
         """Object actions that open the attachment form for one object."""
@@ -606,22 +756,18 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         ).mark("object-detach").set_enabled(enabled)
 
     def _update_object_inspector(self, selected, status, reset_values) -> None:
-        """Bring the built card up to *status* and the selection's values."""
+        """Bring the built properties up to *status* and the selection's values."""
         controls = self._inspector_controls
-        busy, feedback, undo, redo, confirmed = status
+        busy, feedback, _, _, confirmed = status
         readonly = busy or controls.locked
         for element in controls.editable_elements:
             element.set_enabled(not readonly)
-        if controls.undo is not None and controls.redo is not None:
-            controls.undo.set_enabled(bool(undo) and not busy)
-            controls.redo.set_enabled(bool(redo) and not busy)
         if controls.feedback is not None:
-            controls.feedback.set_text(
-                feedback
-                or ("" if confirmed else "Waiting for controller confirmation…")
+            text = feedback or (
+                "" if confirmed else "Waiting for controller confirmation…"
             )
-        if controls.names is not None:
-            controls.names.set_text(" · ".join(s.name for _, s in selected))
+            controls.feedback.set_text(text)
+            controls.feedback.set_visibility(bool(text))
         if len(selected) != 1:
             return
         shape = selected[0][1]
@@ -632,16 +778,19 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                 element.set_value(current)
 
     def _object_dimensions(self, shape, entity, readonly, controls):
-        ui.label("Dimensions · mm").classes("text-xs text-wc-text-muted")
-        with ui.row().classes("w-full no-wrap"):
+        with ui.row().classes("scene-field-row w-full no-wrap items-center"):
+            ui.icon("straighten", size="18px").classes("scene-field-icon").tooltip(
+                "Size · mm"
+            )
             for parameter in param_names(type(shape)):
                 field = (
                     ui.number(
-                        parameter,
                         value=_shown(getattr(shape, parameter), 1000),
+                        prefix=_DIMENSION_PREFIXES.get(parameter, parameter),
                     )
-                    .props("dense outlined hide-bottom-space")
-                    .classes("min-w-0 flex-1")
+                    .props("dense borderless hide-bottom-space")
+                    .classes(f"scene-field axis-{parameter} min-w-0 flex-1")
+                    .tooltip(parameter.capitalize())
                     .mark(f"object-dim-{parameter}")
                 )
                 controls.editable(field, readonly)
@@ -656,21 +805,6 @@ class ObjectEditingMixin(ShapeDrawingMixin):
 
                 field.on("blur", callback)
                 field.on("keydown.enter", callback)
-
-    def _show_hidden_action(self):
-        if self._hidden_objects:
-            ui.button(
-                f"Show {len(self._hidden_objects)} hidden",
-                icon="visibility",
-                on_click=self._show_hidden_objects,
-            ).props("flat dense no-caps color=wc-text").mark("object-show-hidden")
-
-    def _show_hidden_objects(self):
-        for key in self._hidden_objects:
-            if node := self._shape_objects.get(key):
-                node.visible(True)
-        self._hidden_objects.clear()
-        self._select_objects(self._selected_objects)
 
     def _set_object_mode(self, mode):
         if mode not in ("translate", "resize"):
@@ -818,9 +952,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             for s in handle.shapes
             if f"{SHAPE_PREFIX}{s.name}" not in self._selected_objects
         ]
-        if await self._commit_objects("Delete objects", shapes, revision):
-            self._show_object_history = True
-            self._refresh_object_inspector()
+        await self._commit_objects("Delete objects", shapes, revision)
 
     def undo_edit(self, *, redo: bool = False) -> None:
         """Ctrl+Z (Ctrl+Shift+Z or Ctrl+Y to redo) in the scene: a keep-out
@@ -847,28 +979,27 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                 if s.name not in previous
             ]
             self._select_objects(restored or self._selected_objects)
-            self._show_object_history = not self._selected_objects
         except ValueError as error:
             self._notify(str(error), warning=True)
         self._push_interaction()
         self._refresh_object_inspector()
 
-    def _toggle_object_visibility(self):
-        show = all(k in self._hidden_objects for k in self._selected_objects)
-        for key in self._selected_objects:
-            if show:
-                self._hidden_objects.discard(key)
-            else:
+    def _set_hidden(self, keys, hidden: bool) -> None:
+        """Hide *keys* from this view, or show them again; a hidden object
+        is still checked for collisions."""
+        for key in keys:
+            if hidden:
                 self._hidden_objects.add(key)
+            else:
+                self._hidden_objects.discard(key)
             if node := self._shape_objects.get(key):
-                node.visible(show)
+                node.visible(not hidden)
         self._select_objects(self._selected_objects)
 
-    def _toggle_object_lock(self):
-        unlock = all(k in self._locked_objects for k in self._selected_objects)
-        for key in self._selected_objects:
-            if unlock:
-                self._locked_objects.discard(key)
-            else:
+    def _set_locked(self, keys, locked: bool) -> None:
+        for key in keys:
+            if locked:
                 self._locked_objects.add(key)
+            else:
+                self._locked_objects.discard(key)
         self._select_objects(self._selected_objects)

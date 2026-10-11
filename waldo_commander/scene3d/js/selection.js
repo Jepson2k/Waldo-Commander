@@ -1,16 +1,10 @@
 import * as THREE from "three";
-import { setStyle } from "./dom.js";
-import { GAP } from "./overlays.js";
 import { visibleHit } from "./pointer.js";
 
 const normals = new THREE.Matrix3();
-// The least of the inspector worth showing: room for the header, the
-// Move/Resize toggle, the fields and the actions.
-const SHORTEST = 280;
 
 // What is selected, outlined, and isolated: a tap on an object selects it
-// (shift adds to the selection), a tap on nothing clears it. The inspector
-// Python builds for the selection docks above the control panel.
+// (shift adds to the selection), a tap on nothing clears it.
 export class Selection {
   constructor(core) {
     this.core=core;
@@ -113,35 +107,6 @@ export class Selection {
 
   recolor(colors) {
     if(colors?.action)this.outlineMaterial.color.set(colors.action);
-  }
-
-  // The inspector docks above the control panel, as a CAD properties
-  // panel does, right edges aligned, as tall as the room under the view's
-  // own controls allows.
-  layout() {
-    const overlays=this.core.overlays,card=overlays.card("inspector");
-    if(!card)return;
-    const view=overlays.view,height=card.scroll+2;
-    const panel=this.controlPanel(view);
-    const right=panel?panel.right:view.width-GAP;
-    const bottom=(panel?panel.top:view.height-this.core.layoutInset.bottom)-GAP;
-    let top=GAP;
-    for(const b of overlays.chrome)if(b.bottom<bottom && b.left<right && b.right>right-card.w)top=Math.max(top,b.bottom+GAP);
-    const h=Math.min(height,Math.max(SHORTEST,bottom-top));
-    overlays.place(card,Math.max(GAP,right-card.w),Math.max(GAP,bottom-h));
-    setStyle(card.node,"maxHeight",`${h}px`);
-    setStyle(card.node,"visibility","visible");
-  }
-
-  // The control panel among the app's chrome: the box nearest the view's
-  // bottom right that is not a bar across it.
-  controlPanel(view) {
-    let best=null;
-    for(const b of this.core.overlays.chrome) {
-      if(b.right-b.left>view.width*.6 || b.left<view.width/2 || b.top<view.height/2)continue;
-      if(!best || b.right+b.bottom>best.right+best.bottom)best=b;
-    }
-    return best;
   }
 
   dispose() {

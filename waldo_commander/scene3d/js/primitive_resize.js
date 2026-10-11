@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { TAP_PX } from "./handles.js";
+import { FINGER_PX, tapPx } from "./handles.js";
 import { FIELD_AVOIDS, HandleField, amount } from "./precision.js";
 import { facingPlane } from "./pointer.js";
 
@@ -176,14 +176,23 @@ export class PrimitiveResize {
 
   // ---- the pointer's tool ---------------------------------------------------
 
-  // The handle at (x, y), if a press there may grab it.
-  hit(x,y) {
+  // The handle at (x, y), if a press there may grab it; for a finger, the
+  // nearest within FINGER_PX when none is under it.
+  hit(x,y,pointerType="mouse") {
     if(!this.spec || !this.group.visible || this.confirming || this.core.gestures.active)return null;
-    return this.core.pointer.aim(x,y).intersectObjects(this.handles.filter(h=>h.visible),false)[0]?.object || null;
+    const shown=this.handles.filter(h=>h.visible),pointer=this.core.pointer;
+    const exact=pointer.aim(x,y).intersectObjects(shown,false)[0]?.object;
+    if(exact || pointerType!=="touch")return exact || null;
+    let nearest=null,best=FINGER_PX;
+    for(const mesh of shown) {
+      const distance=pointer.pixelsFrom(mesh.position,x,y);
+      if(distance<=best){best=distance;nearest=mesh;}
+    }
+    return nearest;
   }
 
   begin(e) {
-    const mesh=this.hit(e.clientX,e.clientY);
+    const mesh=this.hit(e.clientX,e.clientY,e.pointerType);
     if(!mesh)return null;
     const ray=this.core.pointer.aim(e.clientX,e.clientY).ray;
     const direction=this.direction(mesh,new THREE.Vector3());
@@ -249,7 +258,7 @@ export class PrimitiveResize {
   release(e=null) {
     const d=this.drag;
     if(!d)return;
-    if(e && Math.hypot(e.clientX-d.x,e.clientY-d.y)<=TAP_PX) {
+    if(e && Math.hypot(e.clientX-d.x,e.clientY-d.y)<=tapPx(e.pointerType)) {
       this.core.gestures.abort("click");
       this.openEntry(d.mesh,d.symmetric,0);
       return;

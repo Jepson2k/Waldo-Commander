@@ -240,7 +240,7 @@ class SceneHistory:
             self.undo_stack = self.undo_stack[-50:]
             self.redo_stack.clear()
             self.expected = self.context()
-            self.feedback = "Confirmed"
+            self.feedback = ""
 
         await self._apply(
             handle,
@@ -281,7 +281,7 @@ class SceneHistory:
             stack.pop()
             other.append(edit)
             self.expected = self.context()
-            self.feedback = "Confirmed"
+            self.feedback = ""
 
         await self._apply(
             handle,

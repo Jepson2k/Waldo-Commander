@@ -5,12 +5,37 @@ from dataclasses import replace
 
 import pytest
 import waldoctl
+from nicegui import ui
+from nicegui.testing.user_interaction import UserInteraction
 
 from tests.helpers.scene_events import Drag, right_click
 from tests.helpers.scene_objects import confirmed, field, select
 from tests.helpers.wait import wait_until
 from tests.test_scene_jog_handles import _open, _start_recording
 from waldo_commander.services import world_files
+from waldo_commander.state import ui_state
+
+
+def row(user, name):
+    """The scene panel's row for the object ``name``."""
+    return user.find(marker=f"scene-row-{name}").elements.pop()
+
+
+def listed(user):
+    """The objects the scene panel's tree lists, in order."""
+    tree = user.find(marker="scene-tree").elements.pop()
+    return [
+        marker.removeprefix("scene-row-")
+        for element in tree.descendants()
+        for marker in element._markers
+        if marker.startswith("scene-row-")
+    ]
+
+
+def robot_row(user):
+    """What the tree's robot row says: the robot's name, then its tool."""
+    robot = user.find(marker="scene-robot").elements.pop()
+    return [e.text for e in robot.descendants() if isinstance(e, ui.label)]
 
 
 @pytest.mark.integration
@@ -23,13 +48,23 @@ async def test_objects_record_undo_reload_and_recover_from_external_edits(
     live = waldoctl.commander.status.joints.angles.rad.copy()
     textarea = await _start_recording(user)
     source_before = textarea.value
+    panel = ui_state.scene_panel
+    await user.should_see(marker="scene-robot")
+    assert robot_row(user)[0] == ui_state.active_robot.name
+    user.find(marker="scene-close").click()
+    assert not panel.is_open
 
     right_click(user, view.scene, [], [0.40037, 0.09981, 0])
     user.find(marker="scene-add-box").click()
     await confirmed(view, lambda: len(handle.shapes) == 1)
-    assert view._selected_objects == [f"shape:{handle.shapes[0].name}"]
+    name = handle.shapes[0].name
+    assert view._selected_objects == [f"shape:{name}"]
     assert handle.shapes[0].pose[:2] == (0.4, 0.1)
-    await user.should_see(marker="object-title", content="Keep-out")
+    # Selecting an object opens the scene panel on it.
+    assert panel.is_open
+    assert listed(user) == [name]
+    assert "scene-row--selected" in row(user, name).classes
+    assert user.find(marker="object-name").elements.pop().value == name
     assert "set_shapes(" in textarea.value
     source_created = textarea.value
     original = handle.shapes[0]
@@ -68,15 +103,31 @@ async def test_objects_record_undo_reload_and_recover_from_external_edits(
     await confirmed(view, lambda: handle.shapes[0].name == "fixture-edited")
     assert view._selected_objects == ["shape:fixture-edited"]
 
+    # Hidden only from this view: the object stays in the world the
+    # controller checks for collisions.
+    key = "shape:fixture-edited"
+    edited = list(handle.shapes)
     user.find(marker="object-hide").click()
+    assert view._hidden_objects == {key}
+    assert not view._shape_objects[key].visible_
+    assert "scene-row--hidden" in row(user, "fixture-edited").classes
     select(user, view)
-    await user.should_see(marker="object-show-hidden")
-    assert (await waldoctl.commander.client.shapes()).program == tuple(handle.shapes)
-    user.find(marker="object-show-hidden").click()
+    assert handle.shapes == edited
+    assert (await waldoctl.commander.client.shapes()).program == tuple(edited)
+    user.find(marker="scene-eye-fixture-edited").trigger("click.stop")
     assert not view._hidden_objects
-    select(user, view, "shape:fixture-edited")
-    user.find(marker="object-lock").click()
-    right_click(user, view.scene, ["shape:fixture-edited"])
+    assert view._shape_objects[key].visible_
+
+    user.find(marker="scene-row-fixture-edited").click()
+    assert view._selected_objects == [key]
+    assert "scene-row--selected" in row(user, "fixture-edited").classes
+    user.find(marker="scene-lock-fixture-edited").trigger("click.stop")
+    assert view._locked_objects == {key}
+    assert view.scene.interaction["shapeMove"] is None
+    await user.should_see(marker="object-readonly")
+    for marker in ("object-name", "object-x", "object-dim-x", "object-delete"):
+        assert not user.find(marker=marker).elements.pop().enabled
+    right_click(user, view.scene, [key])
     for marker in (
         "shape-menu-edit",
         "shape-menu-delete",
@@ -85,13 +136,41 @@ async def test_objects_record_undo_reload_and_recover_from_external_edits(
     ):
         assert not next(iter(user.find(marker=marker).elements)).enabled
     user.find(marker="object-lock").click()
+    assert not view._locked_objects
+    assert view.scene.interaction["shapeMove"] is not None
     user.find(marker="object-duplicate").click()
     await confirmed(view, lambda: len(handle.shapes) == 2)
     duplicated = list(handle.shapes)
+    copy = duplicated[1].name
+    assert view._selected_objects == [f"shape:{copy}"]
+    assert listed(user) == ["fixture-edited", copy]
+    assert "scene-row--selected" in row(user, copy).classes
+    assert "scene-row--selected" not in row(user, "fixture-edited").classes
+
+    user.find(marker="scene-hide-all-shape").click()
+    assert view._hidden_objects == {key, f"shape:{copy}"}
+    assert handle.shapes == duplicated
+    user.find(marker="scene-hide-all-shape").click()
+    assert not view._hidden_objects
+
+    # Shift-click on a row adds its object to the selection, and takes it
+    # out again.
+    user.find(marker="scene-row-fixture-edited").trigger("click", {"shiftKey": True})
+    assert view._selected_objects == [f"shape:{copy}", key]
+    await user.should_see(marker="object-title", content="2 keep-outs")
+    user.find(marker="scene-row-fixture-edited").trigger("click", {"shiftKey": True})
+    assert view._selected_objects == [f"shape:{copy}"]
+
     user.find(marker="object-delete").click()
     await confirmed(view, lambda: len(handle.shapes) == 1)
+    assert listed(user) == ["fixture-edited"]
     user.find(marker="object-undo").click()
-    await confirmed(view, lambda: handle.shapes == duplicated)
+    await confirmed(
+        view,
+        lambda: handle.shapes == duplicated
+        and view._selected_objects == [f"shape:{copy}"],
+    )
+    assert listed(user) == ["fixture-edited", copy]
 
     monkeypatch.setattr(world_files, "library_dir", lambda: tmp_path)
     world = await waldoctl.commander.client.shapes()
@@ -138,6 +217,33 @@ async def test_objects_record_undo_reload_and_recover_from_external_edits(
     assert len(handle.shapes) == 2
     assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live)
     assert source_before != textarea.value
+
+    # The scene panel's draw menu draws on the floor of the world as it is now.
+    await confirmed(view)
+    user.find(marker="scene-panel-draw-box").click()
+    drawing = view.scene.interaction["shapeDraw"]
+    assert view._drawing["primitive"] == "box"
+    assert drawing["label"] == "Floor"
+    UserInteraction(user, {view.scene}, None).trigger(
+        "draw_cancel", {"session": drawing["session"]}
+    )
+    assert view._drawing is None
+
+    # The robot's row names the tool it carries.
+    client = waldoctl.commander.client
+    tool = ui_state.active_robot.tools["PNEUMATIC"].display_name
+    try:
+        assert await client.wait_command(
+            await client.select_tool("PNEUMATIC"), timeout=5
+        )
+        assert await wait_until(
+            lambda: robot_row(user) == [ui_state.active_robot.name, tool], 5
+        ), robot_row(user)
+    finally:
+        assert await client.wait_command(await client.select_tool("NONE"), timeout=5)
+    assert await wait_until(
+        lambda: robot_row(user) == [ui_state.active_robot.name], 5
+    ), robot_row(user)
 
 
 @pytest.mark.integration

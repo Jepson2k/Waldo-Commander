@@ -461,6 +461,7 @@ def class_screen(
             )
             # CodeMirror reports focused selections only in the active tab.
             class_driver.execute_cdp_cmd("Page.bringToFront", {})
+            _clear_world()
 
             yield screen_instance
 
@@ -472,6 +473,23 @@ def class_screen(
         _session_pool.restore()
     finally:
         os.environ.pop("NICEGUI_SCREEN_TEST_PORT", None)
+
+
+def _clear_world() -> None:
+    """Empty the controller's world: it outlives the page, so objects an
+    earlier class placed would crowd this one's floor, and enough of them
+    overflow the controller's command buffer."""
+    from tests.helpers.browser_helpers import run_in_app
+
+    handle = waldoctl.commander.scene
+    if handle is None or not run_in_app(lambda: list(handle.shapes)):
+        return
+    run_in_app(lambda: setattr(handle, "shapes", []))
+    deadline = time.monotonic() + 10
+    while not run_in_app(lambda: handle.confirmed and not handle.shapes):
+        if time.monotonic() > deadline:
+            raise TimeoutError("the controller kept the previous class's objects")
+        time.sleep(0.05)
 
 
 @pytest.fixture(autouse=True)

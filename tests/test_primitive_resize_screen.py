@@ -10,11 +10,12 @@ from tests.helpers.browser_helpers import (
     run_in_app,
     viewport,
 )
-from tests.helpers.browser_session import wait
+from tests.helpers.browser_session import no_visible, wait
 from tests.helpers.scene_screen import (
     gizmo_field,
     EDIT_PROGRAM,
     at_start,
+    clear_selection,
     confirmed,
     create_shape,
     probe,
@@ -115,7 +116,9 @@ class TestPrimitiveResize:
                     if run_in_app(lambda: bool(ui_state.urdf_scene._selected_objects)):
                         click_marked(screen, "object-actions")
                         click_marked(screen, "object-hide")
-                        click_marked(screen, "object-close")
+                        # A closing menu would swallow the click on the view.
+                        wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+                        clear_selection(screen)
                     create_shape(screen, kind, f"Resize {kind}")
                     for axis in (0, 2) if kind == "cylinder" else (0,):
                         initial = handle.shapes[-1]

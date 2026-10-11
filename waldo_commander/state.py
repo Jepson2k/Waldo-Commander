@@ -355,6 +355,7 @@ class UiState:
     diagnostics_page: Any = None
     settings_content: Any = None
     bottom_panel: Any = None
+    scene_panel: Any = None
     # Kept so the editor addresses its tab directly instead of hunting the
     # DOM for a matching icon glyph.
     _program_tab: Any = None

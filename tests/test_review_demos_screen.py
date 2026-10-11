@@ -30,7 +30,7 @@ from tests.helpers.browser_helpers import (
     run_in_app,
     viewport,
 )
-from tests.helpers.browser_session import no_visible, wait
+from tests.helpers.browser_session import wait
 from tests.helpers.demo_video import DemoVideo
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
@@ -91,6 +91,10 @@ def program_panel(screen):
     try:
         yield
     finally:
+        # A tooltip shown when its button's panel closes would stay behind.
+        screen.selenium.execute_cdp_cmd(
+            "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 960, "y": 540}
+        )
         close_panel(screen, "program-panel")
 
 
@@ -593,7 +597,7 @@ class TestReviewDemos:
         video.glide(_center(item), 0.6)
         video.click(settle=lambda: confirmed(screen, lambda: len(handle.shapes) == 1))
         name = handle.shapes[0].name
-        video.caption("It is placed and selected; the inspector sits beside it")
+        video.caption("It is placed and selected; the scene panel opens with it")
         video.pause(1.8)
         ax, ay, dx, dy = wait(screen).until(
             lambda _: probe(screen, "arrowTip", f"shape:{name}")
@@ -664,11 +668,9 @@ class TestReviewDemos:
         place_shape(screen, "box", x, y, "Fixture")
         initial = handle.shapes[0]
         video = DemoVideo(screen, "keepout-resize")
-        resize = marked_element(screen, "object-transform").find_element(
-            By.XPATH, ".//button[.//*[normalize-space()='Resize']]"
-        )
+        resize = marked_element(screen, "object-mode-resize")
         video.jump(*_outward(_center(resize), _arm_pixel(screen), 160))
-        video.caption("Switch the selected keep-out to Resize")
+        video.caption("Switch the selected keep-out to Resize in the scene panel")
         video.pause(0.6)
         video.glide(_center(resize), 1.0)
         video.click(
@@ -734,23 +736,15 @@ class TestReviewDemos:
         )
         video.pause(0.8)
 
-        def from_actions(marker: str, done) -> None:
-            video.glide(_center(marked_element(screen, "object-actions")), 0.8)
-            video.click()
-            item = wait(screen).until(
-                lambda _: (e := marked_element(screen, marker)).is_displayed() and e
-            )
-            video.pause(0.3)
-            video.glide(_center(item), 0.6)
+        def isolate(done) -> None:
+            video.glide(_center(marked_element(screen, "object-isolate")), 0.8)
             video.click(settle=lambda: wait(screen).until(lambda _: done()))
 
-        video.caption("Isolate them: the rest of the cell fades out")
-        from_actions("object-isolate", lambda: run_in_app(lambda: view._isolated_view))
+        video.caption("Isolate them from the scene panel: the rest fades out")
+        isolate(lambda: run_in_app(lambda: view._isolated_view))
         video.pause(2.0)
-        video.caption("Show all objects brings the rest back")
-        from_actions(
-            "object-isolate", lambda: not run_in_app(lambda: view._isolated_view)
-        )
+        video.caption("The same button shows everything again")
+        isolate(lambda: not run_in_app(lambda: view._isolated_view))
         video.pause(1.5)
         video.save()
 
@@ -760,38 +754,30 @@ class TestReviewDemos:
             with program_previewed(EDIT_PROGRAM):
                 wait_for_scene_idle(screen)
                 video = DemoVideo(screen, "camera-tools")
-                menu = _center(marked_element(screen, "camera-menu"))
-                video.jump(menu[0] + 300, menu[1] + 200)
+                reset = _center(marked_element(screen, "camera-reset"))
+                video.jump(reset[0] - 320, reset[1] + 240)
 
-                def from_menu(caption: str, find, seconds: float = 1.6) -> None:
+                def press(caption: str, marker: str, seconds: float = 1.6) -> None:
                     video.caption(caption)
-                    # Some entries leave the menu open for the next.
-                    if no_visible(screen, ".q-menu"):
-                        video.glide(menu, 0.8)
-                        video.click()
-                    item = _settled(screen, find)
-                    video.pause(0.3)
-                    video.glide(_center(item), 0.6)
+                    video.glide(_center(marked_element(screen, marker)), 0.8)
+                    video.pause(0.4)
                     video.click()
                     video.live(seconds)
 
-                from_menu(
-                    "Focus the robot", lambda: marked_element(screen, "camera-focus")
+                press(
+                    "The buttons under the cube: Focus frames the robot", "camera-focus"
                 )
-                from_menu(
-                    "Snap to the top view", lambda: marked_element(screen, "camera-top")
-                )
-                from_menu(
+                press(
                     "Orthographic: no perspective, true proportions",
-                    lambda: marked_element(screen, "camera-projection").find_element(
-                        By.XPATH, ".//button[.//*[text()='Orthographic']]"
-                    ),
+                    "camera-orthographic",
                     0.8,
                 )
-                from_menu(
-                    "Back to the previous view",
-                    lambda: marked_element(screen, "camera-back"),
-                )
+                assert scene_js(screen, "return !!S.camera.isOrthographicCamera")
+                press("Perspective again", "camera-perspective", 0.8)
+                video.caption("Shift+F goes back to the previous view")
+                video.chord(Keys.SHIFT, "f")
+                video.live(1.4)
+                press("Reset view puts the camera back", "camera-reset")
                 video.pause(1.0)
                 video.save()
 
@@ -802,19 +788,35 @@ class TestReviewDemos:
             x, y, _ = wait(screen).until(lambda _: probe(screen, "cubeSpot", direction))
             return x, y
 
+        def facing(direction) -> bool:
+            n = np.asarray(direction, float) / np.linalg.norm(direction)
+            return float(np.dot(probe(screen, "viewDirection"), n)) > 0.999
+
         with motion(screen), program_previewed(EDIT_PROGRAM):
             wait_for_scene_idle(screen)
             video = DemoVideo(screen, "view-cube")
             toward = probe(screen, "viewDirection")
-            corner = spot([1 if toward[0] >= 0 else -1, 1 if toward[1] >= 0 else -1, 1])
-            video.jump(corner[0] - 320, corner[1] + 220)
+            sx, sy = (1 if toward[0] >= 0 else -1), (1 if toward[1] >= 0 else -1)
+            edge_direction = [sx, sy, 0]
+            edge = spot(edge_direction)
+            video.jump(edge[0] - 320, edge[1] + 220)
             video.caption("The view cube, top right, turns with the camera")
             video.pause(0.8)
-            video.glide(corner, 1.2)
-            video.caption("Hover a corner, edge or face; click it to look from there")
-            video.pause(1.0)
+            video.glide(edge, 1.2)
+            video.caption("Its edges are rounded: hover one and its band lights")
+            video.pause(1.2)
+            video.caption("Click an edge for the view half way between its faces")
             video.click()
-            video.live(1.2)
+            video.live(1.4)
+            assert facing(edge_direction)
+            corner_direction = [sx, -sy, 1]
+            corner = spot(corner_direction)
+            video.caption("A corner looks from three faces at once")
+            video.glide(corner, 0.9)
+            video.pause(0.8)
+            video.click()
+            video.live(1.4)
+            assert facing(corner_direction)
             top = spot([0, 0, 1])
             video.caption("A face looks straight on: here, from the top")
             video.glide(top, 0.8)
@@ -830,13 +832,121 @@ class TestReviewDemos:
             video.release()
             assert probe(screen, "viewDirection") != before
             video.pause(0.6)
-            video.caption("Home puts the camera back")
-            video.glide(_center(marked_element(screen, "camera-home")), 0.8)
+            video.caption("Reset view, under the cube, puts the camera back")
+            video.glide(_center(marked_element(screen, "camera-reset")), 0.8)
             video.click()
-            video.live(1.2)
-            video.caption("The menu beside it holds the rest of the camera tools")
-            video.glide(_center(marked_element(screen, "camera-menu")), 0.7)
+            video.live(1.4)
+            video.save()
+
+    def test_scene_panel(self, demo_screen):
+        screen = demo_screen
+        view = ui_state.urdf_scene
+        handle = waldoctl.commander.scene
+        shapes = [
+            Box(name=name, x=0.065, y=0.065, z=0.09, pose=(*point, 0, 0, 0))
+            for name, point in (
+                ("Fixture", (0.35, -0.18, 0.045)),
+                ("Clamp", (0.4, 0.05, 0.045)),
+                ("Stock", (0.55, -0.1, 0.045)),
+            )
+        ]
+        run_in_app(lambda: setattr(handle, "shapes", shapes))
+        confirmed(screen, lambda: handle.shapes == shapes)
+        with program_previewed(EDIT_PROGRAM), program_panel(screen):
+            scene_js(
+                screen,
+                "S.setCameraPose(arguments[0])",
+                [0.685, -0.4, 0.295, 0.42, -0.05, 0.05],
+            )
+            wait_for_scene_idle(screen)
+            tab = _center(marked_element(screen, "tab-scene"))
+            video = DemoVideo(screen, "scene-panel")
+            video.jump(tab[0] + 380, tab[1] - 260)
+            video.caption("The scene panel sits by the settings, beside the editor")
+            video.pause(0.6)
+            video.glide(tab, 1.2)
+            video.click(
+                settle=lambda: wait(screen).until(
+                    lambda _: marked_element(screen, "scene-tree").is_displayed()
+                )
+            )
+            video.pause(1.0)
+            video.caption("It lists everything in the scene; hover a row to find it")
+            video.glide(_center(marked_element(screen, "scene-row-Clamp")), 1.0)
+            video.pause(1.6)
+            video.caption("Click a row to select it and edit its values")
+            video.click(
+                settle=lambda: wait(screen).until(
+                    lambda _: run_in_app(lambda: view._selected_objects)
+                    == ["shape:Clamp"]
+                )
+            )
+            video.pause(0.8)
+            field = marked_element(screen, "object-z")
+            video.glide(_center(field), 0.9)
             video.click()
+            video.chord(Keys.CONTROL, "a")
+            video.type("120")
+            video.key(
+                Keys.ENTER,
+                settle=lambda: confirmed(
+                    screen,
+                    lambda: abs(
+                        next(s for s in handle.shapes if s.name == "Clamp").pose[2]
+                        - 0.12
+                    )
+                    < 1e-6,
+                ),
+            )
+            video.pause(1.2)
+            video.caption("The eye hides one from view; it is still kept out")
+            eye = _center(marked_element(screen, "scene-eye-Stock"))
+            video.glide((eye[0] - 120, eye[1]), 0.6)
+            video.glide(eye, 0.6)
+            video.click(
+                settle=lambda: wait(screen).until(
+                    lambda _: run_in_app(lambda: "shape:Stock" in view._hidden_objects)
+                )
+            )
+            video.pause(1.4)
+            video.click(
+                settle=lambda: wait(screen).until(
+                    lambda _: run_in_app(
+                        lambda: "shape:Stock" not in view._hidden_objects
+                    )
+                )
+            )
+            video.pause(0.6)
+            video.caption("+ draws a new keep-out on the floor")
+            video.glide(_center(marked_element(screen, "scene-draw")), 0.8)
+            video.click()
+            item = _settled(
+                screen, lambda: marked_element(screen, "scene-panel-draw-box")
+            )
+            video.pause(0.3)
+            video.glide(_center(item), 0.6)
+            video.click(
+                settle=lambda: wait(screen).until(
+                    lambda _: probe(screen, "drawing")["active"]
+                )
+            )
+            start, end = probe(screen, "drawingPlane", [[0.3, 0.2], [0.38, 0.28]])
+            video.glide(tuple(start), 0.8)
+            video.press()
+            video.glide(tuple(end), 2.0)
+            video.release(
+                settle=lambda: wait(screen).until(
+                    lambda _: probe(screen, "drawingHeight")
+                )
+            )
+            hx, hy, dx, dy = probe(screen, "drawingHeight")
+            video.glide((hx, hy), 0.7)
+            video.press()
+            video.glide((hx + dx * 90, hy + dy * 90), 2.0)
+            video.release(
+                settle=lambda: confirmed(screen, lambda: len(handle.shapes) == 4)
+            )
+            video.caption("It joins the list, selected")
             video.pause(2.0)
             video.save()
 
@@ -875,7 +985,7 @@ class TestReviewDemos:
                     lambda _: marked_element(screen, "workcell-library").is_displayed()
                 )
             )
-            video.caption("It opens beside the scene, which stays live")
+            video.caption("It opens in the scene panel, beside the program")
             video.pause(1.2)
             video.caption("Name the objects and save them")
             video.glide(_center(marked_element(screen, "workcell-name")), 0.8)

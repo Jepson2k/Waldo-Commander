@@ -46,6 +46,7 @@ from tests.helpers.scene_screen import (
     camera_pose,
     camera_settled,
     choose,
+    clear_selection,
     end_target_edit,
     frame_mm,
     gizmo,
@@ -274,6 +275,20 @@ def _tcp_badge(screen):
         ),
         None,
     )
+
+
+def _movement_handles(screen, shown: bool) -> None:
+    """Switch Settings › View › Movement handles to ``shown``."""
+    click_marked(screen, "tab-settings")
+    click_marked(screen, "settings-cat-view")
+    click_marked(screen, "gizmo-visibility")
+    poll(
+        lambda: waldoctl.commander.settings.view.gizmo_visible == shown,
+        5.0,
+        f"movement handles {'shown' if shown else 'hidden'}",
+    )
+    click_marked(screen, "settings-close")
+    wait(screen).until(lambda _: no_visible(screen, ".q-dialog"))
 
 
 def _hover_tcp(screen):
@@ -870,7 +885,7 @@ class TestScene:
             # and the same spot brings the gizmo back once allowed.
             wait_for_scene_idle(screen)
             badge = wait(screen).until(lambda _: _tcp_badge(screen)).rect
-            click_marked(screen, "gizmo-visibility")
+            _movement_handles(screen, False)
             try:
                 action = ActionChains(screen.selenium)
                 pointer_to(
@@ -885,7 +900,7 @@ class TestScene:
                 assert _tcp_badge(screen) is None, "Hidden left the TCP badge shown"
                 assert "gizmo" not in shown_handles(screen), "Hidden showed the gizmo"
             finally:
-                click_marked(screen, "gizmo-visibility")
+                _movement_handles(screen, True)
             _hover_tcp(screen)
             poll(lambda: shown_handles(screen) == ["gizmo"], 5.0, "the gizmo back")
             off_the_arm()
@@ -959,8 +974,7 @@ class TestScene:
             DEFAULT_CAMERA["look_at_z"],
         ]
         with camera_kept(screen):
-            click_marked(screen, "camera-menu")
-            click_marked(screen, "reset-camera")
+            click_marked(screen, "camera-reset")
             poll(
                 lambda: camera_pose(screen) == pytest.approx(default, abs=1e-6),
                 5.0,
@@ -986,7 +1000,7 @@ class TestScene:
                 "the camera to zoom out",
             )
 
-            click_marked(screen, "camera-home")
+            click_marked(screen, "camera-reset")
             poll(
                 lambda: camera_pose(screen) == pytest.approx(default, abs=1e-6),
                 5.0,
@@ -1172,7 +1186,7 @@ class TestScene:
                 centre = poll(lambda: probe(screen, "pixelOf", obj), 10.0, obj)
 
                 # Move it by its gizmo's arrow; the drop is its new pose.
-                click_marked(screen, "object-close")
+                clear_selection(screen)
                 choose(screen, *centre, "Move (drag arrows)")
                 poll(lambda: gizmo_on(obj), 5.0, "the keep-out's gizmo")
                 start = shapes()[name]

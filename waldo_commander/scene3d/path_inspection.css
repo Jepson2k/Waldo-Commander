@@ -8,7 +8,7 @@
 .wc-path-choices button { border:0; text-align:left; }
 .wc-path-choices button:hover,.wc-path-other:hover { background:var(--wc-control); }
 .wc-path-choices[hidden],.wc-path-other[hidden] { display:none; }
-.wc-path-event { position:absolute; z-index:5; width:26px; height:26px; border-radius:50%; border:1px solid var(--wc-action); background:var(--wc-surface); color:var(--wc-action); font:600 12px/1 var(--wc-font-sans); cursor:pointer; }
+.wc-path-event { position:absolute; z-index:5; width:26px; height:26px; border-radius:50%; border:1px solid var(--wc-action); background:var(--wc-surface); color:var(--wc-action); font:600 12px/1 var(--wc-font-sans); cursor:pointer; touch-action:none; }
 .wc-path-event-leader { position:absolute; z-index:4; border-top:1px solid var(--wc-action); opacity:.5; transform-origin:0 50%; pointer-events:none; }
 .wc-path-event[aria-pressed=true] { border-width:2px; background:color-mix(in srgb,var(--wc-action) 20%,var(--wc-surface)); }
 .wc-path-choices :focus-visible,.wc-path-other:focus-visible,.wc-path-event:focus-visible { outline:2px solid var(--wc-action); outline-offset:2px; }

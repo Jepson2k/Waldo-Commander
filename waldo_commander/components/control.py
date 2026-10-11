@@ -2346,14 +2346,6 @@ class ControlPanel:
             self._handles_available = self._jog_possible()
             ui_state.urdf_scene.set_handles_available(self._handles_available)
 
-    def on_gizmo_toggle(self, visible: bool) -> None:
-        """Allow the gizmo on hover, or never show it (Hidden)."""
-        waldoctl.commander.settings.view.gizmo_visible = bool(visible)
-        if ui_state.urdf_scene is None:
-            logger.warning("Cannot toggle gizmo: URDF scene not initialized")
-            return
-        ui_state.urdf_scene.refresh_handles()
-
     # ---- Robot action methods ----
 
     async def send_home(self, calibrate: bool = False) -> None:
@@ -3079,10 +3071,11 @@ class ControlPanel:
         )
 
     def _build_action_row(self) -> None:
-        """Build the action row: Home, Robot/Sim toggle, freedrive, gizmo
-        controls, step input, E-Stop."""
-        # The E-Stop rides the row's right edge out of flow; the padding
-        # reserves its 72px footprint so no control grows underneath it.
+        """Build the action row: Home, Robot/Sim toggle, freedrive, step
+        input, E-Stop."""
+        # The E-Stop rides the row's right edge out of flow, hanging down
+        # beside the jog tabs rather than up over the tool controls; the
+        # padding reserves its 72px footprint so no control grows under it.
         with ui.row().classes("gap-1 items-center relative w-full pr-20"):
             self._home_btn = (
                 ui.button(icon="home", on_click=self._on_home_click)
@@ -3121,25 +3114,6 @@ class ControlPanel:
             )
             self._freedrive_btn.set_enabled(supported)
 
-            def toggle_gizmo():
-                visible = not waldoctl.commander.settings.view.gizmo_visible
-                self.on_gizmo_toggle(visible)
-                gizmo_button.props(
-                    f"icon={'open_with' if visible else 'visibility_off'}"
-                )
-
-            gizmo_button = (
-                ui.button(
-                    icon="open_with"
-                    if waldoctl.commander.settings.view.gizmo_visible
-                    else "visibility_off",
-                    on_click=toggle_gizmo,
-                )
-                .props("round unelevated dense color=wc-control text-color=wc-text")
-                .tooltip("Show or hide movement handles")
-                .mark("gizmo-visibility")
-            )
-
             with ui.row(align_items="center").classes("gap-0 no-wrap"):
                 self._step_input = (
                     ui.number(
@@ -3163,7 +3137,7 @@ class ControlPanel:
             ui.button(icon="dangerous", on_click=self.on_estop_click).props(
                 "round unelevated color=wc-estop text-color=wc-on-fill"
             ).classes("text-2xl").style(
-                "position: absolute; right: 0; top: 50%; transform: translateY(-50%);"
+                "position: absolute; right: 0; top: 0;"
             ).tooltip("E-Stop").mark("btn-estop")
 
     def cleanup(self) -> None:

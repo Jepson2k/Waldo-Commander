@@ -1,18 +1,19 @@
 // The pointer over the view: hovering a link shows its joint's ring and the
-// tool shows the gizmo, a target glows under the pointer, a touch tap pins a
-// handle, and a tap on an object selects it.
+// tool shows the gizmo, a target glows under the pointer, a tap by a finger
+// or pen pins a handle, and a tap on an object selects it.
 //
 // A press goes to the first tool that claims it: drawing, a resize handle, a
-// gizmo handle, the shown ring, then a path. The drag it starts belongs to
-// the pointer that pressed, which is captured until the drag ends, and other
-// pointers do not reach the controls meanwhile. Escape, a cancelled pointer,
-// a lost capture or a button released out of sight end it aborted.
+// gizmo handle, the shown ring, then a path; a second finger's goes to the
+// camera. The drag it starts belongs to the pointer that pressed, which is
+// captured until the drag ends, and other pointers do not reach the controls
+// meanwhile. Escape, a cancelled pointer, a lost capture or a button released
+// out of sight end it aborted.
 //
 // Only what the pointer can act on is hit-tested: the links and the tool,
 // the shown ring's grip and the gizmo, and nodes that glow.
 
 import * as THREE from "three";
-import { GIZMO, Hover, RingDrag, TAP_PX, panelDegrees } from "./handles.js";
+import { GIZMO, Hover, RingDrag, panelDegrees, tapPx } from "./handles.js";
 import { Ring, label } from "./rings.js";
 import { niceStep } from "./precision.js";
 import { overlap } from "./overlays.js";
@@ -52,6 +53,11 @@ const DEAD_PX = 20;
 const escapeIsTheirs = (target) =>
   target instanceof Element && !!target.closest("input, textarea, select, [contenteditable], .cm-editor, .q-dialog, .q-menu");
 const EDGE_ON = 0.14;
+// A finger that misses every gizmo handle takes the nearest one within about
+// 20 px: the offsets it is tried at, nearest ring first.
+const FINGER_OFFSETS = [7, 14, 20].flatMap((r) =>
+  Array.from({ length: 8 }, (_, k) => [r * Math.cos((k * Math.PI) / 4), r * Math.sin((k * Math.PI) / 4)]),
+);
 const onScreen = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
 const onPlane = new THREE.Plane();
 
@@ -287,8 +293,19 @@ export class Pointer {
     return null;
   }
 
-  // The gizmo handles under (x, y), from every control attached.
-  handlesAt(x, y) {
+  // The gizmo handles under (x, y), from every control attached; for a
+  // finger, the nearest ones when none is under it.
+  handlesAt(x, y, pointerType = "mouse") {
+    const found = this.handlesOn(x, y);
+    if (found.length || pointerType !== "touch") return found;
+    for (const [dx, dy] of FINGER_OFFSETS) {
+      const near = this.handlesOn(x + dx, y + dy);
+      if (near.length) return near;
+    }
+    return found;
+  }
+
+  handlesOn(x, y) {
     const p = this.ndc(x, y);
     const found = [];
     for (const tc of this.core.gizmos.all()) {
@@ -296,6 +313,15 @@ export class Pointer {
       if (handle) found.push({ tc, axis: handle.axis, mode: handle.mode });
     }
     return found;
+  }
+
+  // How far (x, y) is on screen from where `point` is drawn, in pixels.
+  pixelsFrom(point, x, y) {
+    const r = this.core.overlays.framing ? this.core.overlays.view : this.core.canvas.getBoundingClientRect();
+    const c = onScreen[0].copy(point).project(this.core.camera);
+    if (c.z > 1) return Infinity;
+    const p = this.ndc(x, y);
+    return Math.hypot(((p.x - c.x) * r.width) / 2, ((p.y - c.y) * r.height) / 2);
   }
 
   // Every named node under (x, y), nearest first, for the context menu, and
@@ -347,12 +373,14 @@ export class Pointer {
 
   down(e) {
     if (e.button !== 0 || e.ctrlKey || this.drag || this.core.gestures.blocked) return;
+    // A second finger pinches or turns the camera; it grabs nothing.
+    if (e.pointerType === "touch" && this.pressed.size > 1) return;
     const x = e.clientX, y = e.clientY;
     // A press anywhere in the view puts away the values riding on the handles.
     this.core.gizmos.precision.dismiss();
     this.core.resizeHandles.dismiss();
     for (const tool of this.tools) {
-      if (!tool.hit(x, y)) continue;
+      if (!tool.hit(x, y, e.pointerType)) continue;
       this.suppressTap(e.pointerId);
       e.stopImmediatePropagation();
       // The drag re-projects against the camera, which must hold still.
@@ -426,11 +454,12 @@ export class Pointer {
 
   tapped(e, tap) {
     if (tap.suppressed || e.button !== 0 || this.core.gestures.active) return;
-    if (Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > TAP_PX) return;
+    if (Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > tapPx(e.pointerType)) return;
     if (e.target !== this.core.canvas) return;
-    if (this.handlesAt(e.clientX, e.clientY).length) return;
+    if (this.handlesAt(e.clientX, e.clientY, e.pointerType).length) return;
     const hit = this.hit(e.clientX, e.clientY);
-    if (hit && hit.source !== undefined && e.pointerType === "touch") this.hover.tap(hit.source);
+    // A pointer that may not hover, a pen among them, pins what it taps.
+    if (hit && hit.source !== undefined && e.pointerType !== "mouse") this.hover.tap(hit.source);
     else if (!hit) this.hover.miss();
     this.core.selection.tap(e.clientX, e.clientY, tap.shift, hit);
     this.schedule();

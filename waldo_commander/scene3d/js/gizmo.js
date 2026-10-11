@@ -11,7 +11,7 @@ import * as THREE from "three";
 import { SceneTransform } from "./transform.js";
 import { reducedMotion } from "./fx.js";
 import { Precision } from "./precision.js";
-import { TAP_PX } from "./handles.js";
+import { tapPx } from "./handles.js";
 
 const BALL_RADIUS_M = 0.008;
 const SPRING_MS = 520;
@@ -101,9 +101,9 @@ export class Gizmos {
 
   // ---- the pointer's tool ---------------------------------------------------
 
-  hit(x, y) {
+  hit(x, y, pointerType) {
     if (this.core.gestures.active) return false;
-    this.pressed = this.core.pointer.handlesAt(x, y)[0] || (this.springHandle(x, y) ? SPRINGING : null);
+    this.pressed = this.core.pointer.handlesAt(x, y, pointerType)[0] || (this.springHandle(x, y) ? SPRINGING : null);
     return !!this.pressed;
   }
 
@@ -123,9 +123,10 @@ export class Gizmos {
     tc.axis = axis;
     tc.mode = mode;
     if (!tc.begin(e)) return null;
+    this.drag.mouse = e.pointerType === "mouse";
     const x = e.clientX, y = e.clientY;
     const release = (event) => {
-      if (Math.hypot(event.clientX - x, event.clientY - y) > TAP_PX) tc.release(event);
+      if (Math.hypot(event.clientX - x, event.clientY - y) > tapPx(event.pointerType)) tc.release(event);
       else this.clicked(tc, axis, mode);
     };
     return { g: this.drag.g, move: (event) => tc.drag(event), release, cancel: (reason) => this.core.gestures.abort(reason) };
@@ -339,6 +340,7 @@ export class Gizmos {
     if (!drag || drag.tc !== tc) return;
     // Letting go on purpose ends the drag aborted, recorded before this ran.
     if (drag.ending) return;
+    this.unlight(drag);
     let fields = {};
     if (kind === "tcp") fields = this.ballPose();
     else {
@@ -372,6 +374,7 @@ export class Gizmos {
     if (drag && drag.tc === tc) drag.ending = reason;
     if (tc.dragging) tc.pointerUp();
     if (drag && drag.tc === tc) {
+      this.unlight(drag);
       this.finishDrag(false);
       if (drag.kind === "tcp") {
         this.ball.position.set(0, 0, 0);
@@ -380,6 +383,12 @@ export class Gizmos {
     }
     this.core.pointer.restoreOrbit();
     this.core.requestRender();
+  }
+
+  // A mouse's next move lights the handle under it; nothing else would put
+  // out the one a finger, a pen or a typed change dragged.
+  unlight(drag) {
+    if (!drag.mouse) drag.tc.setHover(null);
   }
 
   // A released drag keeps what it shows until the app answers; an aborted

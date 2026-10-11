@@ -1,15 +1,23 @@
 """Shared translation and rotation handles on a real pointer selection."""
 
+import math
+
 import numpy as np
 import pytest
 import waldoctl
 from scipy.spatial.transform import Rotation
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    StaleElementReferenceException,
+)
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from waldoctl.shapes import Box, Cylinder
 
 from tests.helpers.browser_helpers import (
     click_marked,
+    marked_element,
     run_in_app,
     viewport,
 )
@@ -17,6 +25,9 @@ from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     at_start,
+    camera_action,
+    camera_settled,
+    clear_selection,
     click_object,
     click_spot,
     confirmed,
@@ -35,21 +46,28 @@ from waldo_commander.state import ui_state
 from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
 
 
+def _focused(screen):
+    """Focus the selection from the scene panel, as a user whose panel
+    covers it would, and wait until the camera has framed it."""
+    click_marked(screen, "object-focus")
+    camera_settled(screen)
+
+
 def _assert_handle_clearance(screen):
     overlap = screen.selenium.execute_script("""
-        const card=document.querySelector('.wc-object-inspector').getBoundingClientRect();
+        const card=document.querySelector('.scene-panel').getBoundingClientRect();
         return [...document.querySelectorAll('.wc-axis-label')]
           .filter(e=>e.getClientRects().length)
           .filter(e=>{const b=e.getBoundingClientRect(); return b.left<card.right && b.right>card.left && b.top<card.bottom && b.bottom>card.top;})
           .map(e=>e.textContent);
     """)
-    assert not overlap, f"Inspector covers movement labels: {overlap}"
+    assert not overlap, f"The scene panel covers movement labels: {overlap}"
 
 
 def _assert_coordinate_readability(screen):
     clipped = screen.selenium.execute_script("""
         const ctx=document.createElement('canvas').getContext('2d');
-        return [...document.querySelectorAll('.wc-object-inspector input[type=number]')]
+        return [...document.querySelectorAll('.scene-properties input[type=number]')]
           .filter(e=>e.getClientRects().length)
           .map(e=>{
             const style=getComputedStyle(e);
@@ -58,7 +76,19 @@ def _assert_coordinate_readability(screen):
               available:e.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)};
           }).filter(e=>e.needed>e.available+1);
     """)
-    assert not clipped, f"Inspector clips coordinate values: {clipped}"
+    assert not clipped, f"The properties clip coordinate values: {clipped}"
+
+
+def _field_value(screen, marker) -> float | None:
+    """The number the field marked ``marker`` shows."""
+    try:
+        element = marked_element(screen, marker)
+        if element.tag_name != "input":
+            element = element.find_element(By.CSS_SELECTOR, "input")
+        text = element.get_attribute("value")
+    except (NoSuchElementException, StaleElementReferenceException):
+        return None
+    return float(text) if text else None
 
 
 @pytest.fixture(scope="class")
@@ -89,7 +119,7 @@ class TestSelectionTransform:
             confirmed(screen, lambda: handle.shapes[1].name == "Fixture B")
             fill(screen, "object-y", -180)
             confirmed(screen, lambda: handle.shapes[1].pose[1] == -0.18)
-            click_marked(screen, "object-close")
+            clear_selection(screen)
             evidence = VisualEvidence(
                 screen, "object-selection", synchronized_frames=True
             )
@@ -101,6 +131,7 @@ class TestSelectionTransform:
                 )
                 before = tuple(handle.shapes)
                 history = len(view.object_history.undo_stack)
+                _focused(screen)
                 evidence.capture("01-selected-pair-1920")
                 _assert_handle_clearance(screen)
                 spot = wait(screen).until(
@@ -174,10 +205,10 @@ class TestSelectionTransform:
                 wait_for_scene_idle(screen)
                 evidence.stop()
                 with viewport(screen, 1366, 768):
-                    wait_for_scene_idle(screen)
+                    _focused(screen)
                     evidence.capture("05-selection-controls-1366")
                     _assert_handle_clearance(screen)
-                click_marked(screen, "object-close")
+                clear_selection(screen)
                 click_object(screen, "shape:Fixture A")
                 wait(screen).until(
                     lambda _: run_in_app(
@@ -201,12 +232,18 @@ class TestSelectionTransform:
                 assert Rotation.from_euler(
                     "xyz", handle.shapes[0].pose[3:]
                 ).as_matrix() == pytest.approx(expected.as_matrix())
+                _focused(screen)
                 evidence.capture("06-single-object-world-rotation-1920")
                 _assert_handle_clearance(screen)
-                assert run_in_app(lambda: view._object_orientation.value)
+                # The rotation fields follow a turn made with the handles.
+                turned = math.degrees(handle.shapes[0].pose[3])
+                wait(screen).until(
+                    lambda _: _field_value(screen, "object-rx")
+                    == pytest.approx(turned, abs=2e-3)
+                )
                 _assert_coordinate_readability(screen)
                 with viewport(screen, 1366, 768):
-                    wait_for_scene_idle(screen)
+                    _focused(screen)
                     evidence.capture("06b-single-object-world-rotation-1366")
                     _assert_handle_clearance(screen)
                     _assert_coordinate_readability(screen)
@@ -253,6 +290,9 @@ class TestSelectionTransform:
         run_in_app(lambda: setattr(handle, "shapes", originals))
         confirmed(screen, lambda: handle.shapes == originals)
         with viewport(screen, 1920, 1080):
+            # From the home view, not wherever the last test left the camera.
+            camera_action(screen, "reset")
+            camera_settled(screen)
             click_object(screen, "shape:Pending box")
             click_object(screen, "shape:Pending cylinder", shift=True)
             wait(screen).until(

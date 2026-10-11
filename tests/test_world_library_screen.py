@@ -30,6 +30,7 @@ from tests.helpers.scene_screen import (
 from tests.helpers.scene_surface import wait_for_scene_idle
 from tests.helpers.visual_evidence import VisualEvidence, preserve_capture_buffers
 from tests.helpers.wait import screen_wait_for_scene_ready
+from tests.test_object_editing_screen import in_scene_panel
 from waldo_commander.services import world_files
 from waldo_commander.state import ui_state
 
@@ -37,9 +38,7 @@ from waldo_commander.state import ui_state
 def _library(screen):
     point = wait(screen).until(lambda _: probe(screen, "floorSpot"))
     choose(screen, *point[:2], "Workcell library…")
-    wait(screen).until(
-        lambda _: marked_element(screen, "workcell-library").is_displayed()
-    )
+    wait(screen).until(lambda _: in_scene_panel(screen, "workcell-library"))
 
 
 @pytest.mark.browser

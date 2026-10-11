@@ -57,6 +57,11 @@ export default {
     camera_action(action, surface=null) {
       this.core.navigation.action(action, surface);
     },
+    // Lights the object `id` names as a hover over it would; null: none.
+    glow_object(id) {
+      const entity = id === null ? null : [...this.core.selection.entities.values()].find((e) => e.id === id);
+      this.core.pointer.setGlow(entity ? this.core.nodes.get(entity.node) : null);
+    },
     clear_inspection(revision) {
       if (revision === this.core.inspection.data?.revision) this.core.inspection.clear();
     },

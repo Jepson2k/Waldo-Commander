@@ -1,5 +1,5 @@
-"""Save, reload and insert workcells through the library card, beside a scene
-that stays editable, with real world history."""
+"""Save, reload and insert workcells through the library in the scene panel,
+beside a scene that stays editable, with real world history."""
 
 import ast
 import asyncio
@@ -16,6 +16,7 @@ from tests.helpers.wait import wait_until
 from tests.test_scene_jog_handles import _open, _start_recording
 from waldo_commander.services import world_files
 from waldo_commander.services.programs import is_any_program_recording
+from waldo_commander.state import ui_state
 
 
 def library(user, view):
@@ -77,8 +78,14 @@ async def test_workcell_library_save_load_undo_stale_file_and_insert(
     await confirmed(view, lambda: handle.shapes[0].name == "Fixture")
     original = handle.shapes[0]
 
-    library(user, view)
-    await user.should_see("1 editable object in the scene")
+    # The panel's Workcells button opens the library at the top of the panel.
+    panel = ui_state.scene_panel
+    user.find(marker="scene-close").click()
+    assert not panel.is_open
+    user.find(marker="scene-workcells").click()
+    await user.should_see(marker="workcell-library")
+    assert panel.is_open
+    assert panel.body in element(user, "workcell-library").ancestors()
     assert await wait_until(lambda: element(user, "workcell-empty") is not None, 3)
     assert "Nothing saved yet" in element(user, "workcell-empty").text
     value(user, "workcell-name", "../escape")

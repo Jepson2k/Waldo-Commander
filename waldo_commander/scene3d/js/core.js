@@ -326,7 +326,6 @@ export class SceneCore {
     this.renderer.render(this.scene, this.camera);
     this.labels.render(this.scene, this.camera);
     this.gizmos.layout();
-    this.selection.layout();
     this.resizeHandles.layout();
     this.drawingTool.layout();
     this.pointer.ring?.layoutLabels();

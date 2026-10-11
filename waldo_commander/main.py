@@ -52,6 +52,7 @@ from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.readout import StatusFooter
 from waldo_commander.components.scene_camera import build_camera_menu
+from waldo_commander.components.scene_panel import ScenePanel
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.waldo import Mood, Waldo
 from waldo_commander.components.settings import (
@@ -922,14 +923,12 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         help_menu=help_menu,
     )
 
-    # ---- Bottom rail: plugin tabs (if any) over the gear ----
-    has_bottom_plugins = any(
-        p.slot is PanelSlot.LEFT_BOTTOM_TAB for p in ui_state.plugin_panels
-    )
+    # ---- Bottom rail: the scene and plugin tabs over the gear ----
+    scene_panel = ui_state.scene_panel = ScenePanel()
     with ui.element("div").classes("side-tab-bar bottom-rail absolute bottom-0 left-0"):
         with ui.tabs(value=None).props("vertical") as bottom_tabs:
+            scene_panel.build_tab(bottom_tabs)
             _add_plugin_tabs(PanelSlot.LEFT_BOTTOM_TAB)
-        bottom_tabs.set_visibility(has_bottom_plugins)
         (
             ui.button(icon="tune", on_click=ui_state.settings_content.open)
             .props("flat dense color=wc-text")
@@ -938,12 +937,19 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             .mark("tab-settings")
         )
 
-    # ---- Bottom panels container (plugins only) ----
+    # ---- Bottom panels container ----
     with (
         ui.tab_panels(bottom_tabs, value=None)
         .props("vertical animated transition-prev=slide-up transition-next=slide-down")
         .classes("left-panels-container bottom-panels-container") as bottom_panels
     ):
+
+        def close_bottom_panels():
+            bottom_tabs.value = None
+            bottom_panels.value = None
+            ui.run_javascript("PanelResize.onTabChange('bottom', '')")
+
+        scene_panel.build(close_bottom_panels)
         _add_plugin_tab_panels(PanelSlot.LEFT_BOTTOM_TAB, commander)
 
         def handle_bottom_tab_change(e):
@@ -1005,7 +1011,7 @@ def _setup_panel_persistence(refs: dict) -> None:
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_TOP_TAB
                     }
-                    bottom_valid = {
+                    bottom_valid = {"scene"} | {
                         p.id
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_BOTTOM_TAB

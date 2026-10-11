@@ -39,7 +39,8 @@ const typed=(v)=>String(Number(v.toFixed(2)));
 
 // A value riding on a handle: what a drag changes, and, clicked, a field to
 // type the change into. Enter applies it, Esc puts it away, Tab moves it on
-// to the next axis.
+// to the next axis. For a finger, whose keypad may have neither Enter nor a
+// minus, keys beside it flip the sign and apply it.
 export class HandleField {
   constructor(core,name,{open,commit,cancel,cycle,hover=null}) {
     this.core=core;this.name=name;this.text=null;this.candidates=[[0,0],[0,0],[0,0]];
@@ -48,15 +49,26 @@ export class HandleField {
     this.input=element("input","",node);this.input.hidden=true;this.input.type="text";
     this.input.inputMode="decimal";this.input.autocomplete="off";this.input.spellcheck=false;
     this.unit=element("span","wc-gizmo-field-unit",node);
+    this.keys=element("span","wc-gizmo-field-keys",node);this.keys.hidden=true;
+    // A key's press leaves the focus, and so the keypad, with the field.
+    this.keys.onpointerdown=(e)=>e.preventDefault();
+    const negate=element("button","",this.keys,"±");negate.type="button";negate.setAttribute("aria-label","Flip the sign");
+    const apply=element("button","",this.keys,"✓");apply.type="button";apply.setAttribute("aria-label","Apply");
     core.overlays.track(name,node);
     this.value.onclick=()=>open();
-    node.onsubmit=(e)=>{
-      e.preventDefault();
+    const submit=()=>{
       const text=this.input.value.trim().replace(/\u2212/g,"-");
       if(!text){cancel();return;}
       const value=Number(text);
       if(Number.isFinite(value))commit(value);
       else this.invalid();
+    };
+    node.onsubmit=(e)=>{e.preventDefault();submit();};
+    apply.onclick=submit;
+    negate.onclick=()=>{
+      const text=this.input.value.trim();
+      this.input.value=/^[-\u2212]/.test(text)?text.slice(1):`-${text.replace(/^\+/,"")}`;
+      this.input.focus();
     };
     node.onkeydown=(e)=>{
       if(this.typing&&e.key==="Escape"){cancel();e.preventDefault();}
@@ -83,7 +95,7 @@ export class HandleField {
   // A field for the change `what` names, holding `initial`.
   edit(initial,unit,what) {
     this.text=null;
-    setHidden(this.node,false);setHidden(this.value,true);setHidden(this.input,false);
+    setHidden(this.node,false);setHidden(this.value,true);setHidden(this.input,false);setHidden(this.keys,false);
     this.input.removeAttribute("aria-invalid");this.input.value=initial;
     setText(this.unit,unit);setAttr(this.input,"aria-label",`${what} change in ${unit==="°"?"degrees":"millimetres"}`);
     this.input.focus();this.input.select();
@@ -94,7 +106,7 @@ export class HandleField {
   }
 
   close() {
-    setHidden(this.input,true);setHidden(this.value,false);this.text=null;
+    setHidden(this.input,true);setHidden(this.keys,true);setHidden(this.value,false);this.text=null;
   }
 
   hide() {
@@ -127,7 +139,7 @@ const ROTATIONS={X:"Rx",Y:"Ry",Z:"Rz"};
 const unitOf=(mode)=>mode==="rotate"?"°":"mm";
 const nameOf=(mode,letter)=>mode==="rotate"?ROTATIONS[letter]:letter;
 // What a value on a handle keeps clear of.
-export const FIELD_AVOIDS=["inspector","teaching","library"];
+export const FIELD_AVOIDS=["teaching"];
 
 // The gizmos' instrument and values: a drag draws its scale in the scene and
 // its change on the handle it moves; a handle clicked, or the value clicked

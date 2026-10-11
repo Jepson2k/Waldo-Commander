@@ -2,8 +2,11 @@
 
 import pytest
 import waldoctl
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    StaleElementReferenceException,
+)
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import (
@@ -12,11 +15,12 @@ from tests.helpers.browser_helpers import (
     run_in_app,
     viewport,
 )
-from tests.helpers.browser_session import wait
+from tests.helpers.browser_session import no_visible, wait
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     at_start,
     choose,
+    clear_selection,
     click_object,
     confirmed,
     fill,
@@ -33,6 +37,17 @@ from tests.helpers.scene_surface import (
 from tests.helpers.visual_evidence import VisualEvidence, preserve_capture_buffers
 from tests.helpers.wait import screen_wait_for_scene_ready
 from waldo_commander.state import ui_state
+
+
+def in_scene_panel(screen, marker) -> bool:
+    """Whether the element marked ``marker`` shows in the scene panel."""
+    try:
+        element = marked_element(screen, marker)
+        return element.is_displayed() and screen.selenium.execute_script(
+            "return !!arguments[0].closest('.scene-panel')", element
+        )
+    except (NoSuchElementException, StaleElementReferenceException):
+        return False
 
 
 @pytest.fixture(scope="class")
@@ -66,7 +81,11 @@ class TestObjectEditing:
                 fill(screen, "object-dim-y", 130)
                 confirmed(screen, lambda: handle.shapes[0].y == 0.13)
                 object_mode(screen, "Move")
-                click_marked(screen, "object-close")
+                clear_selection(screen)
+                click_marked(screen, "scene-close")
+                wait(screen).until(
+                    lambda _: run_in_app(lambda: not ui_state.scene_panel.is_open)
+                )
                 px, py = scene_object_pixel(screen, "shape:Fixture")
                 choose(screen, px, py, "Edit object")
                 wait(screen).until(
@@ -74,20 +93,9 @@ class TestObjectEditing:
                         lambda: view._selected_objects == ["shape:Fixture"]
                     )
                 )
+                # Selecting the object opens the scene panel on its properties.
+                wait(screen).until(lambda _: in_scene_panel(screen, "object-inspector"))
                 wait_for_scene_idle(screen)
-                # The inspector docks above the control panel, right edges
-                # aligned, however the object sits on screen.
-                card = marked_element(screen, "object-inspector").rect
-                panel = screen.selenium.find_element(
-                    By.CSS_SELECTOR, ".overlay-br"
-                ).rect
-                assert card["x"] + card["width"] == pytest.approx(
-                    panel["x"] + panel["width"], abs=2
-                ), (card, panel)
-                assert 0 < panel["y"] - (card["y"] + card["height"]) <= 24, (
-                    card,
-                    panel,
-                )
                 evidence.capture("01-right-click-inspector-1920")
                 initial = handle.shapes[0]
                 spot = wait(screen).until(
@@ -118,11 +126,22 @@ class TestObjectEditing:
                 fill(screen, "object-x", 450)
                 confirmed(screen, lambda: handle.shapes[-1].pose[0] == 0.45)
                 evidence.capture("05-duplicate-1920")
+                copy = handle.shapes[-1].name
                 click_marked(screen, "object-actions")
                 click_marked(screen, "object-hide")
-                click_marked(screen, "object-close")
+                wait(screen).until(
+                    lambda _: run_in_app(
+                        lambda: view._hidden_objects == {f"shape:{copy}"}
+                    )
+                )
+                wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+                clear_selection(screen)
+                assert len(handle.shapes) == 2
                 evidence.capture("06-hidden-recovery-1920")
-                click_marked(screen, "object-show-hidden")
+                click_marked(screen, f"scene-eye-{copy}")
+                wait(screen).until(
+                    lambda _: run_in_app(lambda: not view._hidden_objects)
+                )
                 click_object(screen, "shape:Fixture")
                 wait(screen).until(
                     lambda _: run_in_app(

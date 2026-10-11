@@ -1,32 +1,42 @@
-// The view cube: a cube in the view's top right that turns with the camera,
-// each face named for the view it gives. A press on a face, edge or corner
-// turns the camera to look from there about the orbit target; a drag on it
-// orbits the camera.
+// The view cube: a rounded cube in the view's top right that turns with the
+// camera, each face named for the view it gives. A press on a face, edge or
+// corner turns the camera to look from there about the orbit target, so an
+// edge gives the view half way between its two faces; a drag on it orbits
+// the camera.
 //
 // It is drawn into its own square of the canvas after the scene. A box of
 // the page over that square takes its pointer events, so none of them reach
 // the scene's tools or orbit.
 
 import * as THREE from "three";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { setStyle } from "./dom.js";
 
-// How wide an edge's or corner's band is, as a fraction of a side.
-const BAND = 0.2;
+// How wide an edge's or corner's band is, as a fraction of a side: wide
+// enough that an edge is as easy to press as a face.
+const BAND = 0.26;
+// The rounding of the edges and corners, as a fraction of a side, and the
+// steps each rounding is drawn in.
+const ROUND = 0.16;
+const ROUND_STEPS = 5;
 // The drawing's half-width in sides: the cube and its axes past the corner.
-const EXTENT = 1;
+const EXTENT = 0.86;
 const TEXTURE = 256;
+// Where else a point is looked for, in pixels, when the ray there finds nothing.
+const NUDGES = [[0, 0], [0.3, 0.3], [-0.3, -0.3]];
 // How far a press may move and still be a click, in pixels.
 const SLOP = { mouse: 4, pen: 4, touch: 10 };
 // How far a drag across the whole cube turns the camera, in radians.
 const TURN = Math.PI;
-// The brightness of a face seen edge on; a face seen square on is full.
+// The brightness of a face seen edge on; a face seen square on is full. It
+// is the lights' share, so a rounded edge shades from one face to the next.
 const SHADE = 0.62;
 // How close to straight up or down an orbit may look.
 const POLE = 1e-6;
 // The axes run along the edges from the left front bottom corner, just
 // outside the cube, and past it a little.
 const AXIS_OFFSET = 0.035;
-const AXIS_END = 0.62;
+const AXIS_END = 0.56;
 const AXIS_RADIUS = 0.022;
 
 // Each face: the direction it is seen from, and its right and up as its
@@ -40,8 +50,10 @@ export const FACES = [
   { label: "BOTTOM", n: [0, 0, -1], r: [1, 0, 0], u: [0, -1, 0] },
 ];
 
+// The faces in the order a box geometry's groups are: +x, -x, +y, -y, +z, -z.
+const BOX_ORDER = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+
 const offset = new THREE.Vector3();
-const facing = new THREE.Vector3();
 const ndc = new THREE.Vector2();
 const raycaster = new THREE.Raycaster();
 
@@ -116,29 +128,35 @@ export class ViewCube {
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-EXTENT, EXTENT, EXTENT, -EXTENT, 0.1, 10);
-    const plane = new THREE.PlaneGeometry(1, 1);
+    // Lit from the viewer, so the rounding reads as an edge between faces.
+    this.scene.add(new THREE.AmbientLight(0xffffff, SHADE * Math.PI));
+    this.light = new THREE.DirectionalLight(0xffffff, (1 - SHADE) * Math.PI);
+    this.scene.add(this.light);
     const anisotropy = Math.min(8, core.renderer.capabilities.getMaxAnisotropy());
-    this.faces = FACES.map((spec) => {
+    this.faces = BOX_ORDER.map((n) => {
+      const spec = FACES.find((f) => f.n.every((v, i) => v === n[i]));
       const canvas = document.createElement("canvas");
       canvas.width = canvas.height = TEXTURE;
       const texture = new THREE.CanvasTexture(canvas);
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.anisotropy = anisotropy;
-      const mesh = new THREE.Mesh(plane, new THREE.MeshBasicMaterial({ map: texture }));
-      const [n, r, u] = [spec.n, spec.r, spec.u].map((v) => new THREE.Vector3(...v));
-      mesh.matrix.makeBasis(r, u, n).setPosition(n.clone().multiplyScalar(0.5));
-      mesh.matrixAutoUpdate = false;
-      const face = { ...spec, normal: n, mesh, ctx: canvas.getContext("2d"), texture };
-      mesh.userData.face = face;
-      this.scene.add(mesh);
-      return face;
+      const material = new THREE.MeshLambertMaterial({ map: texture });
+      return { ...spec, material, ctx: canvas.getContext("2d"), texture };
     });
-    this.meshes = this.faces.map((face) => face.mesh);
-
-    this.edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), new THREE.LineBasicMaterial({ transparent: true }));
-    // Just outside the faces, so they never hide their own edges.
-    this.edges.scale.setScalar(1.003);
-    this.scene.add(this.edges);
+    const geometry = new RoundedBoxGeometry(1, 1, 1, ROUND_STEPS, ROUND);
+    // Each face's picture spans its side as seen square on, the rounding
+    // included, so a band painted at its border lies over the rounding.
+    const position = geometry.attributes.position;
+    const uv = geometry.attributes.uv;
+    for (const group of geometry.groups) {
+      const face = this.faces[group.materialIndex];
+      for (let v = group.start; v < group.start + group.count; v++) {
+        const p = [position.getX(v), position.getY(v), position.getZ(v)];
+        uv.setXY(v, 0.5 + dot(p, face.r), 0.5 + dot(p, face.u));
+      }
+    }
+    this.mesh = new THREE.Mesh(geometry, this.faces.map((face) => face.material));
+    this.scene.add(this.mesh);
 
     const corner = -0.5 - AXIS_OFFSET;
     const length = AXIS_END - corner;
@@ -173,13 +191,12 @@ export class ViewCube {
       lit: app.action || token("action"),
       litLabel: token("on-bright"),
     };
-    // One size for every label, the longest filling most of a face.
+    // One size for every label, the longest filling a face's flat middle.
     const ctx = this.faces[0].ctx;
     ctx.font = `600 100px ${family}`;
     const widest = Math.max(...this.faces.map((face) => ctx.measureText(face.label).width));
-    const size = Math.floor(Math.min(0.2 * TEXTURE, (0.72 * TEXTURE * 100) / widest));
+    const size = Math.floor(Math.min(0.2 * TEXTURE, ((1 - 2 * ROUND) * 0.9 * TEXTURE * 100) / widest));
     this.font = `600 ${size}px ${family}`;
-    setColor(this.edges.material, token("glass-border"));
     ["X", "Y", "Z"].forEach((letter, i) => setColor(this.axes[i].material, app[`axis${letter}`] || token(`axis-${letter.toLowerCase()}`)));
     for (const face of this.faces) this.paint(face);
     this.core.requestRender();
@@ -220,14 +237,13 @@ export class ViewCube {
     return true;
   }
 
-  // The cube's camera looks as the view's does.
+  // The cube's camera looks as the view's does, its light from behind it.
   orient() {
     const q = this.core.camera.quaternion;
     this.camera.quaternion.copy(q);
     this.camera.position.set(0, 0, 4).applyQuaternion(q);
     this.camera.updateMatrixWorld();
-    facing.set(0, 0, 1).applyQuaternion(q);
-    for (const face of this.faces) face.mesh.material.color.setScalar(SHADE + (1 - SHADE) * Math.max(0, face.normal.dot(facing)));
+    this.light.position.copy(this.camera.position);
   }
 
   // The face, edge or corner at (x, y) in the cube's box, as a direction of
@@ -236,11 +252,16 @@ export class ViewCube {
     const size = this.at?.size;
     if (!size) return null;
     this.orient();
-    ndc.set((x / size) * 2 - 1, 1 - (y / size) * 2);
-    raycaster.setFromCamera(ndc, this.camera);
-    const hit = raycaster.intersectObjects(this.meshes, false)[0];
+    let hit = null;
+    // A ray down the seam between two faces can pass between their triangles.
+    for (const [dx, dy] of NUDGES) {
+      ndc.set(((x + dx) / size) * 2 - 1, 1 - ((y + dy) / size) * 2);
+      raycaster.setFromCamera(ndc, this.camera);
+      hit = raycaster.intersectObject(this.mesh, false)[0];
+      if (hit) break;
+    }
     if (!hit) return null;
-    const face = hit.object.userData.face;
+    const face = this.faces[hit.face.materialIndex];
     const p = hit.point.toArray();
     const along = (axis) => {
       const c = dot(p, axis);
@@ -251,7 +272,8 @@ export class ViewCube {
     return face.n.map((v, i) => v + a * face.r[i] + b * face.u[i]);
   }
 
-  // Before anything is written in a frame: where the cube and its buttons are.
+  // Before anything is written in a frame: where the cube and the buttons
+  // under it are.
   measure() {
     const box = this.box;
     const size = box.offsetWidth;
@@ -276,6 +298,7 @@ export class ViewCube {
       if (r.width) {
         area.left = Math.min(area.left, r.left - view.left);
         area.top = Math.min(area.top, r.top - view.top);
+        area.right = Math.max(area.right, r.right - view.left);
         area.bottom = Math.max(area.bottom, r.bottom - view.top);
       }
     }

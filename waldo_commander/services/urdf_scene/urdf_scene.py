@@ -1817,6 +1817,8 @@ class UrdfScene(
         self.update_tcp_pose_from_tool(tool_key, variant_key=variant_key)
         self.swap_tool_mesh(tool_key, variant_key=variant_key)
         self.invalidate_fk_cache()
+        # The scene panel's list names the tool on the arm.
+        self._refresh_object_inspector()
 
     def apply_tool_everywhere(
         self, tool_key: str, variant_key: str | None = None

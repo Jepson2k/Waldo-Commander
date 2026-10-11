@@ -16,14 +16,14 @@ from tests.helpers.browser_helpers import (
     run_in_app,
     viewport,
 )
-from tests.helpers.browser_session import wait
+from tests.helpers.browser_session import no_visible, wait
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     at_start,
     camera_action,
-    camera_menu,
     camera_settled,
     choose,
+    clear_selection,
     confirmed,
     create_shape,
     object_mode,
@@ -86,6 +86,16 @@ def _footprint(screen, points):
         )
     action.perform()
     wait(screen).until(lambda _: probe(screen, "drawing")["width"] > 0)
+
+
+def _hide_and_deselect(screen):
+    """Hide the selected object and clear the selection, so neither it nor
+    its handles take a press meant for the floor."""
+    click_marked(screen, "object-actions")
+    click_marked(screen, "object-hide")
+    # A closing menu still covers the view and would swallow the click.
+    wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+    clear_selection(screen)
 
 
 def _readout_clear_of_box(screen):
@@ -276,16 +286,14 @@ class TestShapeDrawing:
             )
             try:
                 if run_in_app(lambda: bool(ui_state.urdf_scene._selected_objects)):
-                    click_marked(screen, "object-actions")
-                    click_marked(screen, "object-hide")
-                    click_marked(screen, "object-close")
+                    _hide_and_deselect(screen)
                 create_shape(screen, "box", "Tilted fixture")
                 object_mode(screen, "Move")
                 fill(screen, "object-rx", 25)
                 confirmed(screen, lambda: handle.shapes[-1].pose[3] > 0.4)
                 fixture = handle.shapes[-1]
                 # Selected, its own handles would take the press on its face.
-                click_marked(screen, "object-close")
+                clear_selection(screen)
                 x, y = project_local(
                     screen, f"shape:{fixture.name}", [[0, 0, fixture.z / 2]]
                 )[0]
@@ -322,9 +330,7 @@ class TestShapeDrawing:
                 )
                 assert distance == pytest.approx(fixture.z / 2 + 0.03, abs=0.002)
                 evidence.capture("02-face-cylinder-created-1920")
-                click_marked(screen, "object-actions")
-                click_marked(screen, "object-hide")
-                click_marked(screen, "object-close")
+                _hide_and_deselect(screen)
                 _draw_floor(screen, "sphere")
                 _footprint(screen, [[0, 0], [0.05, 0]])
                 evidence.capture("03-sphere-radius-preview-1920")
@@ -355,7 +361,6 @@ class TestShapeDrawing:
             try:
                 set_projection(screen, "Orthographic")
                 camera_action(screen, "top")
-                click_marked(screen, "camera-menu")
                 camera_settled(screen)
                 _draw_floor(screen, "box")
                 _footprint(screen, [[-0.05, -0.04], [0.05, 0.04]])
@@ -377,12 +382,9 @@ class TestShapeDrawing:
             finally:
                 evidence.stop()
                 ActionChains(screen.selenium).send_keys(Keys.ESCAPE).release().perform()
-            click_marked(screen, "object-actions")
-            click_marked(screen, "object-hide")
-            click_marked(screen, "object-close")
+            _hide_and_deselect(screen)
             set_projection(screen, "Perspective")
-            camera_menu(screen)
-            click_marked(screen, "reset-camera")
+            camera_action(screen, "reset")
             camera_settled(screen)
         with viewport(screen, 1024, 768, mobile=True), program_previewed(EDIT_PROGRAM):
             screen.selenium.execute_cdp_cmd(

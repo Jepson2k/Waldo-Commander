@@ -963,8 +963,12 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     assert bench.pose[:3] == pytest.approx((0.4, 0.1, 0.05))
     assert "shape:bench" in scene._shape_objects
 
-    # Drag — its arrows, as the browser reports the drag let go.
-    user.find(marker="object-close").click()
+    # Drag — its arrows, as the browser reports the drag let go. A click on
+    # empty space in the view puts the selection away first.
+    UserInteraction(user, {scene.scene}, None).trigger(
+        "select", {"revision": handle.revision, "hits": [], "extend": False}
+    )
+    assert not scene._selected_objects
     menu(["shape:bench"], "shape-menu-move")
     arrows = scene.scene.interaction["shapeMove"]
     assert arrows["node"] == scene._shape_objects["shape:bench"].id

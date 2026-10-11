@@ -678,6 +678,14 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
             "cameraHeight": 675,
             "group": "top",
         },
+        "scene": {
+            "selector": ".bottom-panels-container .scene-panel",
+            "minWidth": 280,
+            "minHeight": 160,
+            "defaultWidth": 312,
+            "group": "bottom",
+            "fit": True,
+        },
     },
 }
 

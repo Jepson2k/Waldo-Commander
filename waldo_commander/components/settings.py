@@ -657,6 +657,21 @@ class SettingsContent:
 
         waldoctl.commander.settings.view.paths_visible = prefs["show_route"]
 
+    def _build_movement_handles(self) -> None:
+        def _on_change(e) -> None:
+            waldoctl.commander.settings.view.gizmo_visible = bool(e.value)
+            if ui_state.urdf_scene is not None:
+                ui_state.urdf_scene.refresh_handles()
+
+        with _setting_row(
+            "Movement handles",
+            "Show the move and turn handles when the pointer is over the tool",
+        ):
+            ui.switch(
+                value=waldoctl.commander.settings.view.gizmo_visible,
+                on_change=_on_change,
+            ).props("dense").mark("gizmo-visibility")
+
     def _build_theme(self) -> None:
         def _on_theme_change(e):
             if e.value in theme_names():
@@ -1324,6 +1339,7 @@ class SettingsContent:
                 "visibility",
                 [
                     lambda: self._build_show_route(prefs),
+                    self._build_movement_handles,
                     lambda: self._build_envelope(prefs),
                     *([self._build_theme] if len(theme_names()) > 1 else []),
                     self._build_calm_waldo,

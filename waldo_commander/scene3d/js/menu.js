@@ -1,7 +1,7 @@
 // The view's context menu: when a right-click (or the menu key, a ctrl+click
-// on macOS, a touch held still) asks for it, the app hears what is under the
-// pointer, fills the menu and has it opened at the pointer. A right-drag pans
-// and asks for nothing.
+// on macOS, a lone touch held still) asks for it, the app hears what is under
+// the pointer, fills the menu and has it opened at the pointer. A right-drag
+// pans and asks for nothing.
 //
 // Browsers fire the contextmenu event on press (Linux, macOS) or on release
 // (Windows), so the event itself is always swallowed and the press decides at
@@ -54,7 +54,8 @@ export class Menu {
       this.press = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: 0 };
       return;
     }
-    if (e.pointerType === "touch" && e.button === 0) {
+    // Two fingers down pinch or turn the camera, however still one holds.
+    if (e.pointerType === "touch" && e.button === 0 && this.core.pointer.pressed.size <= 1) {
       this.long = {
         id: e.pointerId,
         x: e.clientX,
@@ -122,18 +123,19 @@ export class Menu {
     if (core.gestures.blocked || !core.live || this.dragging) return;
     const gen = ++this.gen;
     const { hits, ground, surface } = core.pointer.contextAt(cx, cy);
-    this.pending = { gen, hits, ground, surface, cx, cy, resent: false };
-    core.emit("context", { epoch: core.gestures.epoch, gen, hits, ground, surface, cx, cy });
+    this.pending = { gen, hits, ground, surface, cx, cy, epoch: core.gestures.epoch };
+    core.emit("context", this.pending);
   }
 
   // The app drops a request carrying an epoch it has just left; one sent as
-  // the epoch changed is asked again under the new one.
+  // the epoch changed is asked again under the new one, however many times
+  // the epoch moves on before the app answers.
   resend() {
     const p = this.pending;
-    if (!p || p.resent || p.gen !== this.gen) return;
-    p.resent = true;
-    const { resent, ...fields } = p;
-    this.core.emit("context", { epoch: this.core.gestures.epoch, ...fields });
+    const epoch = this.core.gestures.epoch;
+    if (!p || p.gen !== this.gen || p.epoch === epoch) return;
+    p.epoch = epoch;
+    this.core.emit("context", p);
   }
 
   // The app filled the menu for request `gen`: open it there, unless a newer

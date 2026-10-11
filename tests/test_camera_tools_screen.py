@@ -21,11 +21,12 @@ from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     at_start,
     camera_action,
-    camera_menu,
     camera_settled,
     choose,
+    clear_selection,
     confirmed,
     create_shape,
+    cube_view,
     object_mode,
     fill,
     hold,
@@ -42,6 +43,16 @@ from tests.helpers.scene_surface import (
 from tests.helpers.visual_evidence import VisualEvidence, preserve_capture_buffers
 from tests.helpers.wait import screen_wait_for_scene_ready
 from waldo_commander.state import ui_state
+
+
+def _projection_shown(screen, name):
+    """Whether the projection buttons show ``name``, and only it, as pressed."""
+    projections = ("perspective", "orthographic")
+    pressed = [
+        marked_element(screen, f"camera-{p}").get_attribute("aria-pressed") == "true"
+        for p in projections
+    ]
+    return pressed == [p == name for p in projections]
 
 
 @pytest.fixture(scope="class")
@@ -75,9 +86,7 @@ class TestCameraTools:
                 focused = scene_js(screen, "return S.cameraPose()")
                 assert focused != pytest.approx(before)
                 evidence.capture("01-focus-robot-1920")
-                camera_menu(screen)
-                evidence.capture("02-camera-menu-1920")
-                click_marked(screen, "camera-menu")
+                evidence.capture("02-camera-tools-1920")
 
                 # Project a transverse model span before/after switching lenses.
                 span = scene_js(
@@ -92,15 +101,12 @@ class TestCameraTools:
                 )
                 evidence.capture("03-orthographic-1920")
                 camera_action(screen, "top")
-                click_marked(screen, "camera-menu")
                 camera_settled(screen)
                 assert scene_js(screen, "return S.viewDirection()") == pytest.approx(
                     [0, 0, 1], abs=1e-5
                 )
                 evidence.capture("04-top-1920")
-                ActionChains(screen.selenium).key_down(Keys.SHIFT).send_keys(
-                    "f"
-                ).key_up(Keys.SHIFT).perform()
+                camera_action(screen, "back")
                 camera_settled(screen)
                 assert scene_js(screen, "return S.cameraPose()") == pytest.approx(
                     focused, abs=1e-6
@@ -113,11 +119,14 @@ class TestCameraTools:
                     focused, abs=1e-6
                 )
                 evidence.capture("05-restored-1920")
+                # From the right, with the front face only just on the cube, a
+                # press on it turns the camera a long way round its target.
                 scene_js(
                     screen,
                     """
                   const t=S.controls.target, d=S.camera.position.distanceTo(t);
-                  S.setCameraPose([t.x,t.y+d,t.z,...t.toArray()]);
+                  const k=d/Math.hypot(1,0.5);
+                  S.setCameraPose([t.x+k,t.y-0.5*k,t.z,...t.toArray()]);
                   window.__orbitDistances=[]; window.__watchOrbit=true;
                   const sample=()=>{if(!window.__watchOrbit)return;
                     window.__orbitDistances.push(S.camera.position.distanceTo(S.controls.target));
@@ -125,8 +134,10 @@ class TestCameraTools:
                 """,
                 )
                 camera_action(screen, "front")
-                click_marked(screen, "camera-menu")
                 camera_settled(screen)
+                assert scene_js(screen, "return S.viewDirection()") == pytest.approx(
+                    [0, -1, 0], abs=1e-5
+                )
                 distances = scene_js(
                     screen, "window.__watchOrbit=false; return window.__orbitDistances"
                 )
@@ -167,9 +178,8 @@ class TestCameraTools:
                         == initial
                     )
                     end_target_edit(screen)
-                    camera_menu(screen)
-                    evidence.capture("07-camera-menu-1366")
-                    click_marked(screen, "reset-camera")
+                    evidence.capture("07-camera-tools-1366")
+                    click_marked(screen, "camera-reset")
                 assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
                     live
                 )
@@ -215,33 +225,32 @@ class TestCameraTools:
                     )
                     _touch(screen, "touchEnd", [])
 
-                tap(marked_element(screen, "camera-menu"))
-                wait(screen).until(
-                    lambda _: marked_element(screen, "camera-projection").is_displayed()
-                )
-                tap(
-                    marked_element(screen, "camera-projection").find_element(
-                        By.XPATH, ".//button[.//*[text()='Orthographic']]"
+                def tap_cube(direction=None):
+                    """Tap the cube where it gives ``direction``, or on the face
+                    turned most toward the viewer; that direction made unit."""
+                    x, y, unit = wait(screen).until(
+                        lambda _: scene_js(
+                            screen, "return S.cubeSpot(arguments[0])", direction
+                        )
                     )
-                )
+                    _touch(screen, "touchStart", [(1, x, y)])
+                    _touch(screen, "touchEnd", [])
+                    camera_settled(screen)
+                    return unit
+
+                def looking_from():
+                    return scene_js(screen, "return S.viewDirection()")
+
+                def orthographic():
+                    return scene_js(screen, "return !!S.camera.isOrthographicCamera")
+
+                tap(marked_element(screen, "camera-orthographic"))
                 wait(screen).until(
-                    lambda _: scene_js(screen, "return !!S.camera.isOrthographicCamera")
+                    lambda _: orthographic()
+                    and _projection_shown(screen, "orthographic")
                 )
-                tap(marked_element(screen, "camera-menu"))
-                wait(screen).until(
-                    lambda _: not screen.selenium.find_elements(
-                        By.CSS_SELECTOR, ".q-menu"
-                    )
-                )
-                x, y, face = wait(screen).until(
-                    lambda _: scene_js(screen, "return S.cubeSpot()")
-                )
-                _touch(screen, "touchStart", [(1, x, y)])
-                _touch(screen, "touchEnd", [])
-                camera_settled(screen)
-                assert (
-                    np.dot(scene_js(screen, "return S.viewDirection()"), face) > 0.999
-                )
+                face = tap_cube()
+                assert np.dot(looking_from(), face) > 0.999
                 before = scene_js(
                     screen,
                     "return {pose:S.cameraPose(),q:S.camera.quaternion.toArray()}",
@@ -260,6 +269,22 @@ class TestCameraTools:
                 )
                 wait_for_scene_idle(screen)
                 evidence.capture("01-cube-restored-touch-1024")
+
+                # An edge of that face looks from half way between its two
+                # faces, and a corner of the edge from among its three.
+                axis = np.rint(face).astype(int)
+                edge = axis + np.roll(np.abs(axis), 1)
+                corner = edge + np.roll(np.abs(axis), 2)
+                tap_cube(edge.tolist())
+                assert looking_from() == pytest.approx(
+                    edge / np.linalg.norm(edge), abs=1e-5
+                )
+                cube_view(screen, corner.tolist())
+                camera_settled(screen)
+                assert looking_from() == pytest.approx(
+                    corner / np.linalg.norm(corner), abs=1e-5
+                )
+                evidence.capture("02-corner-view-touch-1024")
                 evidence.stop()
                 scene_js(screen, "S.renderer.forceContextLoss()")
                 notice = screen.selenium.find_element(By.CSS_SELECTOR, ".wc-scene-lost")
@@ -273,31 +298,29 @@ class TestCameraTools:
                     )
                 )
                 wait_for_scene_idle(screen)
-                camera_menu(screen)
-                assert (
-                    not marked_element(screen, "camera-back").is_enabled()
-                    or marked_element(screen, "camera-back").get_attribute(
-                        "aria-disabled"
-                    )
-                    == "true"
-                )
-                selected = marked_element(screen, "camera-projection").find_element(
-                    By.XPATH, ".//button[@aria-pressed='true']"
-                )
-                assert selected.text == "Perspective"
-                wait_for_scene_idle(screen)
-                evidence.capture("02-recovered-menu-touch-1024")
-                tap(
-                    marked_element(screen, "camera-projection").find_element(
-                        By.XPATH, ".//button[.//*[text()='Orthographic']]"
-                    )
-                )
                 wait(screen).until(
-                    lambda _: scene_js(screen, "return !!S.camera.isOrthographicCamera")
+                    lambda _: not orthographic()
+                    and _projection_shown(screen, "perspective")
                 )
-                click_marked(screen, "reset-camera")
+                evidence.capture("03-recovered-tools-touch-1024")
+                # The recovered view has no earlier one for Shift+F to go back
+                # to. The projection switch after it ends any turn it began.
+                recovered = scene_js(screen, "return S.cameraPose()")
+                camera_action(screen, "back")
+                tap(marked_element(screen, "camera-orthographic"))
+                wait(screen).until(
+                    lambda _: orthographic()
+                    and _projection_shown(screen, "orthographic")
+                )
+                assert scene_js(screen, "return S.cameraPose()") == pytest.approx(
+                    recovered, abs=1e-6
+                )
+                click_marked(screen, "camera-reset")
                 camera_settled(screen)
-                assert not scene_js(screen, "return !!S.camera.isOrthographicCamera")
+                wait(screen).until(
+                    lambda _: not orthographic()
+                    and _projection_shown(screen, "perspective")
+                )
                 evidence.finish()
             finally:
                 evidence.stop()
@@ -320,7 +343,7 @@ class TestCameraTools:
                     screen, lambda: waldoctl.commander.scene.shapes[-1].pose[3] > 0.4
                 )
                 fixture = waldoctl.commander.scene.shapes[-1]
-                click_marked(screen, "object-close")
+                clear_selection(screen)
                 normal = Rotation.from_euler("xyz", fixture.pose[3:]).apply([0, 0, 1])
                 origin = np.array(fixture.pose[:3]) + normal * fixture.z / 2
                 evidence = VisualEvidence(

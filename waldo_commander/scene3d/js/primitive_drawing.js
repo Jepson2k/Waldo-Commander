@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { mm } from "./handles.js";
+import { FINGER_PX, mm } from "./handles.js";
 import { setStyle } from "./dom.js";
 import { GAP } from "./overlays.js";
 import { facingPlane } from "./pointer.js";
@@ -93,7 +93,8 @@ export class PrimitiveDrawing {
     } else if(this.phase==="height") {
       this.handle.updateWorldMatrix(true,false);
       const ray=core.pointer.aim(e.clientX,e.clientY);
-      if(!ray.intersectObject(this.handle,false).length)return null;
+      const near=e.pointerType==="touch" && core.pointer.pixelsFrom(this.handle.position,e.clientX,e.clientY)<=FINGER_PX;
+      if(!near && !ray.intersectObject(this.handle,false).length)return null;
       if(!facingPlane(ray.ray,this.normal,this.handle.position,this.heightPlane,.08))return null;
       this.heightStart=this.point(e,this.heightPlane);if(!this.heightStart)return null;
       this.initialHeight=this.height;this.g.pointerId=e.pointerId;

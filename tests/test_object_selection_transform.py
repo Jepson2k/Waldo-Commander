@@ -26,17 +26,15 @@ async def test_selection_move_rotate_history_and_stale_rejection(user):
     await confirmed(view, lambda: len(handle.shapes) == 1)
     field(user, "object-name", "Fixture")
     await confirmed(view, lambda: handle.shapes[0].name == "Fixture")
-    user.find(marker="object-orientation").elements.pop().open()
     field(user, "object-rx", 20)
     await confirmed(view, lambda: handle.shapes[0].pose[3] == math.radians(20))
-    assert user.find(marker="object-orientation").elements.pop().value
     field(user, "object-ry", 10)
     await confirmed(view, lambda: handle.shapes[0].pose[4] == math.radians(10))
-    assert user.find(marker="object-orientation").elements.pop().value
     user.find(marker="object-duplicate").click()
     await confirmed(view, lambda: len(handle.shapes) == 2)
-    assert not user.find(marker="object-orientation").elements.pop().value
     second = handle.shapes[1].name
+    # The properties follow the selection to the copy.
+    assert user.find(marker="object-name").elements.pop().value == second
     field(user, "object-y", 300)
     await confirmed(view, lambda: handle.shapes[1].pose[1] == 0.3)
     select(user, view, "shape:Fixture")

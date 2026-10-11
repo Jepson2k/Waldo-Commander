@@ -1,8 +1,8 @@
 """The workcell library: save the editable objects under a name, load a saved
 workcell in their place, or insert either into the program as code.
 
-It is a card docked at the top left of the scene, not a dialog: the objects
-being saved or loaded and the code being changed stay in view and editable.
+It opens in the scene panel, not a dialog: the objects being saved or loaded
+and the code being changed stay in view and editable.
 """
 
 from __future__ import annotations
@@ -37,10 +37,14 @@ _libraries: WeakKeyDictionary[object, WorkcellLibrary] = WeakKeyDictionary()
 
 
 def show_world_library(view) -> None:
-    """Open the library beside *view*'s scene, in place of one open there."""
+    """Open the library in *view*'s scene panel, in place of one open there."""
     if (library := _libraries.get(view)) is not None:
         library.close()
-    _libraries[view] = WorkcellLibrary(view)
+    panel = view._scene_panel()
+    if panel is None:
+        return
+    panel.open()
+    _libraries[view] = WorkcellLibrary(view, view._library_host)
 
 
 def _plural(count: int, noun: str) -> str:
@@ -115,10 +119,9 @@ class _Row:
 
 
 class WorkcellLibrary:
-    """The library card, docked at the top left of the scene with its top
-    edge fixed there, beside the panels on the left."""
+    """The library, at the top of the scene panel over the list of objects."""
 
-    def __init__(self, view) -> None:
+    def __init__(self, view, host: ui.element) -> None:
         self.view = view
         self.history = view.object_history
         self.entries: dict[str, _Entry] = {}
@@ -130,14 +133,9 @@ class WorkcellLibrary:
         self.listing = 0
         self.loading = False
         self.closed = False
-        with view.scene.client, view._scene_wrapper:
+        with host:
             self.card = (
-                ui.column()
-                .classes(
-                    "wc-workcell-library overlay-card absolute z-40 p-3 gap-3 pointer-events-auto"
-                )
-                .style("width:300px;overflow:auto")
-                .mark("workcell-library")
+                ui.column().classes("scene-library w-full").mark("workcell-library")
             )
             self.card.on("keydown.escape", self.close)
             with self.card:
@@ -147,50 +145,38 @@ class WorkcellLibrary:
         background_tasks.create(self._list(), name="workcell library")
 
     def _build(self) -> None:
-        with ui.column().classes("w-full gap-0"):
-            with ui.row().classes("w-full items-center no-wrap"):
-                ui.label("Workcell library").classes("font-medium flex-1")
-                ui.button(icon="close", on_click=self.close).props(
-                    "flat round dense color=wc-text"
-                ).tooltip("Close · Esc").mark("workcell-close")
-            self.count = (
-                ui.label().classes("text-xs text-wc-text-muted").mark("workcell-count")
+        with ui.row().classes("w-full items-center no-wrap"):
+            ui.label("Workcells").classes("scene-section flex-1")
+            ui.button(icon="close", on_click=self.close).props(
+                "flat round dense size=sm color=wc-text"
+            ).tooltip("Close · Esc").mark("workcell-close")
+        with ui.row().classes("w-full items-center no-wrap gap-1"):
+            self.name = (
+                ui.input(
+                    placeholder="Save the objects as…", on_change=self._name_changed
+                )
+                .props("dense outlined hide-bottom-space autofocus")
+                .classes("flex-1 min-w-0")
+                .mark("workcell-name")
             )
-        with ui.column().classes("w-full gap-1"):
-            with ui.row().classes("w-full items-center no-wrap gap-2"):
-                self.name = (
-                    ui.input("Name", on_change=self._name_changed)
-                    .props("dense outlined hide-bottom-space autofocus")
-                    .classes("flex-1 min-w-0")
-                    .mark("workcell-name")
-                )
-                self.name.on("keydown.enter", self._save)
-                self.save = (
-                    ui.button("Save", on_click=self._save)
-                    .props("unelevated no-caps")
-                    .mark("workcell-save")
-                )
-                self._offer("Save", "wc-action")
-            self.feedback = ui.label().mark("workcell-feedback")
-            _say(self.feedback, "")
+            self.name.on("keydown.enter", self._save)
+            self.save = (
+                ui.button("Save", on_click=self._save)
+                .props("unelevated dense no-caps")
+                .mark("workcell-save")
+            )
+            self._offer("Save", "wc-action")
             self.insert = (
-                ui.button(
-                    "Insert into program", icon="code", on_click=self._insert_current
-                )
-                .props("flat dense no-caps color=wc-action")
-                .classes("self-start")
-                .tooltip("Insert the objects as code below the program's cursor")
+                ui.button(icon="code", on_click=self._insert_current)
+                .props("flat round dense color=wc-text")
+                .tooltip("Insert the objects into the program, below its cursor")
                 .mark("workcell-insert")
             )
-        ui.separator()
-        with ui.column().classes("w-full gap-0"):
-            ui.label("Saved workcells").classes("font-medium")
-            ui.label("Load replaces the editable objects. Undo restores them.").classes(
-                "text-xs text-wc-text-muted"
-            )
-        self.list = ui.column().classes("w-full gap-2").mark("workcell-saved")
+        self.feedback = ui.label().mark("workcell-feedback")
+        _say(self.feedback, "")
+        self.list = ui.column().classes("w-full gap-0").mark("workcell-saved")
         with self.list:
-            ui.label("Reading the library…").classes("text-sm text-wc-text-muted")
+            ui.label("Reading the library…").classes("text-xs text-wc-text-muted")
 
     def close(self) -> None:
         if self.closed:
@@ -202,19 +188,8 @@ class WorkcellLibrary:
             self.card.delete()
 
     def _follow(self) -> None:
-        """Keep the summary true to the scene, which stays editable."""
-        shapes = _scene_shapes()
-        editable = _editable(shapes)
-        held = len(shapes) - len(editable)
-        self.count.set_text(
-            (
-                f"{_plural(len(editable), 'editable object')} in the scene"
-                if editable
-                else "No editable objects in the scene"
-            )
-            + (f"; {_plural(held, 'flange attachment')} left out" if held else "")
-        )
-        self.has_objects = bool(editable)
+        """Keep Save and Insert true to the scene, which stays editable."""
+        self.has_objects = bool(_editable(_scene_shapes()))
         self._enable()
 
     def _enable(self) -> None:
@@ -369,12 +344,10 @@ class WorkcellLibrary:
         if not applied:
             _say(row.note, self.history.feedback, "error")
             return
-        # Unless the user has picked something meanwhile, show the history
-        # whose Undo puts the previous objects back.
+        # Unless the user has picked something meanwhile, nothing is selected
+        # among the loaded objects.
         if view._selected_objects == selection:
             view._select_objects([])
-            view._show_object_history = True
-            view._refresh_object_inspector()
         _say(row.note, "Loaded. Undo restores the previous objects.", "positive")
 
     # ------------------------------------------------------------------ list
@@ -396,9 +369,9 @@ class WorkcellLibrary:
         self.list.clear()
         with self.list:
             if failure or not entries:
-                ui.label(
-                    failure or "Nothing saved yet. Name the objects above to save them."
-                ).classes("text-sm text-wc-text-muted").mark("workcell-empty")
+                ui.label(failure or "Nothing saved yet").classes(
+                    "text-xs text-wc-text-muted"
+                ).mark("workcell-empty")
             for entry in entries:
                 self._row(entry)
         self._enable_rows()
@@ -409,11 +382,12 @@ class WorkcellLibrary:
         name = entry.name
         with (
             ui.row()
-            .classes("w-full items-center no-wrap gap-1")
+            .classes("scene-row w-full items-center no-wrap")
             .mark("workcell-entry", f"workcell-entry:{name}")
         ):
+            ui.icon("inventory_2", size="18px").classes("scene-row-kind")
             with ui.column().classes("flex-1 min-w-0 gap-0"):
-                ui.label(name).classes("text-sm font-medium truncate")
+                ui.label(name).classes("scene-row-name truncate")
                 caption = ui.label().mark(
                     "workcell-preview", f"workcell-preview:{name}"
                 )
@@ -421,14 +395,16 @@ class WorkcellLibrary:
                 note = ui.label().mark("workcell-note", f"workcell-note:{name}")
                 _say(note, "")
             load = (
-                ui.button("Load", on_click=lambda: self._load(name))
-                .props("flat dense no-caps color=wc-action")
-                .tooltip(f"Load {name}")
+                ui.button(icon="file_open", on_click=lambda: self._load(name))
+                .props("flat round dense size=sm color=wc-action")
+                .tooltip(
+                    f"Load {name} in place of the editable objects; undo restores them"
+                )
                 .mark("workcell-load", f"workcell-load:{name}")
             )
             insert = (
-                ui.button("Insert", on_click=lambda: self._insert_saved(name))
-                .props("flat dense no-caps color=wc-text")
+                ui.button(icon="code", on_click=lambda: self._insert_saved(name))
+                .props("flat round dense size=sm color=wc-text")
                 .tooltip(f"Insert {name} into the program")
                 .mark("workcell-insert-saved", f"workcell-insert-saved:{name}")
             )
