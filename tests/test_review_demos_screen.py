@@ -30,7 +30,7 @@ from tests.helpers.browser_helpers import (
     run_in_app,
     viewport,
 )
-from tests.helpers.browser_session import wait
+from tests.helpers.browser_session import no_visible, wait
 from tests.helpers.demo_video import DemoVideo
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
@@ -91,11 +91,17 @@ def program_panel(screen):
     try:
         yield
     finally:
-        # A tooltip shown when its button's panel closes would stay behind.
-        screen.selenium.execute_cdp_cmd(
-            "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 960, "y": 540}
-        )
+        # The panel slides out under the pointer left on its close button; a
+        # button passing under it shows a tooltip that only a move puts away.
+        def away() -> None:
+            screen.selenium.execute_cdp_cmd(
+                "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 960, "y": 540}
+            )
+
+        away()
         close_panel(screen, "program-panel")
+        wait(screen).until(lambda _: no_visible(screen, ".program-panel"))
+        away()
 
 
 @contextmanager

@@ -27,6 +27,9 @@ _KIND_ICONS = {
 }
 _DRAWABLE = ("box", "cylinder", "sphere")
 _DIMENSION_PREFIXES = {"radius": "R", "length": "L"}
+# A button that opens a menu below it shows its tooltip above, clear of the menu.
+_TIP_ABOVE = 'anchor="top middle" self="bottom middle"'
+
 _RESIZE_TIPS = {
     "box": "Resize: drag a face; Shift resizes from the centre",
     "cylinder": "Resize: drag the radius or an end",
@@ -229,10 +232,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         flat = "flat round dense color=wc-text"
         with panel.tools:
             with (
-                ui.button(icon="add_box")
-                .props(flat)
-                .tooltip("Draw a keep-out on the floor")
-                .mark("scene-draw"),
+                ui.button(icon="add_box").props(flat).mark("scene-draw") as draw,
                 ui.menu().props('anchor="bottom right" self="top right"'),
             ):
                 for kind in _DRAWABLE:
@@ -244,6 +244,8 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                     ):
                         ui.icon(_KIND_ICONS[kind], size="20px")
                         ui.label(kind.capitalize())
+            with draw:
+                ui.tooltip("Draw a keep-out on the floor").props(_TIP_ABOVE)
             ui.button(
                 icon="inventory_2", on_click=lambda: show_world_library(self)
             ).props(flat).tooltip("Workcells: save, load and insert").mark(
@@ -395,8 +397,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                 with (
                     ui.button(icon="more_vert")
                     .props(flat)
-                    .tooltip("More")
-                    .mark("object-actions"),
+                    .mark("object-actions") as more,
                     ui.menu(),
                 ):
                     hidden = all(k in self._hidden_objects for k, _ in selected)
@@ -421,6 +422,8 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                         .mark("object-delete"),
                         readonly,
                     )
+                with more:
+                    ui.tooltip("More").props(_TIP_ABOVE)
             if len(selected) == 1:
                 entity, shape = selected[0]
                 modes = [("translate", "open_with", "Move and turn with the handles")]
