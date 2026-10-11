@@ -56,6 +56,10 @@ from tests.test_par6_backend import par6_env, requires_par6  # noqa: F401
 from waldo_commander.services import world_files
 from waldo_commander.state import ui_state
 
+# Frame-stepped recording takes a minute or two a demo; demos run only
+# under --evidence, outside the suite's time.
+pytestmark = pytest.mark.timeout(300)
+
 #: The floor in front of the arm, close enough to see a target land there.
 PLACEMENT_VIEW = [0.333, 0.447, 0.402, 0.05, 0.2, 0.15]
 
@@ -243,9 +247,6 @@ def demo_screen(class_screen):
 
 
 @pytest.mark.browser
-# Frame-stepped recording takes a minute or two a demo; demos run only
-# under --evidence, outside the suite's time.
-@pytest.mark.timeout(300)
 class TestReviewDemos:
     def test_gizmo_moves_along_an_arrow(self, demo_screen):
         screen = demo_screen

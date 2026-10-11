@@ -6,9 +6,22 @@ const linear = new THREE.Vector3();
 // The app turns a mesh by Rz·Ry·Rx, three.js's "ZYX" order.
 const ORDER = "ZYX";
 
-// The ghost lies this far behind where it is drawn, so where it and the arm
-// coincide the arm wins.
-const BEHIND = 2;
+// The ghost lies this far (m) behind where it is drawn, along each view ray:
+// where it is within this of the arm, the arm covers it, so a millimetre or
+// two of difference does not speckle the arm.
+const BEHIND_M = 0.003;
+
+function setBack(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <project_vertex>",
+      `#include <project_vertex>
+      mvPosition.xyz += (isPerspectiveMatrix(projectionMatrix) ? normalize(mvPosition.xyz) : vec3(0.0, 0.0, -1.0)) * ${BEHIND_M};
+      gl_Position = projectionMatrix * mvPosition;`,
+    );
+  };
+  return material;
+}
 
 // A see-through copy of the arm, its tools and the objects it carries, posed
 // from a recorded sample. It is one layer, its own hidden surfaces left out,
@@ -37,9 +50,8 @@ export class RecordedGhost {
     if (this.data === data) return;
     this.dispose();
     this.data = data;
-    const behind = { polygonOffset: true, polygonOffsetFactor: BEHIND, polygonOffsetUnits: BEHIND };
-    this.material = new THREE.MeshLambertMaterial({ transparent: true, opacity: .4, depthWrite: false, ...behind });
-    this.depth = new THREE.MeshBasicMaterial({ transparent: true, colorWrite: false, ...behind });
+    this.material = setBack(new THREE.MeshLambertMaterial({ transparent: true, opacity: .4, depthWrite: false }));
+    this.depth = setBack(new THREE.MeshBasicMaterial({ transparent: true, colorWrite: false }));
     this.root = new THREE.Group();
     this.root.name = this.name;
     this.root.visible = false;
