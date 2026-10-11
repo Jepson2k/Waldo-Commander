@@ -166,3 +166,57 @@ async def test_a_predicted_pass_never_locks_the_bar_and_draws_only_against_its_p
         dry_run.path_segments = []
         view.paths_visible, view.predicted_visible = saved
         simulation_state.notify_changed()
+
+
+@pytest.mark.integration
+async def test_the_preview_is_timed_by_the_profile_settings_selects(
+    user: User,
+) -> None:
+    """The preview plans with the profile the controller will run the
+    program under: choosing QUINTIC in Settings plans the open program
+    again, and its move takes as long as QUINTIC takes it, not TOPPRA."""
+    from waldo_commander.components.simulation_engine import simulation
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await wait_for_urdf_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    assert await waldoctl.commander.client.select_profile("TOPPRA") == 1
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    program = waldoctl.commander.programs.active
+    assert program is not None and ui_state.active_textarea is not None
+    dry_run = program.dry_run
+    simulation._debounce_delay = 0.2
+
+    script = """from parol6 import RobotClient
+rbt = RobotClient()
+rbt.move_j([40, -60, 200, 30, 20, 150], speed=0.5, accel=1.0)
+"""
+    textarea = ui_state.active_textarea
+    textarea.value = script
+    program.source = script
+    with textarea:
+        simulation.schedule_debounced_simulation(program.id)
+    assert await wait_until(lambda: dry_run.commanded is not None, timeout_s=30)
+
+    def planned_s() -> float:
+        record = dry_run.commanded
+        assert record is not None
+        return len(record.joints_rad) * record.row_dt_s
+
+    toppra = planned_s()
+    user.find(marker="tab-settings").click()
+    await asyncio.sleep(0)
+    profile_select = next(iter(user.find(marker="select-motion-profile").elements))
+    try:
+        profile_select.set_value("QUINTIC")
+        assert await wait_until(lambda: planned_s() > toppra + 0.3, timeout_s=30), (
+            f"the preview still plans {planned_s():.2f} s, as TOPPRA does "
+            f"({toppra:.2f} s), after QUINTIC was selected"
+        )
+    finally:
+        profile_select.set_value("TOPPRA")
+        assert await wait_until(lambda: abs(planned_s() - toppra) < 1e-6, timeout_s=30)

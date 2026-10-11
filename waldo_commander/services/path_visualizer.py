@@ -280,6 +280,20 @@ def _tool_metadata(robot: Any) -> dict[str, dict]:
     return tool_meta_registry
 
 
+async def _live_profile() -> str | None:
+    """The motion profile the controller times its moves with, so the
+    preview is timed as the run will be; None when the backend cannot say
+    or the controller does not answer, and the preview keeps the
+    backend's default."""
+    try:
+        return await asyncio.wait_for(waldoctl.commander.client.profile(), 1.0)
+    except NotImplementedError:
+        return None
+    except (TimeoutError, OSError) as e:
+        logger.warning("Preview: the controller did not report its profile: %s", e)
+        return None
+
+
 def _run_simulation_isolated(
     program_text: str,
     initial_joints_rad: np.ndarray | None = None,
@@ -297,6 +311,7 @@ def _run_simulation_isolated(
     config_path: str | None = None,
     program_directory: str | None = None,
     initial_gripper_calibrated: bool = False,
+    initial_profile: str | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -400,6 +415,14 @@ def _run_simulation_isolated(
                     )
                 for selection in preview.tool_selection_collector[first_selection:]:
                     selection.line_number = 0
+            if initial_profile is not None:
+                if preview._client.select_profile(initial_profile) != 1:
+                    raise ValueError(
+                        f"Preview refused the motion profile {initial_profile}"
+                    )
+                # The live run never sends this, so it must not take the
+                # ordinal of the program's first command.
+                preview._attribute_commands(0, method="select_profile")
             shapes = [shape_from_wire(*t) for t in shapes_wire or []]
             if not shapes:
                 return
@@ -861,6 +884,7 @@ class PathVisualizer:
         revision: int = 0,
         simulate_seconds: float | None = None,
         program_dir: Path | None = None,
+        initial_profile: str | None = None,
     ) -> tuple | None:
         """Everything a preview worker needs, or None when this backend
         cannot preview at all.
@@ -924,6 +948,7 @@ class PathVisualizer:
             scene_handle.attachment_epoch if scene_handle is not None else 0,
             program_directory=None if program_dir is None else str(program_dir),
             initial_gripper_calibrated=robot_state.gripper_calibrated,
+            initial_profile=initial_profile,
         )
         bound.apply_defaults()
         return bound.args
@@ -978,7 +1003,11 @@ class PathVisualizer:
                 )
 
             sim_args = self._simulation_args(
-                program_text, ui_state.active_robot, revision, program_dir=program_dir
+                program_text,
+                ui_state.active_robot,
+                revision,
+                program_dir=program_dir,
+                initial_profile=await _live_profile(),
             )
             if sim_args is None:
                 simulation_state.notify_changed()

@@ -922,6 +922,8 @@ class SettingsContent:
                 ui.notify(f"Profile change failed: {exc}", color="negative")
                 return
             ng_app.storage.general["motion_profile"] = profile
+            # The preview is timed by the profile the run will use.
+            simulation.schedule_debounced_simulation()
 
         motion_profile_options = {}
         for p in ui_state.active_robot.motion_profiles:
