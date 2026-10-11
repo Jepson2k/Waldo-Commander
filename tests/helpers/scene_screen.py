@@ -260,9 +260,18 @@ def at_start(screen):
     wait_for_scene_idle(screen)
 
 
+def gizmo_still(screen):
+    """Wait until the gizmo has sprung back from a drag let go: a press
+    while it springs takes no drag."""
+    wait(screen).until(
+        lambda _: scene_js(screen, "return !getElement(S.root).core.gizmos.active")
+    )
+
+
 def hold(screen, spot, length=20, *, kind="tcp"):
     """Press the handle at ``spot`` and drag it ``length`` px along its axis,
     still held."""
+    gizmo_still(screen)
     x, y, dx, dy = spot
     action = ActionChains(screen.selenium, duration=40)
     pointer_to(screen, x, y, action)

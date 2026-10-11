@@ -30,9 +30,10 @@
 
 @media (pointer:coarse) { .wc-tcp-affordance button { width:44px; height:44px; font-size:13px; } .wc-tcp-leader { left:22px; top:22px; } }
 
-/* The view cube's square in the view's top right, and its buttons under it. */
+/* The view cube's square in the view's top right, and its buttons under it,
+   their right edges lined up. */
 .wc-viewcube, .wc-viewcube-tools { --viewcube-size:136px; }
 .wc-viewcube { position:absolute; top:var(--wc-space-3); right:var(--wc-space-3); width:var(--viewcube-size); height:var(--viewcube-size); z-index:var(--wc-z-cards); touch-action:none; user-select:none; -webkit-user-select:none; }
-.wc-viewcube-tools { position:absolute; top:calc(var(--wc-space-3) + var(--viewcube-size)); right:calc(var(--wc-space-3) + var(--viewcube-size) / 2); transform:translateX(50%); z-index:var(--wc-z-cards); display:flex; align-items:center; gap:2px; padding:2px; border-radius:var(--wc-radius-pill); }
+.wc-viewcube-tools { position:absolute; top:calc(var(--wc-space-3) + var(--viewcube-size)); right:var(--wc-space-3); z-index:var(--wc-z-cards); display:flex; align-items:center; gap:2px; padding:2px; border-radius:var(--wc-radius-pill); }
 .wc-viewcube-tools .q-separator--vertical { align-self:stretch; margin:4px 2px; }
 .wc-scene[data-gl] .wc-viewcube { display:none; }

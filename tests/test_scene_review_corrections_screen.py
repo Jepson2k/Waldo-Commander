@@ -30,6 +30,7 @@ from tests.helpers.scene_screen import (
     click_spot,
     frame_mm,
     gizmo_field,
+    gizmo_still,
     grab_ring,
     hold,
     marker_mm,
@@ -178,6 +179,7 @@ class TestReviewCorrections:
                     lambda _: run_in_app(lambda: scene._requested_edit_pose)
                     == before_plane
                 )
+                gizmo_still(screen)
                 spot = wait(screen).until(
                     lambda _: probe(screen, "arrowTip", "tcp:ball")
                 )
