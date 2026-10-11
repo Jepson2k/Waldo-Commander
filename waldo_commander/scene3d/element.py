@@ -361,12 +361,19 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
 
     def open_menu(self, gen: int, cx: float, cy: float) -> None:
         """Open the context menu at viewport point (cx, cy) for request *gen*."""
+        logger.debug("menu request %s answered", gen)
         self._command(lambda: ["menu", gen, float(cx), float(cy)])
 
     def _handle_context(self, e: Any) -> None:
         args = e.args if isinstance(e.args, dict) else {}
         # Authorizing can start a new epoch; that ends drags, not this menu.
         if args.get("epoch") != self.gestures.epoch or not self.gestures.authorized():
+            logger.debug(
+                "menu request %s dropped: epoch %s, now %s",
+                args.get("gen"),
+                args.get("epoch"),
+                self.gestures.epoch,
+            )
             return
         if self._context_handler is not None:
             self._context_handler(args)
