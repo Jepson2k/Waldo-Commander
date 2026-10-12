@@ -6,6 +6,7 @@ import asyncio
 import numpy as np
 import pytest
 import waldoctl
+from nicegui import app as ng_app
 from nicegui.testing import User
 
 from tests.helpers.wait import (
@@ -183,7 +184,7 @@ async def test_the_preview_is_timed_by_the_profile_settings_selects(
     await wait_for_urdf_ready()
     await enable_sim(user)
     await ensure_robot_ready_for_motion()
-    assert await waldoctl.commander.client.select_profile("TOPPRA") == 1
+    ng_app.storage.general["motion_profile"] = "TOPPRA"
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
     program = waldoctl.commander.programs.active
@@ -205,7 +206,7 @@ rbt.move_j([40, -60, 200, 30, 20, 150], speed=0.5, accel=1.0)
     def planned_s() -> float:
         record = dry_run.commanded
         assert record is not None
-        return len(record.joints_rad) * record.row_dt_s
+        return record.duration_s
 
     toppra = planned_s()
     user.find(marker="tab-settings").click()

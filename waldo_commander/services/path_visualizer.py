@@ -280,20 +280,6 @@ def _tool_metadata(robot: Any) -> dict[str, dict]:
     return tool_meta_registry
 
 
-async def _live_profile() -> str | None:
-    """The motion profile the controller times its moves with, so the
-    preview is timed as the run will be; None when the backend cannot say
-    or the controller does not answer, and the preview keeps the
-    backend's default."""
-    try:
-        return await asyncio.wait_for(waldoctl.commander.client.profile(), 1.0)
-    except NotImplementedError:
-        return None
-    except (TimeoutError, OSError) as e:
-        logger.warning("Preview: the controller did not report its profile: %s", e)
-        return None
-
-
 def _run_simulation_isolated(
     program_text: str,
     initial_joints_rad: np.ndarray | None = None,
@@ -884,7 +870,6 @@ class PathVisualizer:
         revision: int = 0,
         simulate_seconds: float | None = None,
         program_dir: Path | None = None,
-        initial_profile: str | None = None,
     ) -> tuple | None:
         """Everything a preview worker needs, or None when this backend
         cannot preview at all.
@@ -931,6 +916,13 @@ class PathVisualizer:
         # planned-motion gate: an unhomed robot's preview refuses planned
         # moves until the script homes.
         initial_homed = robot_state.homed
+        # The profile Settings selects on the controller, at startup and on
+        # every change: the run is timed by it, so the preview is too.
+        # Asking the controller instead would hold its request lock, which
+        # a stop waits on.
+        initial_profile = ng_app.storage.general.get("motion_profile")
+        if initial_profile not in robot.motion_profiles:
+            initial_profile = None
 
         from waldo_commander.setup import SetupStore
 
@@ -1007,7 +999,6 @@ class PathVisualizer:
                 ui_state.active_robot,
                 revision,
                 program_dir=program_dir,
-                initial_profile=await _live_profile(),
             )
             if sim_args is None:
                 simulation_state.notify_changed()
