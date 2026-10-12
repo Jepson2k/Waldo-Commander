@@ -112,6 +112,8 @@ class SceneHistory:
         *confirmed* False admits it over a world the controller refused."""
         self.validate()
         handle = self._handle()
+        if self.owner._fixture_restore_pending:
+            raise ValueError("Wait for fixture assets to finish loading")
         if self.busy or (confirmed and not handle.confirmed):
             raise ValueError("Wait for the current object edit to be confirmed")
         if self.context() != revision:

@@ -106,7 +106,7 @@ async def test_draw_floor_face_cancel_stale_and_recorded_undo(user):
     right_click(user, view.scene, [f"shape:{fixture.name}"], [0.4, 0.1, 0])
     user.find(marker="shape-menu-move").click()
     assert view._drawing is None
-    assert view._shape_move_active == fixture.name
+    assert view._shape_move_active == f"shape:{fixture.name}"
     right_click(user, view.scene, [], [0.4, 0.1, 0])
     user.find(marker="scene-draw-box").click()
     right_click(user, view.scene, [], [0.4, 0.1, 0])
@@ -125,3 +125,15 @@ async def test_draw_floor_face_cancel_stale_and_recorded_undo(user):
     await asyncio.sleep(0)
     assert handle.shapes == before
     assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live)
+
+    right_click(user, view.scene, [], [0.4, 0.1, 0])
+    user.find(marker="scene-draw-box").click()
+    state = view.scene.interaction["shapeDraw"]
+    Drag(user, view.scene, "draw").begin(**state).release(
+        session=state["session"], u=0, v=0, width=0.1, depth=0.1, height=0.1
+    )
+    editor.value += "\n# edit while the released drawing is being committed\n"
+    await user.should_see("changed during this edit")
+    await user.should_see(marker="scene-feedback")
+    assert not view._selected_objects
+    assert handle.shapes == before

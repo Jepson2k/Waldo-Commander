@@ -542,6 +542,55 @@ class TestPathInspection:
                 )
                 wait(screen).until(lambda _: _matches_record(screen))
                 evidence.capture("04-stationary-rotation-1920")
+                for touch, label in (
+                    (False, "Show swept volume"),
+                    (True, "Hide swept volume"),
+                ):
+                    marker = screen.selenium.find_element(
+                        By.CSS_SELECTOR,
+                        '.wc-path-event[data-lines~="11"]:not([hidden])',
+                    )
+                    marker.click()
+                    choices = screen.selenium.find_elements(
+                        By.CSS_SELECTOR,
+                        '.wc-path-choices button[aria-label$="line 11"]',
+                    )
+                    target = (
+                        choices[0] if choices and choices[0].is_displayed() else marker
+                    )
+                    if touch:
+                        rect = target.rect
+                        _touch(
+                            screen,
+                            "touchStart",
+                            [
+                                (
+                                    1,
+                                    rect["x"] + rect["width"] / 2,
+                                    rect["y"] + rect["height"] / 2,
+                                )
+                            ],
+                        )
+                    else:
+                        ActionChains(screen.selenium, duration=0).context_click(
+                            target
+                        ).perform()
+                    try:
+                        wait(screen).until(
+                            lambda _: label
+                            in marked_element(screen, "scene-toggle-swept-volume").text
+                            and marked_element(
+                                screen, "scene-toggle-swept-volume"
+                            ).is_displayed()
+                        )
+                    finally:
+                        if touch:
+                            _touch(screen, "touchEnd", [])
+                    click_marked(screen, "scene-toggle-swept-volume")
+                    wait(screen).until(
+                        lambda _: bool(scene_js(screen, "return S.sweptVolume()"))
+                        is (not touch)
+                    )
                 if evidence.enabled:
                     with viewport(screen, 1366, 768):
                         wait_for_scene_idle(screen)

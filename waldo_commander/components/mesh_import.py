@@ -3,11 +3,12 @@
 from pathlib import Path
 from uuid import uuid4
 
-from nicegui import events, ui
+from nicegui import events, run, ui
 from waldoctl.shapes import Box
 
 from waldo_commander.services.fixture_meshes import (
     FixtureMesh,
+    MAX_STL_BYTES,
     UNITS,
     mesh_size,
     stl_bounds,
@@ -23,6 +24,7 @@ class MeshImport:
         self.filename = ""
         self.unit = "mm"
         self.busy = False
+        self._upload_generation = 0
         with host:
             self.card = ui.column().classes("scene-library w-full").mark("mesh-import")
             self.card.on("keydown.escape", self.close)
@@ -45,6 +47,7 @@ class MeshImport:
                     ),
                     auto_upload=True,
                     multiple=False,
+                    max_file_size=MAX_STL_BYTES,
                 ).props('accept=".stl" max-files=1 flat bordered').classes(
                     "w-full"
                 ).mark("mesh-upload").on("removed", self.clear_upload, args=[])
@@ -62,26 +65,37 @@ class MeshImport:
         self.refresh()
 
     def close(self) -> None:
+        self._upload_generation += 1
+        self.data, self.bounds, self.filename = None, None, ""
+        if self.view._mesh_import is self:
+            self.view._mesh_import = None
         if not self.card.is_deleted:
             self.card.delete()
 
     def clear_upload(self) -> None:
+        self._upload_generation += 1
         self.data, self.bounds = None, None
         self.filename = ""
         self.feedback.set_text("")
         self.refresh()
 
     async def upload(self, event: events.UploadEventArguments) -> None:
-        self.data, self.bounds = None, None
-        self.feedback.set_text("")
+        self.clear_upload()
+        generation = self._upload_generation
         try:
+            if event.file.size() > MAX_STL_BYTES:
+                raise ValueError("STL files must be at most 10 MiB")
             data = await event.file.read()
-            if self.card.is_deleted:
+            if generation != self._upload_generation or self.card.is_deleted:
                 return
-            bounds = stl_bounds(data)
+            bounds = await run.io_bound(stl_bounds, data)
+            if generation != self._upload_generation or self.card.is_deleted:
+                return
             self.filename = Path(event.file.name.replace("\\", "/")).name
             self.data, self.bounds = data, bounds
         except (ValueError, OSError) as error:
+            if generation != self._upload_generation or self.card.is_deleted:
+                return
             self.feedback.set_text(str(error))
         self.refresh()
 
@@ -111,6 +125,7 @@ class MeshImport:
     async def place(self) -> None:
         if self.busy or self.data is None or self.bounds is None:
             return
+        data, bounds, generation = self.data, self.bounds, self._upload_generation
         self.busy = True
         self.refresh()
         path = None
@@ -135,9 +150,11 @@ class MeshImport:
             )
             asset = f"assets/{uuid4().hex}.stl"
             path = world_files.library_dir() / asset
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(self.data)
-            fixture = FixtureMesh(asset, scale, pose, name, (proxy_name,), self.bounds)
+            await run.io_bound(path.parent.mkdir, parents=True, exist_ok=True)
+            await run.io_bound(path.write_bytes, data)
+            if self.card.is_deleted or generation != self._upload_generation:
+                return
+            fixture = FixtureMesh(asset, scale, pose, name, (proxy_name,), bounds)
             if not await view._commit_objects(
                 "Import fixture",
                 [*handle.shapes, proxy],
@@ -153,7 +170,7 @@ class MeshImport:
                 self.feedback.set_text(str(error))
         finally:
             if path is not None:
-                path.unlink(missing_ok=True)
+                await run.io_bound(path.unlink, missing_ok=True)
             self.busy = False
             if not self.card.is_deleted:
-                self.add.enable()
+                self.refresh()

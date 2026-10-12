@@ -218,14 +218,16 @@ class ShapeEditingMixin:
                 "Attach to flange",
                 on_click=lambda: self._open_attachment_form(shape_name),
             ).mark("shape-menu-attach").set_enabled(not locked)
-        if self._shape_move_active == shape_name:
+        if self._shape_move_active == f"{SHAPE_PREFIX}{shape_name}":
             ui.menu_item("Stop Moving", on_click=self._end_shape_move).mark(
                 "shape-menu-stop-move"
             )
         else:
             ui.menu_item(
                 "Move (drag arrows)",
-                on_click=lambda n=shape_name: self._start_shape_move(n),
+                on_click=lambda n=shape_name: self._start_shape_move(
+                    f"{SHAPE_PREFIX}{n}"
+                ),
             ).mark("shape-menu-move").set_enabled(
                 shape.attachment is None and not locked
             )
@@ -598,7 +600,7 @@ class ShapeEditingMixin:
         handle = self._shape_handle()
         if handle is None or self._shape_locked(name):
             return
-        if self._shape_move_active == name:
+        if self._shape_move_active == f"{SHAPE_PREFIX}{name}":
             self._end_shape_move()
         await self._commit_objects(
             "Delete object",
@@ -611,19 +613,13 @@ class ShapeEditingMixin:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _move_key(name: str) -> str:
-        return name if name.startswith(MESH_PREFIX) else f"{SHAPE_PREFIX}{name}"
+    def _move_key(obj) -> str:
+        return obj.key if isinstance(obj, FixtureMesh) else f"{SHAPE_PREFIX}{obj.name}"
 
-    @staticmethod
-    def _move_name(obj) -> str:
-        return obj.key if isinstance(obj, FixtureMesh) else obj.name
+    _object_shape: Any
 
-    def _move_object(self, name: str):
-        return (
-            self._fixture(name)
-            if name.startswith(MESH_PREFIX)
-            else self._program_shape(name)
-        )
+    def _move_object(self, key: str):
+        return self._object_shape(key)
 
     def _movable(self, key: str) -> bool:
         """Whether the program-layer object *key* may be dragged."""
@@ -633,9 +629,7 @@ class ShapeEditingMixin:
             or key in self._hidden_objects
         ):
             return False
-        shape = self._move_object(
-            key if key.startswith(MESH_PREFIX) else key[len(SHAPE_PREFIX) :]
-        )
+        shape = self._move_object(key)
         return shape is not None and shape.attachment is None
 
     def _start_shape_move(self, name: str) -> None:
@@ -643,17 +637,14 @@ class ShapeEditingMixin:
         if (
             shape is None
             or shape.attachment is not None
-            or self._move_key(name) in self._locked_objects
+            or name in self._locked_objects
         ):
             return
-        if self._move_key(name) not in self._shape_objects:
+        if name not in self._shape_objects:
             return
         self._cancel_shape_drawing()
         self._shape_move_active = name
-        selected = tuple(
-            k if k.startswith(MESH_PREFIX) else k[len(SHAPE_PREFIX) :]
-            for k in self._selected_objects
-        )
+        selected = tuple(self._selected_objects)
         self._shape_move_members = (
             selected
             if len(selected) > 1
@@ -677,7 +668,7 @@ class ShapeEditingMixin:
     def _shape_move_state(self) -> dict[str, Any] | None:
         """The keep-out the browser shows move arrows on, and its session."""
         name = self._shape_move_active
-        obj = None if name is None else self._shape_objects.get(self._move_key(name))
+        obj = None if name is None else self._shape_objects.get(name)
         if obj is None:
             return None
         shape = self._move_object(name)
@@ -707,7 +698,7 @@ class ShapeEditingMixin:
             shapes, nodes = [], []
             for name in self._shape_move_members:
                 member = self._move_object(name)
-                node = self._shape_objects.get(self._move_key(name))
+                node = self._shape_objects.get(name)
                 if member is None or node is None:
                     return None
                 shapes.append(member)
@@ -728,14 +719,14 @@ class ShapeEditingMixin:
             or args.get("revision") != self._shape_handle().revision
         ):
             return False
-        obj = self._shape_objects.get(self._move_key(name))
+        obj = self._shape_objects.get(name)
         shape = self._move_object(name)
         if (
             obj is None
             or obj.id != args.get("node")
             or shape is None
             or shape.attachment is not None
-            or self._move_key(name) in self._locked_objects
+            or name in self._locked_objects
         ):
             return False
         gesture.data.update(
@@ -755,7 +746,7 @@ class ShapeEditingMixin:
         return admitted
 
     def _group_admit(self, gesture: Any, args: dict[str, Any]) -> bool:
-        keys = [self._move_key(n) for n in self._shape_move_members]
+        keys = self._shape_move_members
         nodes = [self._shape_objects.get(k) for k in keys]
         mode = args.get("mode", "translate")
         if (
@@ -818,7 +809,7 @@ class ShapeEditingMixin:
             and self._move_object(name) == shape
             and self._shape_handle().revision == gesture.data["revision"]
             and self.object_history.context() == gesture.data["context"]
-            and self._shape_objects.get(self._move_key(name)) is obj
+            and self._shape_objects.get(name) is obj
         )
         if not landed:
             obj.resend_pose()
@@ -937,8 +928,8 @@ class ShapeEditingMixin:
         if (
             position is None
             or args.get("session") != self._shape_move_session
-            or tuple(self._move_name(s) for s in members) != self._shape_move_members
-            or tuple(self._move_object(self._move_name(s)) for s in members) != members
+            or tuple(self._move_key(s) for s in members) != self._shape_move_members
+            or tuple(self._move_object(self._move_key(s)) for s in members) != members
             or self.object_history.context() != gesture.data["context"]
         ):
             restore()
@@ -958,7 +949,7 @@ class ShapeEditingMixin:
             restore()
             return
         moved = {
-            self._move_name(s): replace(
+            self._move_key(s): replace(
                 s,
                 pose=(
                     *(
@@ -979,7 +970,10 @@ class ShapeEditingMixin:
                     "Rotate selection"
                     if gesture.data["mode"] == "rotate"
                     else "Move selection",
-                    [moved.get(s.name, s) for s in self._shape_handle().shapes],
+                    [
+                        moved.get(self._move_key(s), s)
+                        for s in self._shape_handle().shapes
+                    ],
                     gesture.data["context"],
                     meshes=tuple(moved.get(m.key, m) for m in self.fixture_meshes),
                 )

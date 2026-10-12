@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 import waldoctl
-from nicegui import app, ui
+from nicegui import app, run, ui
 from stl import Mode, mesh
 from waldoctl.shapes import Box, ShapeWorld
 
@@ -14,7 +14,7 @@ from tests.helpers.wait import reload_page, wait_until
 from tests.test_scene_jog_handles import _open
 from waldo_commander.common.theme import SceneColors
 from waldo_commander.services import world_files
-from waldo_commander.services.fixture_meshes import STORAGE_KEY
+from waldo_commander.services.fixture_meshes import MAX_STL_BYTES, STORAGE_KEY
 from waldo_commander.state import ui_state
 
 
@@ -63,13 +63,37 @@ async def test_fixture_upload_group_edit_undo_and_workcell_roundtrip(
 
     ascii_path = tmp_path / "ascii.stl"
     mesh.Mesh.from_file(str(source)).save(str(ascii_path), mode=Mode.ASCII)
-    await upload(user, ascii_path.name, ascii_path.read_bytes())
+    first_solid = ascii_path.read_bytes()
+    second = mesh.Mesh.from_file(str(source))
+    second.vectors[:, :, 0] += 100
+    second.save(str(ascii_path), mode=Mode.ASCII)
+    await upload(user, "multi.stl", first_solid + ascii_path.read_bytes())
+    await user.should_see("112 × 8 × 4 mm")
+    second.vectors[0, 0, 0] = float("nan")
+    second.save(str(ascii_path), mode=Mode.ASCII, update_normals=False)
+    await upload(user, "invalid-second.stl", first_solid + ascii_path.read_bytes())
+    await user.should_see("non-finite coordinates")
+    assert not element(user, "mesh-add").enabled
+    await upload(user, "large.stl", b" " * (MAX_STL_BYTES + 1))
+    await user.should_see("at most 10 MiB")
+    assert not element(user, "mesh-add").enabled
+    with monkeypatch.context() as limits:
+        from waldo_commander.services import fixture_meshes
+
+        limits.setattr(fixture_meshes, "MAX_STL_TRIANGLES", 3)
+        await upload(user, "dense.stl", data)
+        await user.should_see("at most 100,000 triangles")
+        assert not element(user, "mesh-add").enabled
+    await upload(user, ascii_path.name, first_solid)
     await user.should_see("12 × 8 × 4 mm")
     user.find(marker="mesh-units-m").click()
     await user.should_see("at most 10 m per side")
     assert not element(user, "mesh-add").enabled
     assert not (library / "assets").exists()
+    importer = view._mesh_import
     user.find(marker="mesh-import-close").click()
+    assert importer.data is None and importer.bounds is None
+    assert view._mesh_import is None
 
     right_click(user, view.scene, [], [0.4, 0.1, 0])
     user.find(marker="scene-import-mesh-here").click()
@@ -79,8 +103,10 @@ async def test_fixture_upload_group_edit_undo_and_workcell_roundtrip(
     await user.should_see("304.8 × 203.2 × 101.6 mm")
     user.find(marker="mesh-units-cm").click()
     await user.should_see("120 × 80 × 40 mm")
+    importer = view._mesh_import
     user.find(marker="mesh-add").click()
     await confirmed(view, lambda: len(view.fixture_meshes) == len(handle.shapes) == 1)
+    assert importer.data is None and view._mesh_import is None
     fixture = view.fixture_meshes[0]
     proxy = handle.shapes[0]
     key, proxy_key = fixture.key, f"shape:{proxy.name}"
@@ -161,6 +187,22 @@ async def test_fixture_upload_group_edit_undo_and_workcell_roundtrip(
     assert world_files.load_entry("bench").program == (proxy,)
     assert "meshes =" in (library / "bench.py").read_text()
     assert "meshes =" not in (library / "legacy.py").read_text()
+    from fastmcp import Client
+    from waldo_commander.mcp.server import get_mcp
+    from waldo_commander.services.control_lease import BROWSER, control_lease
+
+    async with Client(get_mcp()) as mcp:
+        await mcp.call_tool("control.take_control")
+        try:
+            await mcp.call_tool("world.library_save", {"name": "bench"})
+            assert world_files.read_authoring_entry("bench")[1] == (fixture,)
+            await mcp.call_tool(
+                "world.library_save",
+                {"name": "bench", "shapes": [list(proxy.to_wire())]},
+            )
+            assert world_files.read_authoring_entry("bench")[1] == (fixture,)
+        finally:
+            control_lease.seize(BROWSER, ui_state.active_client_id, "Browser")
     user.find(marker="workcell-load:legacy").click()
     await confirmed(view, lambda: handle.shapes == [legacy] and not view.fixture_meshes)
     user.find(marker="workcell-load:bench").click()
@@ -198,3 +240,215 @@ async def test_fixture_upload_group_edit_undo_and_workcell_roundtrip(
     await confirmed(view, lambda: len(handle.shapes) == 1)
     assert handle.shapes[0].pose == pytest.approx(proxy.pose)
     await user.should_not_see(marker="mesh-no-keepout")
+
+
+@pytest.mark.integration
+async def test_fixture_identity_proxy_deletion_and_partial_asset_recovery(
+    user, tmp_path, monkeypatch
+):
+    from dataclasses import replace
+
+    library = tmp_path / "worlds"
+    monkeypatch.setattr(world_files, "library_dir", lambda: library)
+    source = fixture_stl(tmp_path / "fixture.stl")
+    data = source.read_bytes()
+    view = await _open(user)
+    handle = waldoctl.commander.scene
+    await confirmed(view)
+    for name in ("Fixture", "Other"):
+        user.find(marker="scene-import-mesh").click()
+        await upload(user, f"{name}.stl", data)
+        await user.should_see("12 × 8 × 4 mm")
+        user.find(marker="mesh-add").click()
+        await confirmed(view, lambda: view._mesh_import is None)
+    fixture, other = view.fixture_meshes
+    proxy = fixture.proxy_names[0]
+    await user.should_see(marker="object-isolate")
+
+    right_click(user, view.scene, [], [0.5, 0.2, 0])
+    user.find(marker="scene-add-box").click()
+    await confirmed(view, lambda: len(handle.shapes) == 3)
+    field(user, "object-name", "mesh:Fixture")
+    await confirmed(view, lambda: any(s.name == "mesh:Fixture" for s in handle.shapes))
+    move = view.scene.interaction["shapeMove"]
+    assert move and move["node"] == view._shape_objects["shape:mesh:Fixture"].id
+    Drag(user, view.scene, "shape").begin(**move).release(**move, x=0.6, y=0.2, z=0.05)
+    await confirmed(
+        view,
+        lambda: next(s for s in handle.shapes if s.name == "mesh:Fixture").pose[0]
+        == 0.6,
+    )
+    assert view.fixture_meshes == (fixture, other)
+
+    select(user, view, fixture.key, extend=True)
+    move = view.scene.interaction["shapeMove"]
+    x, y, z = move["center"]
+    Drag(user, view.scene, "shape").begin(**move).release(**move, x=x + 0.02, y=y, z=z)
+    await confirmed(
+        view,
+        lambda: view.fixture_meshes[0].pose[0] == pytest.approx(fixture.pose[0] + 0.02),
+    )
+    assert next(s for s in handle.shapes if s.name == "mesh:Fixture").pose[
+        0
+    ] == pytest.approx(0.62)
+    user.find(marker="object-undo").click()
+    await confirmed(view, lambda: view.fixture_meshes == (fixture, other))
+
+    select(user, view, f"shape:{proxy}")
+    user.find(marker="object-delete").click()
+    await confirmed(view, lambda: not view.fixture_meshes[0].proxy_names)
+    user.find(marker="object-undo").click()
+    await confirmed(view, lambda: view.fixture_meshes[0] == fixture)
+    user.find(marker="object-redo").click()
+    await confirmed(view, lambda: not view.fixture_meshes[0].proxy_names)
+    select(user, view, "shape:mesh:Fixture")
+    field(user, "object-name", proxy)
+    await confirmed(view, lambda: any(s.name == proxy for s in handle.shapes))
+    select(user, view, fixture.key)
+    assert view._selected_objects == [fixture.key]
+    user.find(marker="object-delete").click()
+    await confirmed(view, lambda: len(view.fixture_meshes) == 1)
+    assert any(s.name == proxy for s in handle.shapes)
+    user.find(marker="object-undo").click()
+    await confirmed(view, lambda: len(view.fixture_meshes) == 2)
+
+    missing = view.fixture_meshes[0].to_dict()
+    (library / fixture.asset).unlink()
+    await reload_page(user)
+    assert await wait_until(lambda: ui_state.urdf_scene not in (None, view))
+    view = ui_state.urdf_scene
+    await user.should_see(marker="fixture-recovery-feedback")
+    await user.should_see("Unavailable fixtures")
+    assert view.fixture_meshes == (other,)
+    assert other.key in view._shape_objects
+    user.find(marker="scene-import-mesh").click()
+    await upload(user, "Third.stl", data)
+    await user.should_see("12 × 8 × 4 mm")
+    user.find(marker="mesh-add").click()
+    await confirmed(view, lambda: len(view.fixture_meshes) == 2)
+    assert missing in app.storage.general[STORAGE_KEY]
+    (library / fixture.asset).write_bytes(data)
+    await reload_page(user)
+    assert await wait_until(lambda: ui_state.urdf_scene not in (None, view))
+    view = ui_state.urdf_scene
+    await confirmed(view, lambda: len(view.fixture_meshes) == 3)
+    await user.should_not_see(marker="fixture-recovery-feedback")
+
+    nested = []
+    for folder, fixture in zip(("a", "b", "c"), view.fixture_meshes):
+        asset = f"assets/{folder}/part.stl"
+        path = library / asset
+        path.parent.mkdir(parents=True)
+        path.write_bytes(data)
+        nested.append(replace(fixture, asset=asset))
+    world_files.save_entry(
+        "nested", ShapeWorld(program=tuple(handle.shapes)), meshes=tuple(nested)
+    )
+    user.find(marker="scene-workcells").click()
+    await user.should_see(marker="workcell-load:nested")
+    user.find(marker="workcell-load:nested").click()
+    await confirmed(view, lambda: view.fixture_meshes == tuple(nested))
+    urls = [view._shape_objects[m.key].args[0] for m in nested]
+    assert len(set(urls)) == 3
+
+
+@pytest.mark.integration
+async def test_fixture_upload_invalidation_and_reload_during_confirmation(
+    user, tmp_path, monkeypatch
+):
+    from nicegui.elements.upload_files import LargeFileUpload
+
+    monkeypatch.setattr(world_files, "library_dir", lambda: tmp_path / "worlds")
+    source = fixture_stl(tmp_path / "Fixture.stl")
+    view = await _open(user)
+    await confirmed(view)
+    user.find(marker="scene-import-mesh").click()
+    importer = view._mesh_import
+    entered, release, read_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original_read = LargeFileUpload.read
+
+    async def held_read(file):
+        data = await original_read(file)
+        entered.set()
+        await release.wait()
+        read_finished.set()
+        return data
+
+    with monkeypatch.context() as delayed:
+        delayed.setattr(LargeFileUpload, "read", held_read)
+        await element(user, "mesh-upload").handle_uploads(
+            [LargeFileUpload("Old.stl", "model/stl", source)]
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            user.find(marker="mesh-upload").trigger("removed")
+            await upload(user, "Current.stl", source.read_bytes())
+            await user.should_see("12 × 8 × 4 mm")
+            release.set()
+            await asyncio.wait_for(read_finished.wait(), 5)
+            assert importer.filename == "Current.stl"
+        finally:
+            release.set()
+            await asyncio.wait_for(read_finished.wait(), 5)
+
+    from waldo_commander.components import mesh_import
+
+    entered, release, parse_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    actual_io = run.io_bound
+
+    async def held_parse(function, *args, **kwargs):
+        result = await actual_io(function, *args, **kwargs)
+        if function is mesh_import.stl_bounds:
+            entered.set()
+            await release.wait()
+            parse_finished.set()
+        return result
+
+    with monkeypatch.context() as delayed:
+        delayed.setattr(run, "io_bound", held_parse)
+        await upload(user, "Removed.stl", importer.data)
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            user.find(marker="mesh-upload").trigger("removed")
+            release.set()
+            await asyncio.wait_for(parse_finished.wait(), 5)
+            assert importer.data is None and not element(user, "mesh-add").enabled
+        finally:
+            release.set()
+            if entered.is_set():
+                await asyncio.wait_for(parse_finished.wait(), 5)
+    await upload(
+        user, "Current.stl", fixture_stl(tmp_path / "Current.stl").read_bytes()
+    )
+    await user.should_see("12 × 8 × 4 mm")
+
+    client = waldoctl.commander.client
+    actual_readback = client.shapes
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def held_readback():
+        world = await actual_readback()
+        entered.set()
+        await release.wait()
+        return world
+
+    with monkeypatch.context() as delayed:
+        delayed.setattr(client, "shapes", held_readback)
+        try:
+            user.find(marker="mesh-add").click()
+            await asyncio.wait_for(entered.wait(), 5)
+            reloading = asyncio.create_task(reload_page(user))
+            assert await wait_until(
+                lambda: ui_state.urdf_scene not in (None, view)
+                and ui_state.urdf_scene.scene is not None
+            )
+            replacement = ui_state.urdf_scene
+            release.set()
+            await reloading
+            await confirmed(replacement, lambda: len(replacement.fixture_meshes) == 1)
+            fixture = replacement.fixture_meshes[0]
+            assert fixture.name == "Current"
+            assert fixture.key in replacement._shape_objects
+            assert app.storage.general[STORAGE_KEY] == [fixture.to_dict()]
+        finally:
+            release.set()

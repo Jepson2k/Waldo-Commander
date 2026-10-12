@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import logging
+import hashlib
 from dataclasses import replace
 from typing import Any
 
 import numpy as np
-from nicegui import app, ui
+from nicegui import app, background_tasks, run, ui
 from waldoctl.shapes import Box, SHAPE_PREFIX, pose_matrix
 
 from waldo_commander.common.theme import SceneColors
@@ -17,11 +17,9 @@ from waldo_commander.services.fixture_meshes import (
     STORAGE_KEY,
     asset_path,
     mesh_size,
-    meshes_from_data,
+    restore_meshes,
 )
 from .shape_drawing_mixin import ShapeDrawingMixin
-
-logger = logging.getLogger(__name__)
 
 
 class MeshEditingMixin(ShapeDrawingMixin):
@@ -35,24 +33,54 @@ class MeshEditingMixin(ShapeDrawingMixin):
     _object_properties: Any
     _object_inspector_key: Any
     _delete_objects: Any
+    _toggle_isolation: Any
+    _isolated_view: bool
 
     def _init_fixture_meshes(self) -> None:
         self.fixture_meshes: tuple[FixtureMesh, ...] = ()
         self._drawn_meshes: dict[str, FixtureMesh] = {}
         self._mesh_import = None
-        try:
-            self.fixture_meshes = meshes_from_data(
-                app.storage.general.get(STORAGE_KEY, [])
-            )
-        except (OSError, ValueError, TypeError, KeyError) as error:
-            logger.warning("Fixture visuals could not be restored: %s", error)
+        self._unavailable_fixture_data = []
+        self._fixture_restore_error = ""
+        data = app.storage.general.get(STORAGE_KEY, [])
+        self._fixture_restore_pending = bool(data)
+        if data:
+            background_tasks.create(self._restore_fixture_meshes(data))
+
+    async def _restore_fixture_meshes(self, data) -> None:
+        restored = await run.io_bound(restore_meshes, data)
+        if restored is None or not self._fixture_restore_pending:
+            return
+        meshes, unavailable, errors = restored
+        self._fixture_restore_pending = False
+        self.fixture_meshes = meshes
+        self._unavailable_fixture_data = unavailable
+        self._fixture_restore_error = (
+            "Unavailable fixtures (metadata retained; restore the assets and reload): "
+            + "; ".join(errors)
+            if errors
+            else ""
+        )
+        self._render_fixture_meshes()
+        self._refresh_object_inspector()
 
     def _set_fixture_meshes(self, meshes: tuple[FixtureMesh, ...]) -> None:
-        if meshes == self.fixture_meshes:
-            return
-        self.fixture_meshes = meshes
-        app.storage.general[STORAGE_KEY] = [m.to_dict() for m in meshes]
-        self._render_fixture_meshes()
+        from waldo_commander.state import ui_state
+
+        app.storage.general[STORAGE_KEY] = [
+            *(m.to_dict() for m in meshes),
+            *self._unavailable_fixture_data,
+        ]
+        views = [self]
+        if ui_state.urdf_scene is not None and ui_state.urdf_scene is not self:
+            views.append(ui_state.urdf_scene)
+        for view in views:
+            view._fixture_restore_pending = False
+            view.fixture_meshes = meshes
+            view._unavailable_fixture_data = self._unavailable_fixture_data
+            view._fixture_restore_error = self._fixture_restore_error
+            view._render_fixture_meshes()
+            view._refresh_object_inspector()
 
     def _fixture(self, key: str) -> FixtureMesh | None:
         return next((m for m in self.fixture_meshes if m.key == key), None)
@@ -73,6 +101,11 @@ class MeshEditingMixin(ShapeDrawingMixin):
 
     def _fresh_fixture_name(self, stem: str) -> str:
         taken = {m.name for m in self.fixture_meshes}
+        taken.update(
+            item.get("name")
+            for item in self._unavailable_fixture_data
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        )
         taken.update(s.name for s in self._shape_handle().shapes)
         name, number = stem, 2
         while name in taken:
@@ -110,7 +143,7 @@ class MeshEditingMixin(ShapeDrawingMixin):
                 node = None
             if node is None:
                 path = asset_path(fixture.asset)
-                url = f"/fixture-assets/{path.name}"
+                url = f"/fixture-assets/{hashlib.sha256(str(path).encode()).hexdigest()}.stl"
                 if not any(getattr(route, "path", None) == url for route in app.routes):
                     app.add_static_file(url_path=url, local_file=path)
                 with self.scene:
@@ -188,6 +221,7 @@ class MeshEditingMixin(ShapeDrawingMixin):
             status,
             frozenset(self._locked_objects),
             frozenset(self._hidden_objects),
+            self._isolated_view,
         )
         if self._object_inspector_key == key:
             return
@@ -227,6 +261,11 @@ class MeshEditingMixin(ShapeDrawingMixin):
                     ).set_enabled(not readonly)
                 else:
                     ui.label(f"{len(selected)} objects").classes("scene-name flex-1")
+                ui.button(icon="flip_to_front", on_click=self._toggle_isolation).props(
+                    flat
+                ).tooltip(
+                    "Show all" if self._isolated_view else "Isolate selection"
+                ).mark("object-isolate")
                 with (
                     ui.button(icon="more_vert")
                     .props(flat)

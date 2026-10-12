@@ -78,6 +78,7 @@ class EditingMixin(ShapeEditingMixin):
     _last_fk_pose: tuple[float, ...] | None
     _handle_tcp_transform_for_ik: Any
     _solve_target_reach: Any
+    _has_control: Any
     _gizmo_miss_sent: bool | None
     _gizmo_choices: dict[str, str]
     _gizmo_frames: dict[str, dict[str, Any]]
@@ -462,8 +463,13 @@ class EditingMixin(ShapeEditingMixin):
         session = (self._edit_active, self._edit_session)
 
         def current() -> bool:
+            from waldo_commander.services.control_lease import require_browser_control
+
             return (
-                session == (self._edit_active, self._edit_session)
+                not self.scene.is_deleted
+                and self._has_control()
+                and require_browser_control(self.scene.client.id, notify=False)
+                and session == (self._edit_active, self._edit_session)
                 and self._gizmo_shown()
                 and (not self._edit_active or self.check_edit_context())
             )
@@ -479,7 +485,8 @@ class EditingMixin(ShapeEditingMixin):
             if not current() or not self._editing_unified_target:
                 return
             self.scene.gestures.bump()
-            self._keep_tool_vertical = not self._keep_tool_vertical
+            previous = self._keep_tool_vertical
+            self._keep_tool_vertical = not previous
             if self._keep_tool_vertical and self._requested_edit_pose is not None:
                 from pinokin import so3_from_rpy, so3_rpy
 
@@ -489,8 +496,15 @@ class EditingMixin(ShapeEditingMixin):
                 so3_rpy(self._vertical_rotation(rotation), rpy)
                 self._requested_edit_pose = pose[:3] + tuple(rpy)
                 self._solve_target_reach()
+                missed = self._tcp_ik_missed
                 self._refresh_editing_pose()
                 self._write_target_edit()
+                if missed or self._requested_edit_pose != self._edit_start_pose:
+                    self._keep_tool_vertical = previous
+                    self._requested_edit_pose = pose
+                    self._solve_target_reach()
+                    self._refresh_editing_pose()
+                    self.scene.set_gizmo_miss(True)
                 self._push_tcp_pose(force=True)
             self._push_interaction()
 

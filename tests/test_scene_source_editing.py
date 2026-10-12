@@ -7,7 +7,7 @@ import pytest
 import waldoctl
 from nicegui.testing import User
 
-from tests.helpers.scene_events import ball, gizmo, held_until, right_click
+from tests.helpers.scene_events import gizmo, held_until, right_click, translated_ball
 from tests.helpers.wait import wait_until
 from tests.test_scene_jog_handles import _open
 from waldo_commander.components.simulation_engine import simulation
@@ -44,8 +44,11 @@ rbt.move_j(
     user.find(marker="scene-edit-target").click()
     assert await wait_until(lambda: urdf._edit_active, 5)
     # A release writes the target, and the edit stays open for the next.
-    gizmo(user, urdf.scene).move(**ball(x=0.005)).release(**ball(x=0.005))
+    start = urdf._requested_edit_pose
+    translation = translated_ball(urdf.scene, x=0.005)
+    gizmo(user, urdf.scene).move(**translation).release(**translation)
     assert not urdf._tcp_ik_missed
+    assert urdf._requested_edit_pose == pytest.approx((start[0] + 0.005, *start[1:]))
     reached = [math.degrees(q) for q in urdf.get_editing_angles()]
     updated = textarea.value
     assert updated != source
@@ -61,7 +64,8 @@ rbt.move_j(
     assert len(updated.splitlines()) == len(source.splitlines())
     assert urdf._edit_active
     # Its own write does not end the edit: the next release writes again.
-    gizmo(user, urdf.scene).move(**ball(x=0.005)).release(**ball(x=0.005))
+    translation = translated_ball(urdf.scene, x=0.005)
+    gizmo(user, urdf.scene).move(**translation).release(**translation)
     assert urdf._edit_active and textarea.value not in (source, updated)
     updated = textarea.value
     urdf.cancel_target_edit()
@@ -84,6 +88,7 @@ rbt.move_j(
 @pytest.mark.integration
 async def test_target_drag_keeps_motion_kind_and_live_robot_stationary(
     user: User,
+    monkeypatch,
 ) -> None:
     urdf = await _open(user)
     textarea = ui_state.active_textarea
@@ -104,16 +109,22 @@ rbt.move_l(pose=[0, 280, 250, 90, 0, 90], speed=0.5)
     assert urdf._edit_active
     live = waldoctl.commander.status.joints.angles.rad.copy()
     start = urdf._requested_edit_pose
-    drag = gizmo(user, urdf.scene).move(**ball(x=0.005))
+    translation = translated_ball(urdf.scene, x=0.005)
+    drag = gizmo(user, urdf.scene).move(**translation)
     assert await held_until(drag, lambda: urdf._requested_edit_pose != start, 5)
     drag.abort()
     assert urdf._requested_edit_pose == start
     # A cancelled drag writes nothing.
     assert textarea.value == source
     # A released one keeps the target's Cartesian form.
-    gizmo(user, urdf.scene).move(**ball(x=0.005)).release(**ball(x=0.005))
+    gizmo(user, urdf.scene).move(**translation).release(**translation)
     assert textarea.value != source
-    assert ast.parse(textarea.value).body[-1].value.func.attr == "move_l"
+    call = ast.parse(textarea.value).body[-1].value
+    assert call.func.attr == "move_l"
+    coordinates = ast.literal_eval(
+        next(k.value for k in call.keywords if k.arg == "pose")
+    )
+    assert coordinates == pytest.approx([5, 280, 250, 90, 0, 90], abs=0.001)
     assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live)
     urdf.cancel_target_edit()
 
@@ -121,17 +132,44 @@ rbt.move_l(pose=[0, 280, 250, 90, 0, 90], speed=0.5)
     assert await wait_until(
         lambda: program.dry_run.commanded_revision == program.dry_run.revision, 5
     )
+    assert program.dry_run.commanded.stop == "completed"
     target = program.dry_run.targets[-1]
     right_click(user, urdf.scene, [f"target:{target.id}"])
     user.find(marker="scene-edit-target").click()
     assert urdf._edit_active
     before = textarea.value
     written = urdf._requested_edit_pose
-    impossible = gizmo(user, urdf.scene).move(**ball(x=10))
-    impossible.release(**ball(x=10))
+    translation = translated_ball(urdf.scene, x=10)
+    impossible = gizmo(user, urdf.scene).move(**translation)
+    impossible.release(**translation)
     # Out of reach, the release goes back to where the target was written.
     assert urdf._edit_active and textarea.value == before
     assert urdf._requested_edit_pose == written
+    right_click(user, urdf.scene, ["gizmo:tcp"])
+    from waldo_commander.services.urdf_scene.ik_solver import EditingIKResult
+
+    with monkeypatch.context() as unreachable:
+        unreachable.setattr(
+            urdf._ik_solver,
+            "solve",
+            lambda target_pos, current_angles, target_orientation: EditingIKResult(
+                False, current_angles, float("inf"), 0
+            ),
+        )
+        user.find(marker="scene-gizmo-vertical").click()
+    assert not urdf._keep_tool_vertical
+    assert not urdf.scene.interaction["alignment"]["vertical"]
+    assert urdf._requested_edit_pose == written
+    assert textarea.value == before
+
+    right_click(user, urdf.scene, ["gizmo:tcp"])
+    epoch = urdf.scene.gestures.epoch
+    with monkeypatch.context() as displaced:
+        displaced.setattr(ui_state, "active_client_id", "replacement-browser")
+        user.find(marker="scene-gizmo-vertical").click()
+        assert not urdf._keep_tool_vertical
+        assert textarea.value == before
+        assert urdf.scene.gestures.epoch == epoch
     await ui_state.control_panel.move_joint_to_angle(0, math.degrees(live[0]) + 10)
     assert await ui_state.control_panel.client.wait_motion(timeout=5, settle_window=0.2)
     assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live, abs=0.002)

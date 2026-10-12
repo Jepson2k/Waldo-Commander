@@ -5,6 +5,7 @@
 
 import * as THREE from "three";
 import { GIZMO } from "./handles.js";
+import { cachedStls } from "./kinds.js";
 import { FACES } from "./viewcube.js";
 
 export function surface(core) {
@@ -74,6 +75,7 @@ export function surface(core) {
         })),
       };
     },
+    cachedStls,
     renderResources() {
       // Scene traversal alone misses materials detached without disposal.
       core.scene.traverse(o => {

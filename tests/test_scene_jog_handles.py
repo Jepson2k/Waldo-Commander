@@ -439,6 +439,25 @@ async def test_gizmo_menu_uses_the_edited_lines_setup_and_remembers_each_kind(
         assert state["name"] == "nest"
         assert state["origin"] == pytest.approx([0.1, 0.21, 0.03])
         assert textarea.value == before
+        drag = gizmo(user, scene)
+        epoch = scene.gestures.epoch
+        assert scene.gestures.open
+        store.save(
+            "bench",
+            SetupSnapshot(
+                frames={
+                    "fixture": Frame((100, 200, 30, 0, 0, 180)),
+                    "nest": Frame((10, 0, 0, 0, 0, 0), "fixture"),
+                }
+            ),
+        )
+        assert scene.gestures.epoch > epoch and not scene.gestures.open
+        assert scene.interaction["alignment"]["origin"] == pytest.approx(
+            [0.09, 0.2, 0.03]
+        )
+        assert urdf._gizmo_basis("translate") == pytest.approx(_rz(180))
+        drag.release(**ball(x=0.02))
+        assert textarea.value == before
         urdf.cancel_target_edit()
         right_click(user, scene, ["gizmo:tcp"])
         tool = next(iter(user.find(marker="scene-gizmo-align-tool").elements))

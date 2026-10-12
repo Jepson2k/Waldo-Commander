@@ -113,6 +113,7 @@ export class Inspection {
       const button = element("button", "wc-path-event", this.core.root);
       const leader=element("span","wc-path-event-leader",this.core.root);
       const marker={element:button, leader, record, block:bi, row:block.start,members:[]};
+      button.dataset.pathRecord = record; button.dataset.pathBlock = bi;
       button.onclick=()=>{
         if(marker.members.length>1) {this.chooseEvents(marker.members,button.getBoundingClientRect());return;}
         this.inspect({record:marker.record,row:marker.row,block:marker.block});
@@ -456,6 +457,7 @@ export class Inspection {
       const r=this.data.records[marker.record],b=r.blocks[marker.block];
       const button=element("button","",this.choices,`${paired?`${r.label} · `:""}${b.name} · Line ${b.line} · ${reading(r.source[marker.row]*r.dt,2)} s`);
       button.setAttribute("aria-label",`${r.label} ${b.name} line ${b.line}`);
+      button.dataset.pathRecord = marker.record; button.dataset.pathBlock = marker.block;
       button.onclick=()=>{
         this.choices.hidden=true;
         this.inspect({record:marker.record,block:marker.block,row:marker.row});this.send(true);this.core.canvas.focus({preventScroll:true});

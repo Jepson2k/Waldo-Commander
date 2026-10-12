@@ -1419,6 +1419,9 @@ class EditorPanel(FileOperationsMixin):
             return
         programs = waldoctl.commander.programs
         with client:
+            view = ui_state.urdf_scene
+            if view is not None and view.scene.client is client:
+                view._gizmo_setup_saved(directory, name)
             for tab_id, widgets in list(self._tab_widgets.items()):
                 setup = widgets.get("setup")
                 tab = programs.get(tab_id)

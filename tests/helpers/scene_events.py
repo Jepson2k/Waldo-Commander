@@ -95,8 +95,27 @@ def ball(
     ry: float = 0.0,
     rz: float = 0.0,
 ) -> dict[str, float]:
-    """The gizmo ball's pose in its frame: metres, and XYZ Euler radians."""
+    """The ball's pose in the frozen alignment frame: metres and XYZ radians."""
     return {"x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz}
+
+
+def translated_ball(
+    scene: Any, x: float = 0.0, y: float = 0.0, z: float = 0.0
+) -> dict[str, float]:
+    """Preserve the displayed TCP orientation, as a browser translation does."""
+    from scipy.spatial.transform import Rotation
+
+    _, rotation = scene.tcp_at(scene._tcp_rev)
+    tool = Rotation.from_matrix(rotation)
+    alignment = scene.interaction["alignment"]
+    if alignment["key"] == "tool":
+        basis = tool
+    elif alignment["quaternion"] is not None:
+        basis = Rotation.from_quat(alignment["quaternion"])
+    else:
+        basis = Rotation.identity()
+    rx, ry, rz = (basis.inv() * tool).as_euler("XYZ")
+    return ball(x, y, z, rx, ry, rz)
 
 
 def right_click(

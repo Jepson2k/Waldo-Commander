@@ -71,7 +71,7 @@ def world_module(world: ShapeWorld, *, variable: str = "world") -> str:
 
 
 def save_entry(
-    name: str, world: ShapeWorld, *, meshes: tuple[FixtureMesh, ...] = ()
+    name: str, world: ShapeWorld, *, meshes: tuple[FixtureMesh, ...] | None = None
 ) -> Path:
     """Write a library entry, replacing any previous one atomically.
 
@@ -80,6 +80,14 @@ def save_entry(
     work, and a half-written world reads back as an import failure.
     """
     path = _entry_path(name)
+    if meshes is None:
+        meshes = ()
+        if path.exists():
+            for node in ast.parse(path.read_bytes()).body:
+                if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "meshes" for t in node.targets
+                ):
+                    meshes = meshes_from_data(ast.literal_eval(node.value))
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(

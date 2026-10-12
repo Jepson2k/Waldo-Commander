@@ -61,6 +61,7 @@ class TCPControlsMixin:
 
     # Defined later in the MRO (JogHandlesMixin), so annotations only: a stub
     # here would shadow the real method.
+    _push_interaction: Callable[[], None]
     _rules_changed: Callable[[], None]
     _admitted: Callable[[], None]
 
@@ -264,6 +265,21 @@ class TCPControlsMixin:
             "origin": frame["origin"] if frame else None,
             "vertical": bool(self._editing_unified_target and self._keep_tool_vertical),
         }
+
+    def _gizmo_setup_saved(self, directory, name) -> None:
+        if self._gizmo_setup_key is None:
+            return
+        source, line = self._gizmo_setup_key
+        binding = program_setup(source, line)
+        if (
+            binding is None
+            or binding.name != name
+            or SetupStore(binding.directory).directory != directory
+        ):
+            return
+        self.scene.gestures.bump()
+        self._gizmo_setup_key = None
+        self._push_interaction()
 
     def _gizmo_basis(self, mode: str) -> np.ndarray:
         from scipy.spatial.transform import Rotation

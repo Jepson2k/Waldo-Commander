@@ -20,11 +20,17 @@ export class Menu {
     this.press = null;
     this.released = false;
     this.long = null;
-    const canvas = core.canvas;
+    const canvas = core.root;
     this.onDown = (e) => this.down(e);
     this.onMove = (e) => this.move(e);
     this.onUp = (e) => this.up(e);
     this.onContext = (e) => this.context(e);
+    this.onClick = (e) => {
+      if (this.suppressClick && e.target.closest?.("[data-path-record]") === this.suppressClick) {
+        e.preventDefault(); e.stopImmediatePropagation(); this.suppressClick = null;
+      }
+    };
+    canvas.addEventListener("click", this.onClick, { capture: true });
     canvas.addEventListener("pointerdown", this.onDown, { capture: true });
     window.addEventListener("pointermove", this.onMove);
     window.addEventListener("pointerup", this.onUp);
@@ -43,6 +49,8 @@ export class Menu {
   }
 
   down(e) {
+    if (e.target !== this.core.canvas && !e.target.closest?.("[data-path-record]")) return;
+    this.suppressClick = null;
     this.close();
     this.cancelLongPress();
     const mac = /Mac/.test(navigator.platform);
@@ -67,6 +75,7 @@ export class Menu {
           this.long = null;
           if (long && !this.core.gestures.active) {
             this.core.pointer.suppressTap(long.id);
+            this.suppressClick = document.elementFromPoint(long.x, long.y)?.closest("[data-path-record]");
             if (this.core.inspection.dragging) this.core.pointer.abortDrag("path menu");
             this.request(long.x, long.y);
           }
@@ -97,6 +106,7 @@ export class Menu {
   }
 
   context(e) {
+    if (e.target !== this.core.canvas && !e.target.closest?.("[data-path-record]")) return;
     e.preventDefault();
     e.stopPropagation();
     // A right press decides at its release; this one had none: the menu
@@ -127,10 +137,18 @@ export class Menu {
     if (core.gestures.blocked || !core.live || this.dragging) return;
     const gen = ++this.gen;
     const { hits, ground, surface } = core.pointer.contextAt(cx, cy);
-    const hit = core.inspection.pick(cx, cy).find(h => h.record === 0);
+    const event = document.elementFromPoint(cx, cy)?.closest("[data-path-record]");
+    const marker = core.inspection.markers.find(m => m.element === event);
+    if (marker?.members.length > 1) {
+      core.inspection.chooseEvents(marker.members, event.getBoundingClientRect());
+      return;
+    }
+    const hit = event ? (event.dataset.pathRecord === "0" ? {block: Number(event.dataset.pathBlock)} : null)
+      : core.inspection.pick(cx, cy).find(h => h.record === 0);
+    if (event) hits.length = 0;
     const path = hit ? { revision: core.inspection.data.revision, block: hit.block, shown: core.inspection.sweep.block === hit.block } : null;
-    if(gizmo || core.pointer.handlesAt(cx,cy).some(h=>h.tc===core.gizmos.tcp) ||
-       core.gizmos.gizmoShown && core.pointer.hit(cx,cy)?.object===core.gizmos.ball) {
+    if(!event && (gizmo || core.pointer.handlesAt(cx,cy).some(h=>h.tc===core.gizmos.tcp) ||
+       core.gizmos.gizmoShown && core.pointer.hit(cx,cy)?.object===core.gizmos.ball)) {
       hits.unshift("gizmo:tcp");core.pointer.hover.pinned=true;
     }
     this.pending = { gen, hits, ground, surface, path, cx, cy, epoch: core.gestures.epoch };
@@ -162,8 +180,9 @@ export class Menu {
   }
 
   dispose() {
-    const canvas = this.core.canvas;
+    const canvas = this.core.root;
     this.cancelLongPress();
+    canvas.removeEventListener("click", this.onClick, { capture: true });
     canvas.removeEventListener("pointerdown", this.onDown, { capture: true });
     window.removeEventListener("pointermove", this.onMove);
     window.removeEventListener("pointerup", this.onUp);

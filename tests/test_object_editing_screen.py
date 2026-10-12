@@ -111,6 +111,11 @@ class TestObjectEditing:
         finally:
             click_marked(screen, "object-undo")
             confirmed(screen, lambda: view.fixture_meshes == before)
+            wait_for_scene_idle(screen)
+            assert not any(
+                url.startswith("/fixture-assets/")
+                for url in scene_js(screen, "return S.cachedStls()")
+            )
 
     def test_select_drag_cancel_undo_and_inspector(self, object_screen):
         screen = object_screen

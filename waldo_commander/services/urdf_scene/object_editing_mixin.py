@@ -195,7 +195,7 @@ class ObjectEditingMixin(MeshEditingMixin):
             self.cancel_target_edit()
         if self._selected_objects and all(map(self._movable, self._selected_objects)):
             key = self._selected_objects[0]
-            self._start_shape_move(self._move_name(self._object_shape(key)))
+            self._start_shape_move(self._move_key(self._object_shape(key)))
         self._push_interaction()
         self._refresh_object_inspector()
         # A newly selected object opens the panel; one only refreshed, as an
@@ -209,6 +209,18 @@ class ObjectEditingMixin(MeshEditingMixin):
     def _prune_object_marks(self, handle) -> None:
         """Hidden and locked follow a rename and go with their object, so a
         later object given the same name starts out shown and unlocked."""
+        if (
+            handle.confirmed
+            and not self.object_history.busy
+            and not self._fixture_restore_pending
+        ):
+            names = {s.name for s in handle.shapes}
+            meshes = tuple(
+                replace(m, proxy_names=tuple(n for n in m.proxy_names if n in names))
+                for m in self.fixture_meshes
+            )
+            if meshes != self.fixture_meshes:
+                self._set_fixture_meshes(meshes)
         renamed = {
             f"{SHAPE_PREFIX}{before}": f"{SHAPE_PREFIX}{after}"
             for before, after in self._object_renames
@@ -298,6 +310,14 @@ class ObjectEditingMixin(MeshEditingMixin):
                 .mark("object-redo"),
             )
         with panel.body:
+            self._scene_feedback = (
+                ui.label().classes("text-xs text-wc-error").mark("scene-feedback")
+            )
+            self._fixture_feedback = (
+                ui.label()
+                .classes("text-xs text-wc-warning")
+                .mark("fixture-recovery-feedback")
+            )
             self._library_host = ui.column().classes("w-full gap-0")
             self._object_tree = (
                 ui.column().classes("scene-tree w-full").mark("scene-tree")
@@ -348,6 +368,10 @@ class ObjectEditingMixin(MeshEditingMixin):
             len(history.redo_stack),
             handle is not None and handle.confirmed,
         )
+        self._scene_feedback.set_text(history.feedback)
+        self._scene_feedback.set_visibility(bool(history.feedback) and not selected)
+        self._fixture_feedback.set_text(self._fixture_restore_error)
+        self._fixture_feedback.set_visibility(bool(self._fixture_restore_error))
         undo, redo = self._history_buttons
         undo.set_enabled(bool(history.undo_stack) and not history.busy)
         redo.set_enabled(bool(history.redo_stack) and not history.busy)
@@ -963,18 +987,25 @@ class ObjectEditingMixin(MeshEditingMixin):
                     and current not in shapes
                 ):
                     raise ValueError(f"Unlock {current.name} before editing it")
-            if meshes is None and renames:
-                renamed = dict(renames)
-                meshes = tuple(
-                    replace(
-                        m, proxy_names=tuple(renamed.get(n, n) for n in m.proxy_names)
-                    )
-                    for m in self.fixture_meshes
+            renamed = dict(renames)
+            remaining = {s.name for s in shapes}
+            meshes = tuple(
+                replace(
+                    m,
+                    proxy_names=tuple(
+                        renamed.get(n, n)
+                        for n in m.proxy_names
+                        if renamed.get(n, n) in remaining
+                    ),
                 )
-            if meshes is not None:
-                for current in self.fixture_meshes:
-                    if current.key in self._locked_objects and current not in meshes:
-                        raise ValueError(f"Unlock {current.name} before editing it")
+                for m in (self.fixture_meshes if meshes is None else meshes)
+            )
+            members = [n for m in meshes for n in m.proxy_names]
+            if len(members) != len(set(members)):
+                raise ValueError("Each proxy must belong to only one fixture")
+            for current in self.fixture_meshes:
+                if current.key in self._locked_objects and current not in meshes:
+                    raise ValueError(f"Unlock {current.name} before editing it")
             await self.object_history.commit(
                 label,
                 shapes,
@@ -989,6 +1020,8 @@ class ObjectEditingMixin(MeshEditingMixin):
         except (ValueError, TypeError) as error:
             refused = True
             self.object_history.feedback = str(error)
+            if (panel := self._scene_panel()) is not None:
+                panel.open()
             return False
         finally:
             self._push_interaction()

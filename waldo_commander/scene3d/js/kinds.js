@@ -102,6 +102,7 @@ const loader = new STLLoader();
 // again, and smoothing is the slow part. A file that changes in place is
 // sent under a new URL.
 const smoothed = new Map();
+export const cachedStls = () => [...smoothed.keys()];
 
 // STL files carry one flat normal per triangle, so curved surfaces render as
 // facets. Average the normals of the triangles that meet at each vertex,
@@ -192,8 +193,11 @@ export async function loadStl(url, wireframe) {
     geometry.dispose();
     return edges;
   }
+  const fixture = url.startsWith("/fixture-assets/");
+  const geometry = fixture ? await loader.loadAsync(url) : (await loadSmoothed(url)).clone();
+  if (fixture) smoothNormals(geometry, 32);
   const mesh = new THREE.Mesh(
-    (await loadSmoothed(url)).clone(),
+    geometry,
     new THREE.MeshStandardMaterial({ transparent: true, roughness: 0.55, metalness: 0.1 }),
   );
   mesh.castShadow = true;
