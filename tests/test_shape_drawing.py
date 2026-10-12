@@ -135,5 +135,20 @@ async def test_draw_floor_face_cancel_stale_and_recorded_undo(user):
     editor.value += "\n# edit while the released drawing is being committed\n"
     await user.should_see("changed during this edit")
     await user.should_see(marker="scene-feedback")
+    assert "text-wc-error" in user.find(marker="scene-feedback").elements.pop().classes
     assert not view._selected_objects
     assert handle.shapes == before
+
+    select(user, view, f"shape:{fixture.name}")
+    await user.should_not_see(marker="scene-feedback")
+    await user.should_not_see(marker="object-feedback")
+    field(user, "object-name", handle.shapes[1].name)
+    await user.should_see(marker="object-feedback")
+    assert "text-wc-error" in user.find(marker="object-feedback").elements.pop().classes
+    field(user, "object-dim-x", fixture.x * 1000 + 10)
+    await confirmed(view, lambda: handle.shapes[0].x > fixture.x)
+    await user.should_not_see(marker="object-feedback")
+    assert user.find(marker="object-undo").elements.pop().enabled
+    assert user.find(marker="object-undo-tooltip").elements.pop().text == (
+        "Undo object edit · Ctrl+Z"
+    )

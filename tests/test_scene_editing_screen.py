@@ -11,13 +11,16 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import (
+    click_marked,
     click_tab,
     close_panel,
     focus_editor,
+    marked_element,
     run_in_app,
     viewport,
 )
-from tests.helpers.browser_session import wait
+from tests.helpers.browser_session import no_visible, wait
+from tests.helpers.review_scenes import framed_program
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     end_target_edit,
@@ -35,13 +38,14 @@ from tests.helpers.scene_screen import (
     probe,
     program_previewed,
     reset_target_edit,
+    settled_element,
 )
 from tests.helpers.scene_surface import (
     scene_js,
     scene_object_pixel,
     wait_for_scene_idle,
 )
-from tests.helpers.visual_evidence import VisualEvidence
+from tests.helpers.visual_evidence import VisualEvidence, enabled
 from tests.helpers.wait import screen_wait_for_scene_ready
 from waldo_commander.state import ui_state
 from waldo_commander.services.scene_source import target_binding
@@ -49,16 +53,22 @@ from waldo_commander.services.scene_source import target_binding
 
 @pytest.mark.browser
 class TestSceneEditing:
-    def test_tool_aligned_target_drag_writes_world_pose(self, class_screen):
+    def test_tool_aligned_target_drag_writes_world_pose(self, class_screen, request):
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)
         at_start(screen)
         scene = ui_state.urdf_scene
+        source = (
+            framed_program(request.getfixturevalue("tmp_path"))
+            if enabled()
+            else EDIT_PROGRAM
+        )
         with (
             viewport(screen, 1920, 1080),
             camera_kept(screen),
-            program_previewed(EDIT_PROGRAM) as targets,
+            program_previewed(source) as targets,
         ):
+            evidence = VisualEvidence(screen, "gizmo-frames")
             try:
                 scene_js(screen, "S.setCameraPose(arguments[0])", TCP_VIEW)
                 wait_for_scene_idle(screen)
@@ -68,20 +78,33 @@ class TestSceneEditing:
                     "Edit Target...",
                 )
                 wait(screen).until(lambda _: gizmo(screen, "tcp:ball"))
+                if evidence.enabled:
+                    screen.selenium.find_element(
+                        By.CSS_SELECTOR, ".wc-gizmo-frame"
+                    ).click()
+                    settled_element(
+                        screen,
+                        lambda: marked_element(
+                            screen, "scene-gizmo-align-frame:Tilted-nest"
+                        ),
+                    )
+                    wait_for_scene_idle(screen)
+                    evidence.capture("01-frame-menu-1920")
+                    click_marked(screen, "scene-gizmo-align-tool")
+                    wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+                else:
+                    handle = wait(screen).until(
+                        lambda _: probe(screen, "arrowTip", "tcp:ball")
+                    )
+                    gizmo_choice(screen, "align-tool", at=handle)
                 initial = np.array(run_in_app(lambda: scene._requested_edit_pose))
                 tool_x = Rotation.from_euler("XYZ", initial[3:]).as_matrix()[:, 0]
                 assert abs(tool_x[0]) < 0.9
-                handle = wait(screen).until(
-                    lambda _: probe(screen, "arrowTip", "tcp:ball")
-                )
-                gizmo_choice(screen, "align-tool", at=handle)
                 wait(screen).until(
                     lambda _: gizmo(screen, "tcp:ball")["frame"] == "Tool"
                 )
                 wait_for_scene_idle(screen)
-                assert (
-                    run_in_app(lambda: ui_state.active_textarea.value) == EDIT_PROGRAM
-                )
+                assert run_in_app(lambda: ui_state.active_textarea.value) == source
                 spot = wait(screen).until(
                     lambda _: probe(screen, "arrowTip", "tcp:ball", "X")
                 )
@@ -101,7 +124,7 @@ class TestSceneEditing:
                     lambda _: (
                         value := run_in_app(lambda: ui_state.active_textarea.value)
                     )
-                    != EDIT_PROGRAM
+                    != source
                     and value
                 )
                 line = run_in_app(lambda: scene._edit_line)
@@ -115,8 +138,32 @@ class TestSceneEditing:
                 ).as_matrix() == pytest.approx(
                     Rotation.from_euler("XYZ", initial[3:]).as_matrix(), abs=1e-4
                 )
+                if evidence.enabled:
+                    screen.selenium.find_element(
+                        By.CSS_SELECTOR, ".wc-gizmo-frame"
+                    ).click()
+                    settled_element(
+                        screen,
+                        lambda: marked_element(
+                            screen, "scene-gizmo-align-frame:Tilted-nest"
+                        ),
+                    ).click()
+                    wait(screen).until(
+                        lambda _: gizmo(screen, "tcp:ball")["frame"] == "Tilted-nest"
+                    )
+                    wait(screen).until(
+                        lambda _: scene_js(
+                            screen, "return S.byName('gizmo:aligned-frame')?.visible"
+                        )
+                    )
+                    wait_for_scene_idle(screen)
+                    wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+                    evidence.capture("02-named-frame-axes-1920")
+                    gizmo_choice(screen, "align-world")
+                    evidence.finish()
                 end_target_edit(screen)
             finally:
+                evidence.stop()
                 reset_target_edit(screen)
 
     def test_keep_tool_vertical_rewrites_once_and_undo_restores(self, class_screen):

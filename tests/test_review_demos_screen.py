@@ -15,35 +15,55 @@ import numpy as np
 import pytest
 import waldoctl
 from nicegui import core
+from scipy.spatial.transform import Rotation
 from waldoctl.shapes import Box
-from selenium.common.exceptions import (
-    StaleElementReferenceException,
-    TimeoutException,
-)
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import (
+    click_marked,
     click_tab,
     close_panel,
+    focus_editor,
     marked_element,
     run_in_app,
     viewport,
 )
 from tests.helpers.browser_session import no_visible, wait
 from tests.helpers.demo_video import DemoVideo
+from tests.helpers.review_scenes import (
+    FIXTURE_VIEW,
+    SWEEP_VIEW,
+    bracket_stl,
+    framed_program,
+    swept_preview,
+    tilted_target_program,
+)
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     PATH_PROGRAM,
     PATH_VIEW,
     TCP_VIEW,
     at_start,
+    ball_mm,
+    camera_action,
     camera_kept,
+    camera_pose,
+    camera_settled,
+    clear_selection,
+    click_object,
     confirmed,
     gizmo,
+    object_mode,
+    path_point,
     place_shape,
     probe,
     program_previewed,
+    reset_target_edit,
+    settled_element as _settled,
+    settled_pixel,
+    zoom,
 )
 from tests.helpers.scene_surface import (
     project_local,
@@ -62,6 +82,15 @@ pytestmark = pytest.mark.timeout(300)
 
 #: The floor in front of the arm, close enough to see a target land there.
 PLACEMENT_VIEW = [0.333, 0.447, 0.402, 0.05, 0.2, 0.15]
+
+
+def _focus_subject(screen):
+    """Fit the selection with room for the handles and their drag travel."""
+    camera_action(screen, "focus")
+    camera_settled(screen)
+    pose = camera_pose(screen)
+    zoom(screen, float(np.linalg.norm(np.subtract(pose[:3], pose[3:]))) * 1.2)
+    camera_settled(screen)
 
 
 def _arm_still(timeout: float = 4.0) -> None:
@@ -147,32 +176,6 @@ def _menu_item(screen, starts: str):
     return wait(screen).until(settled)
 
 
-def _settled(screen, find):
-    """``find()``'s element once it is shown and its menu has finished
-    opening, so the pointer is aimed where it stays."""
-    previous = None
-
-    def ready(_):
-        nonlocal previous
-        # The menu is re-rendered as it fills in, so an entry can go stale.
-        try:
-            e = find()
-            if not e.is_displayed():
-                return None
-            rect, previous = (e.rect, previous), e.rect
-            moving = screen.selenium.execute_script(
-                "const m=arguments[0].closest('.q-menu');"
-                "return !!m && m.getAnimations({subtree:true})"
-                ".some(a=>a.playState==='running');",
-                e,
-            )
-        except StaleElementReferenceException:
-            return None
-        return e if rect[0] == rect[1] and not moving else None
-
-    return wait(screen).until(ready)
-
-
 def _outward(
     point: tuple[float, float], away: tuple[float, float], distance: float = 260
 ) -> tuple[float, float]:
@@ -241,6 +244,67 @@ def _gizmo_center(screen) -> tuple[float, float]:
     return x, y
 
 
+def _press_mark(video, marker, settle=None, seconds=0.45):
+    element = _settled(video.screen, lambda: marked_element(video.screen, marker))
+    video.glide(_center(element), seconds)
+    video.click(settle)
+
+
+def _open_scene_panel(screen):
+    if no_visible(screen, ".scene-panel"):
+        click_marked(screen, "tab-scene")
+    wait(screen).until(lambda _: marked_element(screen, "scene-tree").is_displayed())
+
+
+def _frame_choice(video, choice, label):
+    screen = video.screen
+    badge = _settled(
+        screen, lambda: screen.selenium.find_element(By.CSS_SELECTOR, ".wc-gizmo-frame")
+    )
+    video.jump(*_outward(_center(badge), _arm_pixel(screen), 100))
+    video.glide(_center(badge), 0.4)
+    video.click()
+    _press_mark(video, f"scene-gizmo-{choice}")
+    wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+    if label is not None:
+        wait(screen).until(lambda _: gizmo(screen, "tcp:ball")["frame"] == label)
+    video.frame()
+
+
+def _edit_target(screen, target):
+    from tests.helpers.scene_screen import choose
+
+    choose(screen, *settled_pixel(screen, f"targetgroup:{target}"), "Edit Target...")
+    wait(screen).until(lambda _: gizmo(screen, "tcp:ball"))
+    wait_for_scene_idle(screen)
+
+
+def _approach(video, point, seconds=0.5):
+    video.jump(*_outward(point, _arm_pixel(video.screen), 100))
+    video.glide(point, seconds)
+
+
+def _drag_arrow(video, name, length=55, seconds=1.8, settle=None):
+    screen = video.screen
+    x, y, dx, dy = wait(screen).until(lambda _: probe(screen, "arrowTip", name, "X"))
+    _approach(video, (x, y))
+    video.press()
+    video.glide((x + dx * length, y + dy * length), seconds, settle)
+
+
+def _target_caught_up(screen):
+    wait(screen).until(
+        lambda _: np.linalg.norm(
+            ball_mm(screen)
+            - np.asarray(
+                run_in_app(lambda: ui_state.urdf_scene._requested_edit_pose[:3])
+            )
+            * 1000
+        )
+        < 0.5
+    )
+
+
 @pytest.fixture
 def demo_screen(class_screen):
     screen = class_screen
@@ -258,6 +322,446 @@ def demo_screen(class_screen):
 
 @pytest.mark.browser
 class TestReviewDemos:
+    def test_select_several(self, demo_screen):
+        screen = demo_screen
+        handle, view = waldoctl.commander.scene, ui_state.urdf_scene
+        shapes = [
+            Box(name=name, x=0.065, y=0.065, z=0.07, pose=(*point, 0, 0, 0))
+            for name, point in (
+                ("Fixture A", (0.31, -0.08, 0.035)),
+                ("Fixture B", (0.31, 0.08, 0.035)),
+            )
+        ]
+        run_in_app(lambda: setattr(handle, "shapes", shapes))
+        confirmed(screen, lambda: handle.shapes == shapes)
+        clear_selection(screen)
+        _open_scene_panel(screen)
+        scene_js(screen, "S.setCameraPose(arguments[0])", FIXTURE_VIEW)
+        click_object(screen, "shape:Fixture A")
+        click_object(screen, "shape:Fixture B", shift=True)
+        _focus_subject(screen)
+        clear_selection(screen)
+        wait_for_scene_idle(screen)
+        video = DemoVideo(screen, "select-several")
+        video.jump(1450, 700)
+        try:
+            video.caption("Select several lets touch taps build a selection")
+            _press_mark(
+                video,
+                "scene-multi-select",
+                lambda: wait(screen).until(
+                    lambda _: run_in_app(lambda: view._multi_select)
+                ),
+            )
+            video.pause(0.7)
+            for count, shape in enumerate(shapes, 1):
+                video.tap(
+                    tuple(settled_pixel(screen, f"shape:{shape.name}")),
+                    settle=lambda count=count: wait(screen).until(
+                        lambda _: run_in_app(lambda: len(view._selected_objects))
+                        == count
+                    ),
+                )
+                video.pause(0.6)
+            video.caption("Drag one arrow to move both keep-outs together")
+            _drag_arrow(video, "selection:center", length=85, seconds=2.2)
+            video.release(lambda: confirmed(screen, lambda: handle.shapes != shapes))
+            delta = np.asarray([s.pose[:3] for s in handle.shapes]) - np.asarray(
+                [s.pose[:3] for s in shapes]
+            )
+            assert np.linalg.norm(delta[0]) > 0.01
+            assert delta[0] == pytest.approx(delta[1], abs=1e-6)
+            video.pause(1)
+            video.caption("Turn Select several off to return to single selection")
+            _press_mark(
+                video,
+                "scene-multi-select",
+                lambda: wait(screen).until(
+                    lambda _: not run_in_app(lambda: view._multi_select)
+                ),
+            )
+            video.pause(1)
+            video.save()
+        finally:
+            if run_in_app(lambda: view._multi_select):
+                click_marked(screen, "scene-multi-select")
+
+    def test_resize_centre(self, demo_screen):
+        screen = demo_screen
+        handle = waldoctl.commander.scene
+        box = Box(
+            name="Centred box", x=0.1, y=0.08, z=0.08, pose=(0.3, 0, 0.04, 0, 0, 0)
+        )
+        run_in_app(lambda: setattr(handle, "shapes", [box]))
+        confirmed(screen, lambda: handle.shapes == [box])
+        _open_scene_panel(screen)
+        click_marked(screen, "scene-row-Centred-box")
+        object_mode(screen, "Resize")
+        scene_js(screen, "S.setCameraPose(arguments[0])", FIXTURE_VIEW)
+        _focus_subject(screen)
+        wait_for_scene_idle(screen)
+        video = DemoVideo(screen, "resize-centre")
+        video.jump(1450, 700)
+        video.caption("In Resize, turn on Resize from the centre")
+        try:
+            _press_mark(
+                video,
+                "object-resize-centre",
+                lambda: wait(screen).until(
+                    lambda _: marked_element(
+                        screen, "object-resize-centre"
+                    ).get_attribute("aria-pressed")
+                    == "true"
+                ),
+            )
+            video.pause(1)
+            x, y, dx, dy, axis, _ = wait(screen).until(
+                lambda _: probe(screen, "resizeHandle", 0)
+            )
+            video.caption("Pull a face: both opposite faces move equally")
+            _approach(video, (x, y))
+            video.press()
+            video.glide((x + dx * 95, y + dy * 95), 2.5)
+            video.release(lambda: confirmed(screen, lambda: handle.shapes[0] != box))
+            resized = handle.shapes[0]
+            assert resized.pose == pytest.approx(box.pose)
+            assert getattr(resized, "xyz"[axis]) > getattr(box, "xyz"[axis])
+            video.pause(1.5)
+            video.save()
+        finally:
+            if (
+                marked_element(screen, "object-resize-centre").get_attribute(
+                    "aria-pressed"
+                )
+                == "true"
+            ):
+                click_marked(screen, "object-resize-centre")
+
+    def test_target_tap_line(self, demo_screen):
+        screen = demo_screen
+        view = ui_state.urdf_scene
+        with program_previewed(EDIT_PROGRAM) as targets:
+            if not run_in_app(lambda: ui_state.program_panel_visible):
+                click_tab(screen, "program")
+            focus_editor(screen).send_keys(Keys.CONTROL, Keys.HOME)
+            close_panel(screen, "program-panel")
+            wait(screen).until(lambda _: no_visible(screen, ".program-panel"))
+            scene_js(screen, "S.setCameraPose(arguments[0])", TCP_VIEW)
+            target = targets[-1]
+            line = run_in_app(
+                lambda: next(
+                    t.line_number
+                    for t in waldoctl.commander.programs.active.dry_run.targets
+                    if t.id == target
+                )
+            )
+            editor_id = run_in_app(lambda: ui_state.active_textarea.id)
+            video = DemoVideo(screen, "target-tap-line")
+            video.jump(1500, 700)
+            video.caption("Tap a target with the program panel closed")
+            video.pause(1.3)
+            video.tap(tuple(settled_pixel(screen, f"target:{target}")))
+            video.live(1)
+            wait(screen).until(
+                lambda _: run_in_app(lambda: ui_state.program_panel_visible)
+            )
+            wait(screen).until(
+                lambda _: screen.selenium.execute_script(
+                    "const v=getElement(arguments[0]).editor;"
+                    "return v.state.doc.lineAt(v.state.selection.main.head).number",
+                    editor_id,
+                )
+                == line
+            )
+            wait(screen).until(
+                lambda _: run_in_app(lambda: view._highlighted_line) == line
+            )
+            video.caption(
+                "The program opens at that line; its target and path light up"
+            )
+            video.frame()
+            video.pause(3)
+            video.save()
+            close_panel(screen, "program-panel")
+
+    def test_gizmo_frames(self, demo_screen, tmp_path):
+        screen = demo_screen
+        scene = ui_state.urdf_scene
+        source = framed_program(tmp_path)
+        with program_previewed(source) as targets:
+            try:
+                scene_js(screen, "S.setCameraPose(arguments[0])", TCP_VIEW)
+                _edit_target(screen, targets[-1])
+                initial = np.asarray(run_in_app(lambda: scene._requested_edit_pose))
+                tool_x = Rotation.from_euler("XYZ", initial[3:]).as_matrix()[:, 0]
+                video = DemoVideo(screen, "gizmo-frames")
+                video.caption("The frame badge aligns the target's handles")
+                _frame_choice(video, "align-tool", "Tool")
+                video.caption("Tool: the X arrow follows the tool's own X axis")
+                _drag_arrow(
+                    video,
+                    "tcp:ball",
+                    length=28,
+                    seconds=1.6,
+                    settle=lambda: _target_caught_up(screen),
+                )
+                _target_caught_up(screen)
+                delta = ball_mm(screen) / 1000 - initial[:3]
+                video.release(
+                    lambda: wait(screen).until(
+                        lambda _: run_in_app(lambda: ui_state.active_textarea.value)
+                        != source
+                    )
+                )
+                assert np.linalg.norm(delta) > 0.001
+                assert np.linalg.norm(np.cross(delta, tool_x)) < 0.0002
+                video.pause(0.7)
+                video.caption("Tilted nest: use the setup frame, with its axes shown")
+                _frame_choice(video, "align-frame:Tilted-nest", "Tilted-nest")
+                wait(screen).until(
+                    lambda _: scene_js(
+                        screen,
+                        "return getElement(S.root).core.gizmos.namedFrame.visible",
+                    )
+                )
+                video.frame()
+                video.pause(1.5)
+                video.caption("World returns the handles to the world axes")
+                _frame_choice(video, "align-world", "World")
+                video.pause(1.2)
+                video.save()
+            finally:
+                reset_target_edit(screen)
+
+    def test_keep_vertical(self, demo_screen):
+        screen = demo_screen
+        source, camera = tilted_target_program()
+        scene = ui_state.urdf_scene
+        with program_previewed(source) as targets:
+            try:
+                scene_js(screen, "S.setCameraPose(arguments[0])", camera)
+                _edit_target(screen, targets[-1])
+                video = DemoVideo(screen, "keep-vertical")
+                video.caption(
+                    "Keep tool vertical snaps this tilted target to pointing down"
+                )
+                _frame_choice(video, "vertical", None)
+                wait(screen).until(
+                    lambda _: gizmo(screen, "tcp:ball")["rotationAxes"] == ["Z"]
+                )
+                vertical = run_in_app(lambda: ui_state.active_textarea.value)
+                assert vertical != source
+                pose = np.asarray(run_in_app(lambda: scene._requested_edit_pose))
+                assert Rotation.from_euler("XYZ", pose[3:]).as_matrix()[
+                    :, 2
+                ] == pytest.approx([0, 0, -1], abs=0.01)
+                video.frame()
+                video.pause(1)
+                video.caption(
+                    "Only the vertical arc remains: turn it to change heading"
+                )
+                x, y, dx, dy = wait(screen).until(
+                    lambda _: probe(screen, "ringSpot", "Z")
+                )
+                _approach(video, (x, y))
+                video.press()
+                video.glide((x + dx * 30, y + dy * 30), 1.8)
+                video.release(
+                    lambda: wait(screen).until(
+                        lambda _: run_in_app(lambda: ui_state.active_textarea.value)
+                        != vertical
+                    )
+                )
+                video.pause(0.7)
+                video.caption(
+                    "Ctrl+Z restores the turn, then the original tilted target"
+                )
+                video.key(
+                    Keys.ESCAPE,
+                    lambda: wait(screen).until(
+                        lambda _: not run_in_app(lambda: scene._edit_active)
+                    ),
+                )
+                if not run_in_app(lambda: ui_state.program_panel_visible):
+                    _press_mark(video, "tab-program")
+                editor = _settled(
+                    screen,
+                    lambda: screen.selenium.find_element(
+                        By.CSS_SELECTOR, ".program-panel .cm-content"
+                    ),
+                )
+                video.glide(_center(editor), 0.4)
+                video.click()
+                for expected in (vertical, source):
+                    video.chord(
+                        Keys.CONTROL,
+                        "z",
+                        lambda expected=expected: wait(screen).until(
+                            lambda _: run_in_app(lambda: ui_state.active_textarea.value)
+                            == expected
+                        ),
+                    )
+                    video.live(0.7)
+                video.pause(1)
+                video.save()
+            finally:
+                reset_target_edit(screen)
+                if run_in_app(lambda: ui_state.program_panel_visible):
+                    close_panel(screen, "program-panel")
+
+    def test_swept_volume(self, demo_screen):
+        screen = demo_screen
+        with swept_preview(screen) as move:
+            scene_js(screen, "S.setCameraPose(arguments[0])", SWEEP_VIEW)
+            wait_for_scene_idle(screen)
+            video = DemoVideo(screen, "swept-volume")
+            video.caption("Right-click the sweeping move, then Show swept volume")
+            point = tuple(path_point(screen, move["command"], 0.3)[:2])
+            _approach(video, point)
+            video.context_click()
+            _press_mark(video, "scene-toggle-swept-volume")
+            video.live(1)
+            sweep = wait(screen).until(
+                lambda _: scene_js(screen, "return S.sweptVolume()")
+            )
+            assert any(s["colliding"] for s in sweep["samples"])
+            assert any(not s["colliding"] for s in sweep["samples"])
+            video.caption("The colliding part uses the collision colour")
+            video.frame()
+            video.pause(1.4)
+            direction = probe(screen, "viewDirection")
+            x, y, _ = wait(screen).until(lambda _: probe(screen, "cubeSpot"))
+            video.caption("Orbit to inspect the arm's swept volume")
+            video.glide((x, y), 0.5)
+            video.press()
+            video.glide((x + 35, y + 22), 1.8)
+            video.release()
+            assert probe(screen, "viewDirection") != direction
+            video.pause(0.8)
+            video.caption("Right-click the same move to hide its swept volume")
+            point = tuple(path_point(screen, move["command"], 0.3)[:2])
+            video.glide(point, 0.6)
+            video.context_click()
+            _press_mark(
+                video,
+                "scene-toggle-swept-volume",
+                lambda: wait(screen).until(
+                    lambda _: scene_js(screen, "return S.sweptVolume()") is None
+                ),
+            )
+            video.pause(0.8)
+            video.save()
+
+    def test_stl_import(self, demo_screen, tmp_path, monkeypatch):
+        screen = demo_screen
+        monkeypatch.setattr(world_files, "library_dir", lambda: tmp_path / "worlds")
+        source = bracket_stl(tmp_path / "L-bracket.stl")
+        handle, view = waldoctl.commander.scene, ui_state.urdf_scene
+        original_meshes = view.fixture_meshes
+        _open_scene_panel(screen)
+        scene_js(screen, "S.setCameraPose(arguments[0])", FIXTURE_VIEW)
+        wait_for_scene_idle(screen)
+        video = DemoVideo(screen, "stl-import")
+        video.jump(1400, 700)
+        try:
+            video.caption("Import a fixture STL from the scene panel")
+            _press_mark(video, "scene-import-mesh")
+            upload = _settled(screen, lambda: marked_element(screen, "mesh-upload"))
+            video.glide(_center(upload), 0.4)
+            upload.find_element(By.CSS_SELECTOR, 'input[type="file"]').send_keys(
+                str(source)
+            )
+            video.frame(
+                lambda: wait(screen).until(
+                    lambda _: marked_element(screen, "mesh-size").text
+                    == "120 × 80 × 60 mm"
+                )
+            )
+            video.pause(0.5)
+            video.caption("Units change the imported size: mm → cm → mm")
+            for unit, size in (
+                ("cm", "1200 × 800 × 600 mm"),
+                ("mm", "120 × 80 × 60 mm"),
+            ):
+                _press_mark(
+                    video,
+                    f"mesh-units-{unit}",
+                    lambda size=size: wait(screen).until(
+                        lambda _: marked_element(screen, "mesh-size").text == size
+                    ),
+                )
+                video.pause(0.55)
+            video.caption("Place it: the mesh and its keep-out form one fixture")
+            _press_mark(
+                video,
+                "mesh-add",
+                lambda: confirmed(
+                    screen, lambda: len(view.fixture_meshes) == len(original_meshes) + 1
+                ),
+            )
+            wait(screen).until(
+                lambda _: scene_js(
+                    screen,
+                    "return S.byName('mesh:L-bracket')?.children.some(c=>c.isMesh)",
+                )
+            )
+            clear_selection(screen)
+            _press_mark(
+                video,
+                "scene-mesh-L-bracket",
+                lambda: wait(screen).until(
+                    lambda _: len(run_in_app(lambda: view._selected_objects)) == 2
+                ),
+            )
+            initial_mesh = view.fixture_meshes[-1]
+            initial_box = handle.shapes[-1]
+            video.caption("Select the fixture group and move it with one arrow")
+            _drag_arrow(video, "selection:center", length=60, seconds=1.3)
+            video.release(
+                lambda: confirmed(
+                    screen, lambda: view.fixture_meshes[-1] != initial_mesh
+                )
+            )
+            mesh_delta = np.subtract(
+                view.fixture_meshes[-1].pose[:3], initial_mesh.pose[:3]
+            )
+            assert np.linalg.norm(mesh_delta) > 0.005
+            assert np.subtract(
+                handle.shapes[-1].pose[:3], initial_box.pose[:3]
+            ) == pytest.approx(mesh_delta)
+            video.pause(0.5)
+            video.caption("Add a second keep-out box to the group, then resize it")
+            _press_mark(
+                video,
+                "mesh-add-proxy",
+                lambda: confirmed(
+                    screen, lambda: len(view.fixture_meshes[-1].proxy_names) == 2
+                ),
+            )
+            _press_mark(
+                video,
+                "object-mode-resize",
+                lambda: wait(screen).until(lambda _: probe(screen, "resizeHandle", 1)),
+            )
+            box = handle.shapes[-1]
+            x, y, dx, dy, axis, _ = probe(screen, "resizeHandle", 1)
+            _approach(video, (x, y), seconds=0.35)
+            video.press()
+            video.glide((x - dx * 55, y - dy * 55), 1.4)
+            video.release(lambda: confirmed(screen, lambda: handle.shapes[-1] != box))
+            assert getattr(handle.shapes[-1], "xyz"[axis]) < getattr(box, "xyz"[axis])
+            assert box.name in view.fixture_meshes[-1].proxy_names
+            video.pause(1)
+            video.save()
+        finally:
+            if view.fixture_meshes != original_meshes:
+                click_marked(screen, "scene-mesh-L-bracket")
+                click_marked(screen, "object-actions")
+                _settled(
+                    screen, lambda: marked_element(screen, "object-delete")
+                ).click()
+                confirmed(screen, lambda: view.fixture_meshes == original_meshes)
+
     def test_gizmo_moves_along_an_arrow(self, demo_screen):
         screen = demo_screen
         scene_js(screen, "S.setCameraPose(arguments[0])", TCP_VIEW)

@@ -202,6 +202,15 @@ async def test_objects_record_undo_reload_and_recover_from_external_edits(
     assert handle.shapes == duplicated
     assert not view.object_history.undo_stack
 
+    for marker in ("object-undo", "object-redo"):
+        assert not user.find(marker=marker).elements.pop().enabled
+    assert user.find(marker="object-undo-tooltip").elements.pop().text == (
+        "Undo history cleared — the world or program changed elsewhere"
+    )
+    await user.should_not_see(marker="object-feedback")
+    select(user, view)
+    await user.should_not_see(marker="scene-feedback")
+
     # A drawing chosen from a menu opened before an external change is
     # refused: the world it was offered for is gone.
     right_click(user, view.scene, [], [0.4, 0.1, 0])
@@ -377,7 +386,13 @@ async def test_object_edit_stays_pending_until_real_readback_and_preserves_new_s
         await confirmed(view)
         assert textarea.value == external
         assert not view.object_history.undo_stack
-        assert "program changed" in view.object_history.feedback
+        assert not view.object_history.feedback
+        assert not user.find(marker="object-undo").elements.pop().enabled
+        assert user.find(marker="object-undo-tooltip").elements.pop().text == (
+            "Undo history cleared — the world or program changed elsewhere"
+        )
+        await user.should_not_see(marker="object-feedback")
+        await user.should_not_see(marker="scene-feedback")
     finally:
         release.set()
 

@@ -22,6 +22,7 @@ from urllib.request import urlopen
 
 from selenium.webdriver.common.action_chains import ActionChains
 
+from tests.helpers.browser_helpers import tap
 from tests.helpers.scene_surface import scene_js, wait_for_scene_idle
 
 if TYPE_CHECKING:
@@ -221,6 +222,18 @@ class DemoVideo:
         self._mouse("mousePressed", "right", 2, 1)
         self._mouse("mouseReleased", "right", 0, 1)
         self.frame()
+
+    def tap(
+        self, to: tuple[float, float], settle: Callable[[], object] | None = None
+    ) -> None:
+        """Show the contact point while tapping through the browser's touch path."""
+        self.at = to
+        self.screen.selenium.execute_script(_POINT, *to, True)
+        self.frame()
+        self.pause(0.16)
+        tap(self.screen, *to)
+        self.screen.selenium.execute_script(_POINT, *to, False)
+        self.frame(settle)
 
     def type(self, text: str, per_key_s: float = 0.15) -> None:
         """Type ``text`` into what has focus, a key at a time."""

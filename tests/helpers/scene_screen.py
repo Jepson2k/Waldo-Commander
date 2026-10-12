@@ -667,6 +667,30 @@ def settled_pixel(screen, name, timeout: float = 10.0):
     return wait(screen, timeout).until(still)
 
 
+def settled_element(screen, find):
+    """Wait for a visible element's rectangle and menu animation to settle."""
+    previous = None
+
+    def ready(_):
+        nonlocal previous
+        try:
+            element = find()
+            if not element.is_displayed():
+                return None
+            rect, previous = (element.rect, previous), element.rect
+            moving = screen.selenium.execute_script(
+                "const m=arguments[0].closest('.q-menu');"
+                "return !!m && m.getAnimations({subtree:true})"
+                ".some(a=>a.playState==='running');",
+                element,
+            )
+        except StaleElementReferenceException:
+            return None
+        return element if rect[0] == rect[1] and not moving else None
+
+    return wait(screen).until(ready)
+
+
 def clear_selection(screen):
     """Clear the object selection with a click on empty space in the view."""
     if not run_in_app(lambda: bool(ui_state.urdf_scene._selected_objects)):

@@ -16,6 +16,7 @@ from .shape_editing_mixin import _PLACEABLE, RESIZE_AXES, object_label
 from nicegui import background_tasks, ui
 from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, param_names
 
+from waldo_commander.common.theme import OPACITY
 from waldo_commander.services.scene_history import SceneHistory
 from waldo_commander.state import ui_state
 
@@ -110,6 +111,7 @@ class ObjectEditingMixin(MeshEditingMixin):
         isolated = bool(event.args.get("isolated", False))
         if isolated != self._isolated_view:
             self._isolated_view = isolated
+            self.object_history.feedback = ""
             self._refresh_object_inspector()
 
     def _toggle_isolation(self):
@@ -119,6 +121,11 @@ class ObjectEditingMixin(MeshEditingMixin):
 
     def _object_entities(self) -> dict:
         handle = self._shape_handle()
+        proxies = {
+            f"{SHAPE_PREFIX}{name}"
+            for fixture in self.fixture_meshes
+            for name in fixture.proxy_names
+        }
         return {
             "revision": handle.revision,
             "selected": self._selected_objects,
@@ -127,7 +134,16 @@ class ObjectEditingMixin(MeshEditingMixin):
                 for before, after in self._object_renames
             ],
             "items": [
-                {"id": name, "node": node.id}
+                {
+                    "id": name,
+                    "node": node.id,
+                    "fixture": {
+                        "fill": float(OPACITY["opacity-fixture-fill"]),
+                        "edge": float(OPACITY["opacity-fixture-edge"]),
+                    }
+                    if name in proxies
+                    else None,
+                }
                 for name, node in self._shape_objects.items()
                 if name.startswith((SHAPE_PREFIX, INSTALL_PREFIX, MESH_PREFIX))
                 and name not in self._hidden_objects
@@ -178,6 +194,8 @@ class ObjectEditingMixin(MeshEditingMixin):
             for key in self._expand_fixture_selection(selected)
             if self._object_shape(key) is not None
         ]
+        if set(self._selected_objects) != before:
+            self.object_history.feedback = ""
         if self._attachment_form and self._selected_objects != [
             self._attachment_form[0]
         ]:
@@ -299,11 +317,20 @@ class ObjectEditingMixin(MeshEditingMixin):
             ).props(flat).tooltip("Workcells: save, load and insert").mark(
                 "scene-workcells"
             )
+            # The wrapper keeps the reason accessible while Undo is disabled.
+            with ui.element("span").classes("inline-flex"):
+                undo = (
+                    ui.button(
+                        icon="undo", on_click=lambda: self._restore_objects(False)
+                    )
+                    .props(flat)
+                    .mark("object-undo")
+                )
+                self._undo_tooltip = ui.tooltip("Undo object edit · Ctrl+Z").mark(
+                    "object-undo-tooltip"
+                )
             self._history_buttons = (
-                ui.button(icon="undo", on_click=lambda: self._restore_objects(False))
-                .props(flat)
-                .tooltip("Undo object edit · Ctrl+Z")
-                .mark("object-undo"),
+                undo,
                 ui.button(icon="redo", on_click=lambda: self._restore_objects(True))
                 .props(flat)
                 .tooltip("Redo object edit · Ctrl+Shift+Z")
@@ -332,7 +359,9 @@ class ObjectEditingMixin(MeshEditingMixin):
 
     def _toggle_multi_select(self) -> None:
         self._multi_select = not self._multi_select
+        self.object_history.feedback = ""
         self._show_multi_select()
+        self._refresh_object_inspector()
 
     def _draw_on_floor(self, kind: str) -> None:
         self._start_shape_drawing(
@@ -356,7 +385,10 @@ class ObjectEditingMixin(MeshEditingMixin):
             for key in self._selected_objects
             if (shape := self._object_shape(key)) is not None
         ]
-        self._selected_objects = [key for key, _ in selected]
+        remaining = [key for key, _ in selected]
+        if remaining != self._selected_objects:
+            self.object_history.feedback = ""
+        self._selected_objects = remaining
         panel = self._scene_panel()
         if panel is None:
             return
@@ -375,6 +407,11 @@ class ObjectEditingMixin(MeshEditingMixin):
         undo, redo = self._history_buttons
         undo.set_enabled(bool(history.undo_stack) and not history.busy)
         redo.set_enabled(bool(history.redo_stack) and not history.busy)
+        self._undo_tooltip.set_text(
+            "Undo history cleared — the world or program changed elsewhere"
+            if history.invalidated
+            else "Undo object edit · Ctrl+Z"
+        )
         self._refresh_object_tree(handle, panel)
         if any(isinstance(s, FixtureMesh) for _, s in selected):
             self._fixture_inspector(selected, status)
@@ -624,7 +661,7 @@ class ObjectEditingMixin(MeshEditingMixin):
                 if self._attachment_form and self._attachment_form[0] == entity:
                     self._attachment_section(entity, shape)
             controls.feedback = (
-                ui.label().classes("text-xs text-wc-text-muted").mark("object-feedback")
+                ui.label().classes("text-xs text-wc-error").mark("object-feedback")
             )
         self._update_object_inspector(selected, status, True)
 
@@ -880,7 +917,7 @@ class ObjectEditingMixin(MeshEditingMixin):
     def _update_object_inspector(self, selected, status, reset_values) -> None:
         """Bring the built properties up to *status* and the selection's values."""
         controls = self._inspector_controls
-        busy, feedback, _, _, confirmed = status
+        busy, feedback, _, _, _ = status
         readonly = busy or controls.locked
         for element in controls.editable_elements:
             element.set_enabled(not readonly)
@@ -888,11 +925,8 @@ class ObjectEditingMixin(MeshEditingMixin):
             item.set_enabled(not busy)
         self._show_modes(controls, selected)
         if controls.feedback is not None:
-            text = feedback or (
-                "" if confirmed else "Waiting for controller confirmation…"
-            )
-            controls.feedback.set_text(text)
-            controls.feedback.set_visibility(bool(text))
+            controls.feedback.set_text(feedback)
+            controls.feedback.set_visibility(bool(feedback))
         if len(selected) != 1:
             return
         shape = selected[0][1]
@@ -966,12 +1000,14 @@ class ObjectEditingMixin(MeshEditingMixin):
         if mode not in ("translate", "resize"):
             return
         self._object_mode = mode
+        self.object_history.feedback = ""
         self._shape_move_session += 1
         self._push_interaction()
         self._refresh_object_inspector()
 
     def _toggle_resize_centre(self) -> None:
         self._resize_centre = not self._resize_centre
+        self.object_history.feedback = ""
         self._shape_move_session += 1
         self._push_interaction()
         self._refresh_object_inspector()
@@ -1200,6 +1236,7 @@ class ObjectEditingMixin(MeshEditingMixin):
     def _marks_changed(self, keys) -> None:
         """A selected object hidden or locked takes its handles anew; any
         other leaves a drawing, a move and a typed value where they are."""
+        self.object_history.feedback = ""
         if set(keys) & set(self._selected_objects):
             self._select_objects(self._selected_objects)
             return

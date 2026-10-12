@@ -155,6 +155,7 @@ class MeshEditingMixin(ShapeDrawingMixin):
                 node.move(*fixture.pose[:3]).rotate_R(transform[:3, :3].tolist())
             node.visible(key not in self._hidden_objects)
         self._drawn_meshes = desired
+        self._push_interaction()
 
     def _fixture_tree(self) -> None:
         for fixture in self.fixture_meshes:
@@ -276,7 +277,7 @@ class MeshEditingMixin(ShapeDrawingMixin):
                     ui.menu_item("Delete", on_click=self._delete_objects).classes(
                         "text-wc-error"
                     ).mark("object-delete").set_enabled(not readonly)
-            ui.label(status[1]).classes("text-xs text-wc-text-muted").mark(
+            ui.label(status[1]).classes("text-xs text-wc-error").mark(
                 "object-feedback"
             ).set_visibility(bool(status[1]))
 

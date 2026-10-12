@@ -17,7 +17,8 @@ from tests.helpers.browser_helpers import (
     run_in_app,
     viewport,
 )
-from tests.helpers.browser_session import wait
+from tests.helpers.browser_session import no_visible, wait
+from tests.helpers.review_scenes import SWEEP_VIEW, swept_preview
 from tests.helpers.scene_screen import (
     PATH_PROGRAM,
     PATH_VIEW,
@@ -25,6 +26,7 @@ from tests.helpers.scene_screen import (
     camera_pose,
     path_point,
     program_previewed,
+    settled_element,
     teleport_jog_pose,
 )
 from tests.helpers.scene_surface import (
@@ -126,7 +128,9 @@ class TestPathInspection:
             )
             evidence = VisualEvidence(screen, "swept-volume")
 
-            def menu(move, label):
+            def toggle(move, label):
+                # The sweep exists before Quasar's closing menu releases its pixels.
+                wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
                 x, y, _ = path_point(screen, move["command"], 0.3)
                 action = ActionChains(screen.selenium, duration=0)
                 pointer_to(screen, x, y, action)
@@ -138,6 +142,14 @@ class TestPathInspection:
                         screen, "scene-toggle-swept-volume"
                     ).is_displayed()
                 )
+                click_toggle()
+
+            def click_toggle():
+                settled_element(
+                    screen,
+                    lambda: marked_element(screen, "scene-toggle-swept-volume"),
+                ).click()
+                wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
 
             def resources():
                 action = ActionChains(screen.selenium, duration=0)
@@ -153,8 +165,7 @@ class TestPathInspection:
             try:
                 baseline = None
                 for cycle in range(3):
-                    menu(moves[0], "Show swept volume")
-                    click_marked(screen, "scene-toggle-swept-volume")
+                    toggle(moves[0], "Show swept volume")
                     sweep = wait(screen).until(lambda _: shown(moves[0]))
                     block = next(
                         b for b in record.blocks if b.command == moves[0]["command"]
@@ -171,8 +182,7 @@ class TestPathInspection:
                     # Observe the sweep's materials before hide can detach them.
                     resources()
                     evidence.capture(f"01-sampled-arm-and-tool-{cycle}")
-                    menu(moves[0], "Hide swept volume")
-                    click_marked(screen, "scene-toggle-swept-volume")
+                    toggle(moves[0], "Hide swept volume")
                     wait(screen).until(
                         lambda _: scene_js(screen, "return S.sweptVolume()") is None
                     )
@@ -183,11 +193,9 @@ class TestPathInspection:
                     else:
                         assert after_hide == baseline
 
-                menu(moves[0], "Show swept volume")
-                click_marked(screen, "scene-toggle-swept-volume")
+                toggle(moves[0], "Show swept volume")
                 wait(screen).until(lambda _: shown(moves[0]))
-                menu(moves[1], "Show swept volume")
-                click_marked(screen, "scene-toggle-swept-volume")
+                toggle(moves[1], "Show swept volume")
                 wait(screen).until(lambda _: shown(moves[1]))
                 assert (
                     scene_js(
@@ -210,12 +218,11 @@ class TestPathInspection:
                     evidence.capture("02-long-press-menu")
                 finally:
                     _touch(screen, "touchEnd", [])
-                click_marked(screen, "scene-toggle-swept-volume")
+                click_toggle()
                 wait(screen).until(
                     lambda _: scene_js(screen, "return S.sweptVolume()") is None
                 )
-                menu(moves[1], "Show swept volume")
-                click_marked(screen, "scene-toggle-swept-volume")
+                toggle(moves[1], "Show swept volume")
                 wait(screen).until(lambda _: shown(moves[1]))
                 run_in_app(
                     lambda: setattr(
@@ -225,6 +232,16 @@ class TestPathInspection:
                 wait(screen).until(
                     lambda _: scene_js(screen, "return S.sweptVolume()") is None
                 )
+                if evidence.enabled:
+                    with swept_preview(screen) as move, camera_kept(screen):
+                        scene_js(screen, "S.setCameraPose(arguments[0])", SWEEP_VIEW)
+                        wait_for_scene_idle(screen)
+                        toggle(move, "Show swept volume")
+                        sweep = wait(screen).until(lambda _: shown(move))
+                        assert any(s["colliding"] for s in sweep["samples"])
+                        assert any(not s["colliding"] for s in sweep["samples"])
+                        wait_for_scene_idle(screen)
+                        evidence.capture("03-collision-sweep-1920")
                 evidence.finish()
             finally:
                 evidence.stop()

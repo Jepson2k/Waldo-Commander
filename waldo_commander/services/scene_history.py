@@ -58,6 +58,7 @@ class SceneHistory:
         self.redo_stack: list[WorldEdit] = []
         self.busy = False
         self.feedback = ""
+        self.invalidated = False
         self.expected: tuple | None = None
 
     @staticmethod
@@ -96,16 +97,14 @@ class SceneHistory:
         whether it was cleared."""
         if self.busy or self.expected is None or self.expected == self.context():
             return False
-        self._clear(
-            "History cleared: the world, program, or recording session changed elsewhere"
-        )
-        self.expected = None
+        self._clear()
         return True
 
-    def _clear(self, feedback: str) -> None:
+    def _clear(self) -> None:
         self.undo_stack.clear()
         self.redo_stack.clear()
-        self.feedback = feedback
+        self.invalidated = True
+        self.expected = None
 
     def guard(self, revision: tuple, *, confirmed: bool = True) -> WcSceneHandle:
         """The scene handle, if an edit begun at *revision* may commit now;
@@ -175,7 +174,6 @@ class SceneHistory:
         document = self.document()
         recording = self._recording_key()
         self.busy = True
-        self.feedback = "Waiting for controller confirmation…"
         self.owner._set_object_renames(renames)
         self.owner._refresh_object_inspector()
         try:
@@ -189,6 +187,7 @@ class SceneHistory:
                 raise ValueError(handle.last_error or rejected)
             self.owner._set_fixture_meshes(meshes)
             confirmed(document, recording)
+            self.feedback = ""
         except Exception as error:
             if (
                 handle.confirmed
@@ -228,18 +227,15 @@ class SceneHistory:
             and draft_before == draft_after
             and meshes_before == meshes_after
         ):
+            self.feedback = ""
             return
 
         def confirmed(document: tuple, recording: tuple) -> None:
             if self.document() != document or self._recording_key() != recording:
-                self._clear(
-                    "Object saved; history cleared because the program changed during confirmation or recording changed"
-                )
+                self._clear()
                 return
             if motion_recorder.scene_edit_busy:
-                self._clear(
-                    "Object saved but not recorded: motion capture started during confirmation"
-                )
+                self._clear()
                 return
             recording_before = motion_recorder.scene_checkpoint()
             if before != target:
@@ -266,7 +262,7 @@ class SceneHistory:
             self.undo_stack = self.undo_stack[-50:]
             self.redo_stack.clear()
             self.expected = self.context()
-            self.feedback = ""
+            self.invalidated = False
 
         await self._apply(
             handle,
@@ -295,9 +291,7 @@ class SceneHistory:
                 or self._recording_key() != recording
                 or motion_recorder.scene_edit_busy
             ):
-                self._clear(
-                    "World restored; source changed during confirmation and was preserved"
-                )
+                self._clear()
                 return
             self._set_source(
                 edit.program, edit.source_after if redo else edit.source_before
@@ -308,7 +302,7 @@ class SceneHistory:
             stack.pop()
             other.append(edit)
             self.expected = self.context()
-            self.feedback = ""
+            self.invalidated = False
 
         await self._apply(
             handle,

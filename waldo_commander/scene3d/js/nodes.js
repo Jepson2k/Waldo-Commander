@@ -37,6 +37,7 @@ export class Nodes {
       name: "",
       object: false,
       drawable: null,
+      fixtureEdges: null,
       base: { p: [0, 0, 0], r: [0, 0, 0, 1], s: [1, 1, 1], m: null, v: 1, l: [] },
       holds: { scale: 0, position: 0, rotation: 0, opacity: 0 },
       held: null, // the drag holding it, until the app answers that drag
@@ -182,13 +183,30 @@ export class Nodes {
     const object = this.objectOf(rec);
     const faded = !!object && this.isolated !== null && !this.isolated.has(object.name);
     const shown = rec.holds.opacity ? materials(rec.drawable)[0].opacity : faded ? Math.min(opacity, FADED) : opacity;
-    paint(rec.drawable, [color, shown, side]);
+    const fixture = object && this.core.selection?.entities.get(object.id)?.fixture;
+    paint(rec.drawable, [color, fixture ? Math.min(shown, fixture.fill) : shown, side]);
+    if (fixture && rec.drawable.isMesh) {
+      if (!rec.fixtureEdges) {
+        rec.fixtureEdges = new THREE.LineSegments(
+          new THREE.EdgesGeometry(rec.drawable.geometry, 25),
+          new THREE.LineBasicMaterial({transparent:true, depthWrite:false, toneMapped:false}),
+        );
+        rec.fixtureEdges.name = "fixture:edges";
+        rec.fixtureEdges.raycast = () => {};
+        rec.drawable.add(rec.fixtureEdges);
+      }
+      paint(rec.fixtureEdges, [color, faded ? Math.min(fixture.edge, FADED) : fixture.edge, side]);
+    } else if (rec.fixtureEdges) {
+      rec.fixtureEdges.removeFromParent();
+      dispose(rec.fixtureEdges);
+      rec.fixtureEdges = null;
+    }
     if (!object) return;
     const drawable = rec.drawable;
     drawable.userData.casts ??= drawable.castShadow;
     drawable.userData.faded = faded;
     drawable.castShadow = !faded && drawable.userData.casts;
-    for (const mat of materials(drawable)) mat.depthWrite = !faded;
+    for (const mat of materials(drawable)) mat.depthWrite = !faded && !fixture;
   }
 
   clip(rec) {

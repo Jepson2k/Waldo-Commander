@@ -16,6 +16,8 @@ from tests.helpers.scene_screen import (
     gizmo_field,
     EDIT_PROGRAM,
     at_start,
+    camera_kept,
+    camera_settled,
     clear_selection,
     click_spot,
     confirmed,
@@ -73,7 +75,15 @@ class TestPrimitiveResize:
                 )
                 == "true"
             )
+            evidence = VisualEvidence(screen, "resize-centre")
             try:
+                if evidence.enabled:
+                    with camera_kept(screen):
+                        click_marked(screen, "object-focus")
+                        camera_settled(screen)
+                        wait_for_scene_idle(screen)
+                        evidence.capture("01-resize-group-centre-toggle-1920")
+                    evidence.finish()
                 axis, _ = _hold_resize(screen)
                 ActionChains(screen.selenium).release().perform()
                 confirmed(screen, lambda: handle.shapes[-1] != initial)
@@ -93,6 +103,7 @@ class TestPrimitiveResize:
                 )
                 assert handle.shapes[-1].pose == pytest.approx(initial.pose)
             finally:
+                evidence.stop()
                 ActionChains(screen.selenium).send_keys(Keys.ESCAPE).release().perform()
                 click_marked(screen, "object-resize-centre")
                 wait(screen).until(

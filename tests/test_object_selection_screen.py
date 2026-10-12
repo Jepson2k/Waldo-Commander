@@ -19,6 +19,7 @@ from tests.helpers.browser_helpers import (
     click_marked,
     marked_element,
     run_in_app,
+    tap,
     viewport,
 )
 from tests.helpers.browser_session import wait
@@ -38,6 +39,7 @@ from tests.helpers.scene_screen import (
     place_shape,
     probe,
     program_previewed,
+    settled_pixel,
 )
 from tests.helpers.scene_surface import scene_js, wait_for_scene_idle
 from tests.helpers.visual_evidence import VisualEvidence, preserve_capture_buffers
@@ -124,8 +126,20 @@ class TestSelectionTransform:
                 screen, "object-selection", synchronized_frames=True
             )
             try:
-                click_object(screen, "shape:Fixture A")
-                click_object(screen, "shape:Fixture B", shift=True)
+                if evidence.enabled:
+                    click_marked(screen, "scene-multi-select")
+                    wait(screen).until(lambda _: run_in_app(lambda: view._multi_select))
+                    for count, name in enumerate(("Fixture A", "Fixture B"), 1):
+                        tap(screen, *settled_pixel(screen, f"shape:{name}"))
+                        wait(screen).until(
+                            lambda _, count=count: run_in_app(
+                                lambda: len(view._selected_objects)
+                            )
+                            == count
+                        )
+                else:
+                    click_object(screen, "shape:Fixture A")
+                    click_object(screen, "shape:Fixture B", shift=True)
                 wait(screen).until(
                     lambda _: run_in_app(lambda: len(view._selected_objects) == 2)
                 )
@@ -133,6 +147,12 @@ class TestSelectionTransform:
                 history = len(view.object_history.undo_stack)
                 _focused(screen)
                 evidence.capture("01-selected-pair-1920")
+                if evidence.enabled:
+                    evidence.capture("08-select-several-header-1920")
+                    click_marked(screen, "scene-multi-select")
+                    wait(screen).until(
+                        lambda _: not run_in_app(lambda: view._multi_select)
+                    )
                 _assert_handle_clearance(screen)
                 spot = wait(screen).until(
                     lambda _: probe(screen, "arrowTip", "selection:center")
@@ -261,6 +281,8 @@ class TestSelectionTransform:
                     live
                 )
             finally:
+                if evidence.enabled and run_in_app(lambda: view._multi_select):
+                    click_marked(screen, "scene-multi-select")
                 run_in_app(
                     lambda: view.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
                 )

@@ -139,7 +139,11 @@ SIZE: dict[str, str] = {
     "size-footer": "28px",
 }
 EFFECT: dict[str, str] = {"glass-blur": "36px", "glass-saturate": "150%"}
-OPACITY: dict[str, str] = {"opacity-locked": "0.15"}
+OPACITY: dict[str, str] = {
+    "opacity-locked": "0.15",
+    "opacity-fixture-fill": "0.06",
+    "opacity-fixture-edge": "0.75",
+}
 Z_INDEX: dict[str, str] = {
     "z-loading": "10",
     "z-cards": "20",
