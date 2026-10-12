@@ -39,6 +39,7 @@ from tests.helpers.browser_helpers import (
     run_in_app,
     send_global_key,
     tap,
+    viewport,
 )
 from tests.helpers.browser_session import no_visible, wait, window_size
 from tests.helpers.scene_screen import (
@@ -47,6 +48,8 @@ from tests.helpers.scene_screen import (
     camera_settled,
     choose,
     clear_selection,
+    click_object,
+    confirmed,
     settled_pixel,
     end_target_edit,
     frame_mm,
@@ -55,6 +58,7 @@ from tests.helpers.scene_screen import (
     joint_deg,
     joint_settled,
     poll,
+    place_shape,
     probe,
     program_previewed,
     tcp_mm,
@@ -665,6 +669,102 @@ class TestScene:
             )
             poll(lambda: not probe(screen, "glowing", group), 5.0, "the glow to go")
             assert frames_at_rest(screen, 0.5) > before, "the glow stayed drawn"
+
+    def test_target_taps_reveal_the_cursor_line_without_changing_selection(
+        self, class_screen: Screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen)
+        teleport_jog_pose()
+        view = ui_state.urdf_scene
+        handle = waldoctl.commander.scene
+        original_shapes = run_in_app(lambda: list(handle.shapes))
+        program_was_open = run_in_app(lambda: ui_state.program_panel_visible)
+        source = _TARGET_PROGRAM.replace(
+            "rbt.move_l", "# Approach\n" * 80 + "rbt.move_l"
+        )
+        with (
+            camera_kept(screen),
+            viewport(screen, 1920, 1080),
+            program_previewed(source) as targets,
+        ):
+            try:
+                clear_selection(screen)
+                point = wait(screen).until(lambda _: probe(screen, "floorSpot"))
+                name = place_shape(screen, "box", *point[:2], "Selected fixture")
+                selected = [f"shape:{name}"]
+                assert run_in_app(lambda: view._selected_objects) == selected
+                if not program_was_open:
+                    click_tab(screen, "program")
+                target = targets[-1]
+                line = run_in_app(
+                    lambda: next(
+                        t.line_number
+                        for t in waldoctl.commander.programs.active.dry_run.targets
+                        if t.id == target
+                    )
+                )
+                editor_id = run_in_app(lambda: ui_state.active_textarea.id)
+
+                def cursor():
+                    return js(
+                        screen,
+                        "const v=getElement(arguments[0])?.editor;"
+                        "return v && v.state.doc.lineAt(v.state.selection.main.head).number",
+                        editor_id,
+                    )
+
+                for touch in (False, True):
+                    focus_editor(screen)
+                    ActionChains(screen.selenium).key_down(Keys.CONTROL).send_keys(
+                        Keys.HOME
+                    ).key_up(Keys.CONTROL).perform()
+                    wait(screen).until(lambda _: cursor() == 1)
+                    if not touch:
+                        close_panel(screen, "program-panel")
+                        wait(screen).until(
+                            lambda _: not run_in_app(
+                                lambda: ui_state.program_panel_visible
+                            )
+                            and no_visible(screen, ".program-panel")
+                        )
+                    if touch:
+                        tap(screen, *scene_object_pixel(screen, f"target:{target}"))
+                    else:
+                        click_object(screen, f"target:{target}")
+                    wait(screen).until(lambda _: cursor() == line)
+                    wait(screen).until(
+                        lambda _: run_in_app(lambda: view._highlighted_line) == line
+                    )
+                    assert run_in_app(lambda: view._selected_objects) == selected
+                    assert not run_in_app(lambda: view._editing_unified_target)
+                    assert not js(
+                        screen,
+                        "return !!document.activeElement.closest('.cm-editor, input, textarea')",
+                    )
+                    wait(screen).until(
+                        lambda _: js(
+                            screen,
+                            "const v=getElement(arguments[0]).editor;"
+                            "const p=v.coordsAtPos(v.state.selection.main.head);"
+                            "const r=v.scrollDOM.getBoundingClientRect();"
+                            "return p && p.top >= r.top && p.bottom <= r.bottom",
+                            editor_id,
+                        )
+                    )
+                    wait(screen).until(
+                        lambda _: not run_in_app(
+                            lambda: keybindings_manager.editor_focused
+                        )
+                    )
+                    assert run_in_app(lambda: ui_state.active_textarea.value) == source
+            finally:
+                run_in_app(lambda: setattr(handle, "shapes", original_shapes))
+                confirmed(screen, lambda: handle.shapes == original_shapes)
+                if not program_was_open and run_in_app(
+                    lambda: ui_state.program_panel_visible
+                ):
+                    close_panel(screen, "program-panel")
 
     def test_the_gizmo_arrow_jogs_on_a_drag_and_a_tap_keeps_it_pinned(
         self, class_screen: Screen

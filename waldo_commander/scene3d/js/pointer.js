@@ -280,15 +280,17 @@ export class Pointer {
     if (this.ring && this.ring.grips.includes(object)) return { ring: this.ring, object };
     if (object === this.core.gizmos.ball) return { source: GIZMO, object };
     const sources = this.core.ix.sources || {};
+    let target;
     for (let o = object; o; o = o.parent) {
       const id = o.userData.wcId;
       if (id === undefined) continue;
       const rec = this.core.nodes.get(id);
+      if (rec?.name.startsWith("target:")) target = rec.name.slice("target:".length);
       if (sources[id] !== undefined) {
         const source=sources[id];
         return {source,object,glow:source.startsWith("ring:") && this.allowed(source)?rec:null};
       }
-      if (rec && rec.glow) return { glow: rec, object };
+      if (rec && rec.glow) return { glow: rec, object, target };
     }
     return null;
   }
@@ -386,6 +388,7 @@ export class Pointer {
     // A finger takes what is under it before what is only near it.
     for (const kind of e.pointerType === "touch" ? ["mouse", "touch"] : [e.pointerType]) {
       for (const tool of this.tools) {
+        if (tool === this.core.inspection && this.hit(x, y)?.target) continue;
         if (!tool.hit(x, y, kind)) continue;
         this.suppressTap(e.pointerId);
         e.stopImmediatePropagation();
@@ -584,7 +587,7 @@ export class Pointer {
     const hit = live && !handles.length ? this.hit(x, y) : null;
     this.placeGround(live && !e.buttons ? [x, y] : null, hit, handles);
     // Over a path a press would scrub, the path is what the pointer is on.
-    const scrub = this.core.inspection.hoverAt(live && !handles.length && !hit?.ring ? [x, y] : null);
+    const scrub = this.core.inspection.hoverAt(live && !handles.length && !hit?.ring && !hit?.target ? [x, y] : null);
     if (!live) return;
     if (scrub) {
       this.forgetHover();return;

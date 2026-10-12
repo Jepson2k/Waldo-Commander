@@ -488,6 +488,7 @@ class UrdfScene(
         self.scene.define_joints([self.joint_groups[n] for n in self.joint_names])
         self.scene.on_context(self._on_context)
         self.scene.on("select", self._on_object_selection)
+        self.scene.on("target_tap", self._on_target_tap)
         self.scene.on("camera", self._on_isolation_view)
         self.scene.on("inspect", lambda e: self.inspection.handle(e.args))
         self.scene.on("init", self.inspection.remount)
@@ -1168,6 +1169,19 @@ class UrdfScene(
                 obj.material(None)
             else:
                 obj.material(rs.colors[j] if j < len(rs.colors) else "")
+
+    def _on_target_tap(self, event) -> None:
+        args = event.args
+        editor = ui_state.editor_panel
+        if (
+            isinstance(args, dict)
+            and isinstance(args.get("id"), str)
+            and args["id"] in self._target_objects
+            and editor is not None
+            and ui_state.active_textarea is not None
+            and ui_state.active_textarea.client is self.scene.client
+        ):
+            editor.reveal_target(args["id"])
 
     def update_cursor_line_highlight(self) -> None:
         """Highlight path objects for the segment matching the editor cursor line."""

@@ -50,10 +50,9 @@ async def test_primitive_resize_faces_center_radius_cancel_and_history(user):
         def resize(size, symmetric=False, abort=False):
             spec = view.scene.interaction["shapeMove"]
             drag = Drag(user, view.scene, "shape").begin(
-                **spec,
+                **{**spec, "symmetric": symmetric},
                 axis=axis,
                 sign=-1,
-                symmetric=symmetric,
             )
             if abort:
                 drag.abort()

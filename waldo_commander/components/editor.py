@@ -530,6 +530,21 @@ class EditorPanel(FileOperationsMixin):
         tab.dry_run.targets = [t for t in tab.dry_run.targets if t.id != target_id]
         simulation_state.notify_changed()
 
+    def reveal_target(self, target_id: str) -> None:
+        line = self.target_line(target_id)
+        tab = waldoctl.commander.programs.active
+        textarea = ui_state.active_textarea
+        if tab is None or textarea is None or line is None:
+            return
+        if not 1 <= line <= (textarea.value or "").count("\n") + 1:
+            return
+        self._set_cursor_line(tab, line, 1, None)
+        textarea.place_cursor(line)
+        if not ui_state.program_panel_visible and ui_state._program_tab is not None:
+            ui.run_javascript(
+                f'document.getElementById("c{ui_state._program_tab.id}")?.click()'
+            )
+
     def add_target_code(self, pose: list[float], move_type: str) -> int | None:
         """Add a move command to the editor.
 
@@ -1370,16 +1385,23 @@ class EditorPanel(FileOperationsMixin):
             return
         if tab.id not in self._focused_tab_ids:
             return
-        tab.dry_run.playback.active_cursor_line = e.line
-        self._cursor_selection = None if e.empty else (e.from_line, e.to_line)
+        self._set_cursor_line(
+            tab, e.line, e.column, None if e.empty else (e.from_line, e.to_line)
+        )
+
+    def _set_cursor_line(
+        self, tab: Program, line: int, column: int, selection: tuple[int, int] | None
+    ) -> None:
+        tab.dry_run.playback.active_cursor_line = line
+        self._cursor_selection = selection
         self._selection_tab_id = tab.id
         self._update_capture_button()
         strip = self.skill_strip(tab.id)
         if strip is not None:
-            strip.on_cursor(e.line, e.column)
+            strip.on_cursor(line, column)
         widgets = self._tab_widgets.get(tab.id, {})
-        if program_setup(tab.source, e.line) != widgets.get("setup"):
-            self._refresh_completions(tab.id, e.line)
+        if program_setup(tab.source, line) != widgets.get("setup"):
+            self._refresh_completions(tab.id, line)
         session = motion_recorder.session
         if (
             session is not None

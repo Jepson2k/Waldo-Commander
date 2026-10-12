@@ -30,9 +30,18 @@ class SceneCodeEditor(
         # would carry two copies of the program per edit.
         self._mounted = True
         self._props.pop("scene-history", None)
+        self._props.pop("scene-cursor-line", None)
 
     def _on_scene_unmounted(self) -> None:
         self._mounted = False
+
+    def place_cursor(self, line_number: int) -> None:
+        """Reveal a line and place the cursor without taking keyboard focus."""
+        if not self._mounted:
+            self._props["scene-cursor-line"] = line_number
+            self.update()
+        else:
+            self.run_method("placeCursor", line_number)
 
     def undo(self) -> None:
         """Take back the scene's last edit, unless the source has changed

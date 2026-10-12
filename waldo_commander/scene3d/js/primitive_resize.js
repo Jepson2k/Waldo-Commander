@@ -137,7 +137,7 @@ export class PrimitiveResize {
       const next=(axis+step*k+3)%3,nextKey=this.dimension(next);
       if(nextKey===key)continue;
       const mesh=this.handles.find(h=>h.userData.axis===next&&h.userData.sign===sign);
-      this.openEntry(mesh,nextKey==="radius"||e.symmetric&&key!=="radius",0);
+      this.openEntry(mesh,nextKey==="radius"||this.spec.symmetric||e.symmetric&&key!=="radius",0);
       return;
     }
   }
@@ -199,7 +199,7 @@ export class PrimitiveResize {
     const plane=facingPlane(ray,direction,mesh.position,new THREE.Plane(),1e-4);
     const start=plane && ray.intersectPlane(plane,new THREE.Vector3());
     if(!start)return null;
-    const d=this.start(mesh,this.dimension(mesh.userData.axis)==="radius" || e.shiftKey,e.pointerId);
+    const d=this.start(mesh,this.dimension(mesh.userData.axis)==="radius" || this.spec.symmetric || e.shiftKey,e.pointerId);
     if(!d)return null;
     Object.assign(d,{plane,start,x:e.clientX,y:e.clientY,step:this.core.gizmos.precision.incrementAt(mesh.position,"translate")});
     return {g:d.g,move:(event)=>this.move(event),release:(event)=>this.release(event),cancel:(reason)=>this.core.gestures.abort(reason)};

@@ -62,6 +62,7 @@ class _InspectorControls:
         self.feedback: Any = None
         self.isolate: Any = None
         self.modes: dict[str, Any] = {}
+        self.resize_centre: Any = None
         self.attachment: list[Any] = []
 
     def editable(self, element: Any, readonly: bool) -> Any:
@@ -85,6 +86,8 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         self.object_history = SceneHistory(self)
         self._init_shape_drawing()
         self._selected_objects: list[str] = []
+        self._multi_select = False
+        self._resize_centre = False
         self._hidden_objects: set[str] = set()
         self._locked_objects: set[str] = set()
         self._mounted_panel = None
@@ -153,7 +156,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             # A click on nothing puts a target edit away, keeping it.
             self._end_editing_session()
         selected = hits[:1]
-        if args.get("extend") and selected:
+        if (self._multi_select or args.get("extend")) and selected:
             selected = (
                 [k for k in self._selected_objects if k != selected[0]]
                 if selected[0] in self._selected_objects
@@ -243,6 +246,13 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         self._object_inspector_key = None
         flat = "flat round dense color=wc-text"
         with panel.tools:
+            self._multi_select_button = (
+                ui.button(icon="library_add_check", on_click=self._toggle_multi_select)
+                .props(flat)
+                .tooltip("Select several — taps add to or remove from the selection")
+                .mark("scene-multi-select")
+            )
+            self._show_multi_select()
             with (
                 ui.button(icon="add_box").props(flat).mark("scene-draw") as draw,
                 ui.menu().props('anchor="bottom right" self="top right"'),
@@ -279,6 +289,16 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                 ui.column().classes("scene-tree w-full").mark("scene-tree")
             )
             self._object_properties = ui.column().classes("scene-properties w-full")
+
+    def _show_multi_select(self) -> None:
+        self._multi_select_button.props(
+            f"flat round dense color={'wc-action' if self._multi_select else 'wc-text'} "
+            f"aria-pressed={'true' if self._multi_select else 'false'}"
+        )
+
+    def _toggle_multi_select(self) -> None:
+        self._multi_select = not self._multi_select
+        self._show_multi_select()
 
     def _draw_on_floor(self, kind: str) -> None:
         self._start_shape_drawing(
@@ -455,6 +475,16 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                             .props("dense unelevated")
                             .tooltip(tip)
                             .mark(f"object-mode-{value}"),
+                            readonly,
+                        )
+                    if shape.kind in RESIZE_AXES:
+                        controls.resize_centre = controls.editable(
+                            ui.button(
+                                icon="zoom_out_map", on_click=self._toggle_resize_centre
+                            )
+                            .props(flat)
+                            .tooltip("Resize from the centre (or hold Shift)")
+                            .mark("object-resize-centre"),
                             readonly,
                         )
                 for icon, tip, axes, values, offset, scale in (
@@ -752,8 +782,10 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         row.on("pointerleave", js_handler=f"() => {glow}(null)")
 
     def _pick_from_tree(self, key: str, args) -> None:
-        extend = isinstance(args, dict) and any(
-            args.get(k) for k in ("ctrlKey", "metaKey", "shiftKey")
+        extend = (
+            self._multi_select
+            or isinstance(args, dict)
+            and any(args.get(k) for k in ("ctrlKey", "metaKey", "shiftKey"))
         )
         if not extend:
             self._select_objects([key])
@@ -822,6 +854,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             self._isolated_view,
             self._isolated_view or any(k in shown for k, _ in selected),
             self._object_mode,
+            self._resize_centre,
         )
         if controls.shown.get("modes") == state:
             return
@@ -836,6 +869,12 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                 "color=wc-action text-color=wc-on-bright"
                 if value == self._object_mode
                 else "color=wc-control text-color=wc-text"
+            )
+        if controls.resize_centre is not None:
+            controls.resize_centre.set_visibility(self._object_mode == "resize")
+            controls.resize_centre.props(
+                f"flat round dense color={'wc-action' if self._resize_centre else 'wc-text'} "
+                f"aria-pressed={'true' if self._resize_centre else 'false'}"
             )
 
     def _object_dimensions(self, shape, entity, readonly, controls):
@@ -871,6 +910,12 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         if mode not in ("translate", "resize"):
             return
         self._object_mode = mode
+        self._shape_move_session += 1
+        self._push_interaction()
+        self._refresh_object_inspector()
+
+    def _toggle_resize_centre(self) -> None:
+        self._resize_centre = not self._resize_centre
         self._shape_move_session += 1
         self._push_interaction()
         self._refresh_object_inspector()

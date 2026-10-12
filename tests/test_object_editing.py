@@ -312,6 +312,36 @@ async def test_the_scene_panel_leaves_alone_what_a_press_does_not_change(user):
     assert view._selected_objects == [f"shape:{second}"]
     assert panel.is_open
 
+    right_click(user, view.scene, [], [0.4, 0.3, 0])
+    user.find(marker="scene-add-box").click()
+    await confirmed(view, lambda: len(handle.shapes) == 3)
+    third = handle.shapes[-1].name
+    select(user, view)
+    user.find(marker="scene-multi-select").click()
+    select(user, view, f"shape:{first}")
+    select(user, view, f"shape:{second}")
+    assert view._selected_objects == [f"shape:{first}", f"shape:{second}"]
+    select(user, view, f"shape:{first}")
+    assert view._selected_objects == [f"shape:{second}"]
+    select(user, view, f"shape:{first}")
+    user.find(marker="scene-multi-select").click()
+    assert view._selected_objects == [f"shape:{second}", f"shape:{first}"]
+    select(user, view, f"shape:{third}")
+    assert view._selected_objects == [f"shape:{third}"]
+    select(user, view, f"shape:{first}", extend=True)
+    assert view._selected_objects == [f"shape:{third}", f"shape:{first}"]
+    user.find(marker="scene-multi-select").click()
+    user.find(marker=f"scene-row-{second}").click()
+    assert view._selected_objects == [
+        f"shape:{third}",
+        f"shape:{first}",
+        f"shape:{second}",
+    ]
+    user.find(marker=f"scene-row-{second}").click()
+    assert view._selected_objects == [f"shape:{third}", f"shape:{first}"]
+    select(user, view)
+    assert view._selected_objects == []
+
 
 @pytest.mark.integration
 async def test_object_edit_stays_pending_until_real_readback_and_preserves_new_source(

@@ -91,6 +91,7 @@ class ShapeEditingMixin:
     _spawn: Any
     _select_objects: Any
     _object_mode: str
+    _resize_centre: bool
     _locked_objects: set[str]
     object_history: Any
     _cancel_shape_drawing: Any
@@ -663,6 +664,7 @@ class ShapeEditingMixin:
             "session": self._shape_move_session,
             "node": obj.id,
             "mode": self._object_mode,
+            "symmetric": self._resize_centre,
             "axes": RESIZE_AXES.get(shape.kind),
             "revision": self._shape_handle().revision,
         }
@@ -741,6 +743,7 @@ class ShapeEditingMixin:
             or args["axis"] not in (0, 1, 2)
             or args.get("sign") not in (-1, 1)
             or type(args.get("symmetric")) is not bool
+            or (self._resize_centre and not args["symmetric"])
         ):
             return False
         gesture.data.update(

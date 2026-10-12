@@ -7,6 +7,7 @@ from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import (
     click_marked,
+    marked_element,
     run_in_app,
     viewport,
 )
@@ -16,6 +17,7 @@ from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     at_start,
     clear_selection,
+    click_spot,
     confirmed,
     create_shape,
     probe,
@@ -54,6 +56,52 @@ def resize_screen(class_screen):
 
 @pytest.mark.browser
 class TestPrimitiveResize:
+    def test_centre_toggle_keeps_both_faces_symmetric_without_shift(
+        self, resize_screen
+    ):
+        screen = resize_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40)
+        at_start(screen)
+        handle = waldoctl.commander.scene
+        with viewport(screen, 1920, 1080), program_previewed(EDIT_PROGRAM):
+            create_shape(screen, "box", "Centred resize")
+            initial = handle.shapes[-1]
+            click_marked(screen, "object-resize-centre")
+            wait(screen).until(
+                lambda _: marked_element(screen, "object-resize-centre").get_attribute(
+                    "aria-pressed"
+                )
+                == "true"
+            )
+            try:
+                axis, _ = _hold_resize(screen)
+                ActionChains(screen.selenium).release().perform()
+                confirmed(screen, lambda: handle.shapes[-1] != initial)
+                edited = handle.shapes[-1]
+                dimension = "xyz"[axis]
+                assert edited.pose == pytest.approx(initial.pose)
+                assert getattr(edited, dimension) > getattr(initial, dimension)
+
+                spot = wait(screen).until(lambda _: probe(screen, "resizeHandle", axis))
+                click_spot(screen, spot)
+                wait(screen).until(lambda _: (f := gizmo_field(screen)) and f["typing"])
+                ActionChains(screen.selenium).send_keys("25", Keys.ENTER).perform()
+                confirmed(
+                    screen,
+                    lambda: getattr(handle.shapes[-1], dimension)
+                    == pytest.approx(getattr(edited, dimension) + 0.025),
+                )
+                assert handle.shapes[-1].pose == pytest.approx(initial.pose)
+            finally:
+                ActionChains(screen.selenium).send_keys(Keys.ESCAPE).release().perform()
+                click_marked(screen, "object-resize-centre")
+                wait(screen).until(
+                    lambda _: marked_element(
+                        screen, "object-resize-centre"
+                    ).get_attribute("aria-pressed")
+                    == "false"
+                )
+
     def test_rotated_box_face_cancel_center_and_undo(self, resize_screen):
         screen = resize_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)

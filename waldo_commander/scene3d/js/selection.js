@@ -78,6 +78,10 @@ export class Selection {
 
   // A tap at (x, y) that the pointer found `hit` under.
   tap(x,y,extend,hit) {
+    if(hit?.target) {
+      this.core.emit("target_tap",{id:hit.target});
+      return;
+    }
     const hits=this.hits(x,y);
     if(hits.length || !hit)this.core.emit("select",{revision:this.revision,hits,extend});
   }
