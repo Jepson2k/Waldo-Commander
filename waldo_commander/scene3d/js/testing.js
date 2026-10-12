@@ -9,6 +9,11 @@ import { FACES } from "./viewcube.js";
 
 export function surface(core) {
   const { canvas } = core;
+  const observedMaterials = new Set();
+  const materialDisposed = ({target}) => {
+    observedMaterials.delete(target);
+    target.removeEventListener("dispose", materialDisposed);
+  };
   const rect = () => canvas.getBoundingClientRect();
   const pixel = (v) => core.pointer.screen(v);
   // A node, or an object the view itself drew (the gizmo, a ring, a label).
@@ -52,6 +57,34 @@ export function surface(core) {
     },
     byName,
     frames: () => core.frameCount,
+    sweptVolume() {
+      const sweep = core.inspection.sweep, data = core.inspection.data;
+      if (!sweep.root || !data) return null;
+      const record = data.records[0];
+      return {
+        block: sweep.block, command: record.blocks[sweep.block].command, sampleCount: sweep.samples.length,
+        samples: sweep.samples.map(({row, colliding, object}) => ({
+          sourceRow: record.source[row], colliding,
+          joints: data.joints.map((id, i) => {
+            const rec = core.nodes.get(id), joint = object.getObjectByName(sweep.ghost.clones.get(id).name);
+            if (rec.prismatic) return joint.position.dot(rec.axis);
+            const q = joint.quaternion, angle = 2 * Math.atan2(rec.axis.x*q.x + rec.axis.y*q.y + rec.axis.z*q.z, q.w);
+            return angle + 2 * Math.PI * Math.round((record.q[row*record.dof+i] - angle) / (2*Math.PI));
+          }),
+        })),
+      };
+    },
+    renderResources() {
+      // Scene traversal alone misses materials detached without disposal.
+      core.scene.traverse(o => {
+        if (o.material) for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+          if (observedMaterials.has(m)) continue;
+          observedMaterials.add(m);
+          m.addEventListener("dispose", materialDisposed);
+        }
+      });
+      return { geometries: core.renderer.info.memory.geometries, materials: observedMaterials.size };
+    },
     inspection() {
       const inspect = core.inspection, hit = inspect.current;
       return {revision:inspect.data?.revision, pinned:inspect.pinned, dragging:inspect.dragging,

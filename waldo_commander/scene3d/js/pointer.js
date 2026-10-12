@@ -394,6 +394,8 @@ export class Pointer {
         e.stopImmediatePropagation();
         // The drag re-projects against the camera, which must hold still.
         this.core.navigation.halt();
+        // Scrubbing consumes this press before the menu's listener can see it.
+        if (tool === this.core.inspection && e.pointerType === "touch") this.core.menu.down(e);
         const drag = tool.begin(e);
         if (drag) this.start(e, drag);
         return;
@@ -406,7 +408,7 @@ export class Pointer {
     drag.pointerId = e.pointerId;
     this.drag = drag;
     this.core.controls.enabled = false;
-    this.core.menu.cancel();
+    this.core.menu.cancel(e.pointerType === "touch" && this.core.inspection.dragging);
     this.setGlow(null);
     try {
       this.core.canvas.setPointerCapture(e.pointerId);

@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import { Comparison } from "./comparison.js";
+import { SweptVolume } from "./swept_volume.js";
 import { element, setAttr, setHidden, setStyle, setText } from "./dom.js";
 import { GAP, overlap } from "./overlays.js";
-import { finite, reading } from "./handles.js";
+import { finite, reading, tapPx } from "./handles.js";
 
 // The cards a path's markers and menus keep clear of, besides the panels.
 const COVERS = ["comparison", "separation"];
@@ -64,6 +65,7 @@ export class Inspection {
     core.overlays.track("other", this.other);
     core.overlays.readers.push(() => { this.radius = (this.markers[0]?.element.offsetWidth || 26) / 2; });
     this.comparison = new Comparison(this);
+    this.sweep = new SweptVolume(this);
     this.onDocumentDown = (e) => {
       if(!this.choices.contains(e.target) && e.target!==this.other && !e.target.closest?.(".wc-path-event"))this.choices.hidden=true;
     };
@@ -88,6 +90,7 @@ export class Inspection {
         data = { ...sent, chunks: undefined, records };
       }
     }
+    this.sweep.dispose();
     this.comparison.reset();
     this.clear(false); this.removeCursor(); this.hoverAt(null);
     for (const m of this.markers) { m.element.remove(); m.leader.remove(); }
@@ -285,20 +288,27 @@ export class Inspection {
     this.glow = null;
   }
 
-  begin() {
+  begin(event) {
     this.choices.hidden=true;this.core.canvas.focus({preventScroll:true});
-    this.inspect((this.current && this.hits.find(h=>this.samePass(h))) || this.hits[0]);
+    const first = (this.current && this.hits.find(h=>this.samePass(h))) || this.hits[0];
+    // A held finger may ask for the path menu without moving the simulator.
+    let pending = event.pointerType === "touch";
+    if (!pending) this.inspect(first);
     this.dragging = true;
     this.core.canvas.style.cursor = "grabbing";
     return {
       move: (e) => {
+        if (pending) {
+          if (Math.hypot(e.clientX-event.clientX, e.clientY-event.clientY) <= tapPx("touch")) return;
+          pending = false; this.inspect(first);
+        }
         const hits=this.pick(e.clientX,e.clientY,true);
         if (hits.length) this.show(hits[0],true);
       },
-      release: () => { this.dragging = false; this.send(true); },
+      release: () => { if (pending) this.inspect(first); this.dragging = false; this.send(true); },
       cancel: (reason) => {
         this.dragging = false;
-        if (reason !== "released unseen") this.clear();
+        if (!pending && reason !== "released unseen") this.clear();
       },
     };
   }
@@ -504,6 +514,7 @@ export class Inspection {
   }
 
   dispose() {
+    this.sweep.dispose();
     this.comparison.dispose();
     this.clear(false); this.removeCursor(); this.hoverAt(null);
     this.grip.removeFromParent(); this.grip.geometry.dispose(); this.grip.material.dispose();

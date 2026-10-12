@@ -629,7 +629,7 @@ class UrdfScene(
         ):
             return
         self._resolve_draw_surface(args)
-        self._populate_context_menu(hits, ground)
+        self._populate_context_menu(hits, ground, args.get("path"))
         if self.scene is not None:
             self.scene.open_menu(gen, cx, cy)
 

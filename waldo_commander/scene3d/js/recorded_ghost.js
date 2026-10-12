@@ -11,7 +11,7 @@ const ORDER = "ZYX";
 // two of difference does not speckle the arm.
 const BEHIND_M = 0.003;
 
-function setBack(material) {
+export function setBack(material) {
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader.replace(
       "#include <project_vertex>",
@@ -40,6 +40,8 @@ export class RecordedGhost {
     this.clones = new Map();
     this.toolGroups = new Map();
     this.objectClones = new Map();
+    this.ownedGeometry = new Set();
+    this.borrowedGeometry = new Set();
   }
 
   get ready() {
@@ -95,6 +97,7 @@ export class RecordedGhost {
     copy.position.fromArray(rec.base.p); copy.quaternion.fromArray(rec.base.r); copy.scale.fromArray(rec.base.s);
     copy.name = `${this.name}:${rec.name || id}`;
     if (rec.drawable) {
+      this.borrowedGeometry.add(rec.drawable.geometry);
       const mesh = this.dress(rec.drawable.clone());
       if (rec.drawable === rec.obj) { mesh.position.set(0,0,0); mesh.quaternion.identity(); mesh.scale.set(1,1,1); }
       copy.add(mesh);
@@ -112,9 +115,12 @@ export class RecordedGhost {
       // a jaw whose STL fails does not flip its partner's direction.
       const count = roles.get(spec.role) || 0; roles.set(spec.role, count + 1);
       try {
-        const mesh = await loadStl(spec.url, false);
-        if (this.data !== data) { dispose(mesh); return; }
-        mesh.material.dispose(); this.dress(mesh); mesh.scale.setScalar(data.scale);
+        const source = [...this.core.nodes.records.values()].find(r => !r.deleted && r.url === spec.url && r.drawable?.isMesh);
+        const mesh = source ? new THREE.Mesh(source.drawable.geometry, this.material) : await loadStl(spec.url, false);
+        if (this.data !== data) { if (!source) dispose(mesh); return; }
+        if (!source) { this.ownedGeometry.add(mesh.geometry); mesh.material.dispose(); }
+        else this.borrowedGeometry.add(mesh.geometry);
+        this.dress(mesh); mesh.scale.setScalar(data.scale);
         mesh.position.fromArray(spec.origin); mesh.rotation.set(...spec.rpy, ORDER);
         const motion = tool.motions.find((m) => m.role === spec.role);
         mesh.userData.inspection = {spec, motion, sign:motion?.symmetric && count % 2 ? -1 : 1};
@@ -167,7 +173,14 @@ export class RecordedGhost {
 
   dispose() {
     this.root?.removeFromParent();
-    for (const group of this.toolGroups.values()) group.traverse((o) => o.geometry?.dispose());
+    for (const geometry of this.ownedGeometry) geometry.dispose();
+    this.ownedGeometry.clear();
+    // A tool replaced since this copy was made no longer owns its shared geometry.
+    if (this.borrowedGeometry.size) {
+      const live = new Set([...this.core.nodes.records.values()].filter(r => !r.deleted).map(r => r.drawable?.geometry));
+      for (const geometry of this.borrowedGeometry) if (!live.has(geometry)) geometry.dispose();
+      this.borrowedGeometry.clear();
+    }
     this.material?.dispose(); this.depth?.dispose();
     this.data = this.root = this.material = this.depth = null;
     this.clones.clear(); this.toolGroups.clear(); this.objectClones.clear();

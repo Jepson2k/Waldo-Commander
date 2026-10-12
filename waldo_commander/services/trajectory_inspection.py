@@ -266,6 +266,7 @@ class TrajectoryInspection:
             "tools": tools,
             "scale": self.owner._stl_scale,
             "color": hex_of("action"),
+            "collisionColor": hex_of("scene-collision"),
             "predictedColor": hex_of("physics-contact"),
             "predictionVisible": view.predicted_visible,
         }
@@ -311,6 +312,13 @@ class TrajectoryInspection:
         actions = {a.command: a.method for a in dry.tool_actions}
         live = waldoctl.commander.status.tool
         initial = {"key": live.key or "NONE", "variant": live.variant_key or ""}
+        collisions: dict[int, list[int]] = defaultdict(list)
+        if record is dry.commanded:
+            for segment in dry.path_segments:
+                if segment.command is not None and segment.collision_step is not None:
+                    collisions[segment.command].append(
+                        segment.start_row + segment.collision_step
+                    )
         for b in record.blocks:
             command_occurrence = occurrences[b.command]
             occurrences[b.command] += 1
@@ -337,6 +345,14 @@ class TrajectoryInspection:
                     else note.method or b.move_type or "Action",
                     "stationary": stationary,
                     "valid": b.error is None,
+                    "collisionRow": next(
+                        (
+                            row
+                            for row in sorted(collisions[b.command])
+                            if start <= row < start + b.rows
+                        ),
+                        None,
+                    ),
                     "tool": initial
                     if selected is None
                     else {
@@ -397,6 +413,28 @@ class TrajectoryInspection:
             "spans": spans,
         }
         return entry, kept, arrays
+
+    def sweep_block(self, path: Any) -> dict | None:
+        if not isinstance(path, dict) or self.data is None:
+            return None
+        active = waldoctl.commander.programs.active
+        if (
+            active is None
+            or self.key is None
+            or self.key[:2] != (active.id, active.dry_run.revision)
+            or path.get("revision") != self.generation
+        ):
+            return None
+        index = path.get("block")
+        blocks = self.data["records"][0]["blocks"]
+        if not isinstance(index, int) or not 0 <= index < len(blocks):
+            return None
+        block = blocks[index]
+        return (
+            block
+            if not block["instant"] and block["end"] - block["start"] >= 2
+            else None
+        )
 
     def view_row(self, record: int, row: int) -> int:
         """The sent row of *record* standing for its row *row*."""

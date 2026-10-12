@@ -58,7 +58,7 @@ export class SceneCore {
     this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(0, -3, 5);
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference:"high-performance", canvas: this.canvas });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, stencil: true, powerPreference:"high-performance", canvas: this.canvas });
     // No tone mapping, so unlit token colours render as their hex.
     this.renderer.toneMapping = THREE.NoToneMapping;
     const shadows = this.renderer.shadowMap;

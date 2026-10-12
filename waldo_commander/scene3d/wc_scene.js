@@ -54,6 +54,9 @@ export default {
   },
 
   methods: {
+    toggle_sweep(revision, block) {
+      this.core.inspection.sweep.toggle(revision, block);
+    },
     camera_action(action, surface=null) {
       this.core.navigation.action(action, surface);
     },

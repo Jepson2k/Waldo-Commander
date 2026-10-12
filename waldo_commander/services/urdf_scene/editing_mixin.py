@@ -24,6 +24,7 @@ from waldo_commander.state import (
 
 from waldo_commander.services.scene_source import target_binding
 from waldo_commander.services.timeline import selection_before
+from waldo_commander.services.trajectory_inspection import TrajectoryInspection
 from waldo_commander.services.keybindings import keybindings_manager
 from waldo_commander.services.programs import is_any_program_running, preview_is_current
 
@@ -83,6 +84,7 @@ class EditingMixin(ShapeEditingMixin):
     _keep_tool_vertical: bool
     _gizmo_alignment_state: Any
     _gizmo_shown: Any
+    inspection: TrajectoryInspection
     _vertical_rotation: Any
 
     # Methods from other mixins / main class
@@ -284,7 +286,10 @@ class EditingMixin(ShapeEditingMixin):
     # -------------------------------------------------------------------------
 
     def _populate_context_menu(
-        self, hits: list[str], ground: tuple[float, float, float] | None
+        self,
+        hits: list[str],
+        ground: tuple[float, float, float] | None,
+        path: dict | None = None,
     ) -> None:
         """Fill the context menu for a right-click on *hits* (names, nearest
         first) where its ray met the floor at *ground*."""
@@ -307,6 +312,7 @@ class EditingMixin(ShapeEditingMixin):
 
         shape_name = self._shape_hit_name(hits)
         draft_name = self._draft_hit_name(hits)
+        move = self.inspection.sweep_block(path)
 
         with self.context_menu:
             if shape_name and not target_id:
@@ -349,6 +355,8 @@ class EditingMixin(ShapeEditingMixin):
                     ui.menu_item("Delete Target", on_click=make_delete()).set_enabled(
                         not self._editing_unified_target
                     )
+            elif move is not None and path is not None:
+                ui.item(f"Move (Line {move['line']})").classes("font-bold text-sm")
             else:
                 if self._last_click_coords is not None:
                     x_mm, y_mm = [c * 1000 for c in self._last_click_coords[:2]]
@@ -384,6 +392,22 @@ class EditingMixin(ShapeEditingMixin):
                         'anchor="top end" self="top start" auto-close'
                     ):
                         self._populate_installation_menu()
+            if move is not None and path is not None:
+                ui.separator()
+                with ui.menu_item(
+                    on_click=lambda r=path["revision"],
+                    b=path["block"]: self.scene.run_method("toggle_sweep", r, b),
+                ).mark("scene-toggle-swept-volume"):
+                    with ui.item_section().props("side"):
+                        ui.icon("blur_on")
+                    ui.item_section(
+                        "Hide swept volume"
+                        if path.get("shown")
+                        else "Show swept volume"
+                    )
+                    ui.tooltip(
+                        "Sampled recorded motion; collision marks come from the preview"
+                    )
             plane = self._context_surface or (
                 {"origin": list(ground), "normal": [0, 0, 1], "label": "Floor"}
                 if not shape_name and not target_id and ground is not None

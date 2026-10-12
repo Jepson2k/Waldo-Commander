@@ -86,6 +86,7 @@ export class Nodes {
   // The mesh is built from the record's state when it arrives, not when it
   // was asked for: material, clipping and visibility may have changed since.
   async load(rec, url, wireframe) {
+    rec.url = url;
     let drawable;
     try {
       drawable = await loadStl(url, wireframe);

@@ -67,6 +67,7 @@ export class Menu {
           this.long = null;
           if (long && !this.core.gestures.active) {
             this.core.pointer.suppressTap(long.id);
+            if (this.core.inspection.dragging) this.core.pointer.abortDrag("path menu");
             this.request(long.x, long.y);
           }
         }, LONG_PRESS_MS),
@@ -111,8 +112,8 @@ export class Menu {
 
   // Abandon a press that has turned into a drag of something, and any menu
   // still on its way: none opens over a drag.
-  cancel() {
-    this.cancelLongPress();
+  cancel(keepLongPress = false) {
+    if (!keepLongPress) this.cancelLongPress();
     this.gen++;
     this.pending = null;
   }
@@ -126,11 +127,13 @@ export class Menu {
     if (core.gestures.blocked || !core.live || this.dragging) return;
     const gen = ++this.gen;
     const { hits, ground, surface } = core.pointer.contextAt(cx, cy);
+    const hit = core.inspection.pick(cx, cy).find(h => h.record === 0);
+    const path = hit ? { revision: core.inspection.data.revision, block: hit.block, shown: core.inspection.sweep.block === hit.block } : null;
     if(gizmo || core.pointer.handlesAt(cx,cy).some(h=>h.tc===core.gizmos.tcp) ||
        core.gizmos.gizmoShown && core.pointer.hit(cx,cy)?.object===core.gizmos.ball) {
       hits.unshift("gizmo:tcp");core.pointer.hover.pinned=true;
     }
-    this.pending = { gen, hits, ground, surface, cx, cy, epoch: core.gestures.epoch };
+    this.pending = { gen, hits, ground, surface, path, cx, cy, epoch: core.gestures.epoch };
     core.emit("context", this.pending);
   }
 

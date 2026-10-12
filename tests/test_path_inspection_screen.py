@@ -104,6 +104,133 @@ def _matches_record(screen):
 
 @pytest.mark.browser
 class TestPathInspection:
+    def test_swept_volume_menu_endpoints_cleanup_and_invalidation(self, class_screen):
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40)
+        teleport_jog_pose()
+        source = PATH_PROGRAM.replace(
+            "rbt = RobotClient()",
+            'rbt = RobotClient(); rbt.select_tool("SSG-48", "pinch")',
+        )
+        with (
+            viewport(screen, 1920, 1080),
+            camera_kept(screen),
+            program_previewed(source),
+        ):
+            scene_js(screen, "S.setCameraPose(arguments[0])", PATH_VIEW)
+            wait_for_scene_idle(screen)
+            blocks = scene_js(screen, "return S.inspection().records[0].blocks")
+            moves = [next(b for b in blocks if b["line"] == line) for line in (7, 9)]
+            record = run_in_app(
+                lambda: waldoctl.commander.programs.active.dry_run.commanded
+            )
+            evidence = VisualEvidence(screen, "swept-volume")
+
+            def menu(move, label):
+                x, y, _ = path_point(screen, move["command"], 0.3)
+                action = ActionChains(screen.selenium, duration=0)
+                pointer_to(screen, x, y, action)
+                action.context_click().perform()
+                wait(screen).until(
+                    lambda _: label
+                    in marked_element(screen, "scene-toggle-swept-volume").text
+                    and marked_element(
+                        screen, "scene-toggle-swept-volume"
+                    ).is_displayed()
+                )
+
+            def resources():
+                action = ActionChains(screen.selenium, duration=0)
+                pointer_to(screen, 10, 10, action)
+                action.perform()
+                wait_for_scene_idle(screen)
+                return scene_js(screen, "return S.renderResources()")
+
+            def shown(move):
+                state = scene_js(screen, "return S.sweptVolume()")
+                return state if state and state["command"] == move["command"] else None
+
+            try:
+                baseline = None
+                for cycle in range(3):
+                    menu(moves[0], "Show swept volume")
+                    click_marked(screen, "scene-toggle-swept-volume")
+                    sweep = wait(screen).until(lambda _: shown(moves[0]))
+                    block = next(
+                        b for b in record.blocks if b.command == moves[0]["command"]
+                    )
+                    assert 2 <= sweep["sampleCount"] <= 24
+                    for sample, row in (
+                        (sweep["samples"][0], block.start_row),
+                        (sweep["samples"][-1], block.start_row + block.rows - 1),
+                    ):
+                        assert sample["sourceRow"] == row
+                        assert sample["joints"] == pytest.approx(
+                            record.joints_rad[row], abs=1e-6
+                        )
+                    # Observe the sweep's materials before hide can detach them.
+                    resources()
+                    evidence.capture(f"01-sampled-arm-and-tool-{cycle}")
+                    menu(moves[0], "Hide swept volume")
+                    click_marked(screen, "scene-toggle-swept-volume")
+                    wait(screen).until(
+                        lambda _: scene_js(screen, "return S.sweptVolume()") is None
+                    )
+                    after_hide = resources()
+                    if baseline is None:
+                        # First hover uploads the retained path grip and floor ring.
+                        baseline = after_hide
+                    else:
+                        assert after_hide == baseline
+
+                menu(moves[0], "Show swept volume")
+                click_marked(screen, "scene-toggle-swept-volume")
+                wait(screen).until(lambda _: shown(moves[0]))
+                menu(moves[1], "Show swept volume")
+                click_marked(screen, "scene-toggle-swept-volume")
+                wait(screen).until(lambda _: shown(moves[1]))
+                assert (
+                    scene_js(
+                        screen,
+                        "return S.scene.children.filter(o => o.name === 'sweep:volume').length",
+                    )
+                    == 1
+                )
+
+                x, y, _ = path_point(screen, moves[1]["command"], 0.3)
+                _touch(screen, "touchStart", [(1, x, y)])
+                try:
+                    wait(screen).until(
+                        lambda _: "Hide swept volume"
+                        in marked_element(screen, "scene-toggle-swept-volume").text
+                        and marked_element(
+                            screen, "scene-toggle-swept-volume"
+                        ).is_displayed()
+                    )
+                    evidence.capture("02-long-press-menu")
+                finally:
+                    _touch(screen, "touchEnd", [])
+                click_marked(screen, "scene-toggle-swept-volume")
+                wait(screen).until(
+                    lambda _: scene_js(screen, "return S.sweptVolume()") is None
+                )
+                menu(moves[1], "Show swept volume")
+                click_marked(screen, "scene-toggle-swept-volume")
+                wait(screen).until(lambda _: shown(moves[1]))
+                run_in_app(
+                    lambda: setattr(
+                        ui_state.active_textarea, "value", source + "\n# New preview\n"
+                    )
+                )
+                wait(screen).until(
+                    lambda _: scene_js(screen, "return S.sweptVolume()") is None
+                )
+                evidence.finish()
+            finally:
+                evidence.stop()
+                run_in_app(playback._pause_sim_playback)
+                ActionChains(screen.selenium).release().send_keys(Keys.ESCAPE).perform()
+
     def test_recorded_tools_timeline_and_invalidation(self, class_screen):
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)
