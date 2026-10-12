@@ -12,6 +12,9 @@ import { SceneTransform } from "./transform.js";
 import { reducedMotion } from "./fx.js";
 import { Precision } from "./precision.js";
 import { tapPx } from "./handles.js";
+import { label } from "./rings.js";
+import { shown } from "./pointer.js";
+import { element, setText, setHidden } from "./dom.js";
 
 const BALL_RADIUS_M = 0.008;
 const SPRING_MS = 520;
@@ -71,6 +74,30 @@ export class Gizmos {
     this.precision = new Precision(this);
     this.spring = null;
     this.tinted = null; // the edit marker drawn in the miss colour
+    this.badge=element("button","wc-gizmo-frame",core.root);
+    this.badge.type="button";this.badge.hidden=true;
+    this.badge.dataset.marker="scene-gizmo-frame";
+    this.badge.title="Align gizmo to a frame";
+    this.badge.setAttribute("aria-label","Align gizmo to a frame");
+    this.badge.setAttribute("aria-haspopup","menu");
+    this.badge.onpointerenter=()=>{core.pointer.hover.gizmo(true,performance.now());core.pointer.schedule();};
+    this.badge.onpointerleave=()=>{core.pointer.hover.gizmo(false,performance.now());core.pointer.schedule();};
+    this.badge.onclick=(e)=>{
+      const box=this.badge.getBoundingClientRect();
+      core.menu.request(e.detail?e.clientX:box.left+box.width/2,e.detail?e.clientY:box.top+box.height/2,true);
+    };
+    this.badge.oncontextmenu=(e)=>{e.preventDefault();core.menu.request(e.clientX,e.clientY,true);};
+    core.overlays.track("gizmoFrame",this.badge);
+    this.namedFrame=new THREE.Group();this.namedFrame.name="gizmo:aligned-frame";
+    this.namedFrame.visible=false;core.scene.add(this.namedFrame);
+    for(const axis of ["X","Y","Z"]) {
+      const end=new THREE.Vector3(...["X","Y","Z"].map(a=>a===axis?1:0));
+      const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),end]),new THREE.LineBasicMaterial({depthTest:false,depthWrite:false}));
+      line.raycast=()=>{};
+      line.name=axis;line.renderOrder=1000;this.namedFrame.add(line);
+    }
+    this.frameName=label("gizmo:aligned-frame:name");this.frameName.position.set(.6,.6,.6);
+    this.namedFrame.add(this.frameName);
   }
 
   get active() {
@@ -128,15 +155,23 @@ export class Gizmos {
     // Nothing moves until the press has gone past a tap's slop: a live
     // gizmo jogs the arm with each sample, and a tap must not have.
     let moved = false;
+    let longPress=e.pointerType==="touch"&&tc===this.tcp?setTimeout(()=>{
+      longPress=null;
+      this.core.pointer.abortDrag("context menu");
+      this.core.menu.request(x,y,true);
+    },500):null;
+    const cancelLong=()=>{if(longPress!==null)clearTimeout(longPress);longPress=null;};
+    this.drag.cancelLongPress=cancelLong;
     const move = (event) => {
       moved ||= Math.hypot(event.clientX - x, event.clientY - y) > slop;
-      if (moved) tc.drag(event);
+      if (moved) {cancelLong();tc.drag(event);}
     };
     const release = (event) => {
+      cancelLong();
       if (moved) tc.release(event);
       else this.clicked(tc, axis, mode);
     };
-    return { g: this.drag.g, move, release, cancel: (reason) => this.core.gestures.abort(reason) };
+    return { g: this.drag.g, move, release, cancel: (reason) => {cancelLong();this.core.gestures.abort(reason);} };
   }
 
   // A handle let go where it was pressed moves nothing: its change is typed.
@@ -155,8 +190,35 @@ export class Gizmos {
   // Where the selected objects' handles are on screen, for the cards to keep
   // clear of.
   layout() {
-    const tc = this.shape?.tc;
     const overlays = this.core.overlays;
+    const [x,y,z]=overlays.project(this.ball.getWorldPosition(labelAt),projected);
+    setHidden(this.badge,!this.tcp.object || !this.tcp.helper.visible || Math.abs(z)>1 || x<0 || y<0 || x>this.core.size[0] || y>this.core.size[1]);
+    if(!this.badge.hidden) {
+      const card=overlays.sized("gizmoFrame");
+      if(card) {
+        const obstacles=[...overlays.chrome];
+        let left=x-14,right=x+14,top=y-14,bottom=y+14;
+        for(const rec of this.core.nodes.records.values()) {
+          if(rec.deleted || !rec.name.startsWith("target:") || !shown(rec.obj))continue;
+          if(Math.abs(overlays.project(rec.obj.getWorldPosition(labelAt),projected)[2])>1)continue;
+          box.setFromObject(rec.obj);
+          if(box.isEmpty())continue;
+          const bounds=overlays.projectBox(box);
+          obstacles.push(bounds);
+          if(bounds.left<=x && bounds.right>=x && bounds.top<=y && bounds.bottom>=y) {
+            left=Math.min(left,bounds.left-8);right=Math.max(right,bounds.right+8);
+            top=Math.min(top,bounds.top-8);bottom=Math.max(bottom,bounds.bottom+8);
+          }
+        }
+        const candidates=[[right,bottom],[left-card.w,bottom],[right,top-card.h],[left-card.w,top-card.h],
+          [right,y-card.h/2],[left-card.w,y-card.h/2],[x-card.w/2,bottom],[x-card.w/2,top-card.h]];
+        const seat=overlays.seat(candidates,card.w,card.h,{obstacles,pad:4,
+          cost:(sx,sy)=>Math.hypot(sx+card.w/2-x,sy+card.h/2-y)});
+        setHidden(this.badge,seat.covered);
+        overlays.place(card,seat.x,seat.y);
+      }
+    }
+    const tc = this.shape?.tc;
     if (!tc?.object || !tc.helper.visible) {
       overlays.mark("handles", null);
       return;
@@ -204,13 +266,25 @@ export class Gizmos {
   showGizmo(on) {
     const edit = this.core.ix.edit;
     const rule = (this.core.ix.rules || {}).gizmo;
-    this.tcp.setSpace(edit?.active ? "world" : "local");
+    const alignment=this.core.ix.alignment || {key:edit?.active?"world":"tool",name:edit?.active?"World":"Tool"};
+    const alignmentKey=JSON.stringify(alignment);
+    if(this.alignmentKey!==alignmentKey){this.precision.dismiss();this.alignmentKey=alignmentKey;}
+    this.tcp.setAlignment(alignment);
+    setText(this.badge,alignment.name);
     const visible = on && (edit?.active || rule !== "hidden") && !this.core.pointer?.ringDrag;
     this.frame.visible = visible || !!(rule!=="hidden" && this.core.ix.rules?.available && !this.core.ix.rules?.suspended);
     this.paintBall();
     if (visible) {
       this.attach(this.tcp, this.ball);
     } else this.detach(this.tcp, "hidden");
+    this.namedFrame.visible=visible&&!!alignment.origin;
+    if(this.namedFrame.visible) {
+      this.namedFrame.position.fromArray(alignment.origin);
+      this.namedFrame.quaternion.fromArray(alignment.quaternion).normalize();
+      this.namedFrame.scale.setScalar((this.core.ix.rules?.gizmoRadius ?? .05)*.45);
+      for(const line of this.namedFrame.children)if(line.material)line.material.color.set(this.core.ix.colors?.[`axis${line.name}`]);
+      setText(this.frameName.element,alignment.name);
+    }
     this.core.requestRender();
   }
 
@@ -307,6 +381,10 @@ export class Gizmos {
       }
     }
     const drag = { kind, tc, rec, ending: null, ...extra };
+    if(kind==="tcp") {
+      drag.origin=this.frame.position.clone();
+      drag.inverse=tc.frameQuaternion(new THREE.Quaternion()).invert();
+    }
     const g = core.gestures.begin(kind, fields, core.pointer.lastPointerId, (reason) => this.letGo(tc, reason));
     if (!g) {
       this.letGo(tc, "blocked");
@@ -378,6 +456,7 @@ export class Gizmos {
   // without it counting as a release.
   letGo(tc, reason) {
     const drag = this.drag;
+    drag?.cancelLongPress?.();
     if (drag && drag.tc === tc) drag.ending = reason;
     if (tc.dragging) tc.pointerUp();
     if (drag && drag.tc === tc) {
@@ -419,10 +498,12 @@ export class Gizmos {
     }
   }
 
-  // The ball's pose in its frame, the drag's delta in the tool frame.
+  // The pose relative to the frozen alignment frame at the starting pivot.
   ballPose() {
-    const p = this.ball.position;
-    const r = new THREE.Euler().setFromQuaternion(this.ball.quaternion, "XYZ");
+    const {origin,inverse}=this.drag;
+    const p = this.ball.getWorldPosition(new THREE.Vector3()).sub(origin).applyQuaternion(inverse);
+    const q = this.ball.getWorldQuaternion(new THREE.Quaternion()).premultiply(inverse);
+    const r = new THREE.Euler().setFromQuaternion(q, "XYZ");
     return { x: p.x, y: p.y, z: p.z, rx: r.x, ry: r.y, rz: r.z };
   }
 
@@ -490,6 +571,9 @@ export class Gizmos {
       tc.dispose();
     }
     this.precision.dispose();
+    this.badge.remove();this.core.overlays.cards.delete("gizmoFrame");
+    this.namedFrame.removeFromParent();this.frameName.element.remove();
+    for(const line of this.namedFrame.children){line.geometry?.dispose();line.material?.dispose();}
     this.frame.removeFromParent();
     this.selectionFrame.removeFromParent();
     this.ball.geometry.dispose();

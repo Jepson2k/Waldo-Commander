@@ -292,6 +292,18 @@ def click_spot(screen, spot) -> None:
     action.perform()
 
 
+def gizmo_choice(screen, choice, *, at=None) -> None:
+    """Choose a marked gizmo action through its badge or a handle's right-click."""
+    if at is None:
+        screen.selenium.find_element(By.CSS_SELECTOR, ".wc-gizmo-frame").click()
+    else:
+        action = ActionChains(screen.selenium)
+        pointer_to(screen, at[0], at[1], action)
+        action.context_click().perform()
+    click_marked(screen, f"scene-gizmo-{choice}")
+    wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+
+
 def gizmo_field(screen) -> dict | None:
     """The value riding on a gizmo handle, or None when none shows: whether
     it is being typed, its shown value and unit, what it names (its
@@ -486,6 +498,34 @@ def end_target_edit(screen) -> None:
     wait(screen).until(
         lambda _: not run_in_app(lambda: ui_state.urdf_scene._edit_active)
     )
+
+
+def reset_target_edit(screen) -> None:
+    """Restore target editing after a test, including a failed menu choice."""
+    scene_js(
+        screen,
+        "const c=getElement(S.root).core;"
+        "c.menu.cancel();c.menu.close();"
+        "c.pointer.interrupt('test cleanup');c.gizmos.precision.dismiss();",
+    )
+    ActionChains(screen.selenium).release().perform()
+
+    def reset() -> None:
+        scene = ui_state.urdf_scene
+        scene.cancel_target_edit()
+        scene._gizmo_choices["target"] = "world"
+        scene._keep_tool_vertical = False
+        scene._push_interaction()
+        if scene.context_menu is not None:
+            scene.context_menu.close()
+
+    run_in_app(reset)
+    wait(screen).until(
+        lambda _: not run_in_app(lambda: ui_state.urdf_scene._edit_active)
+        and not scene_js(screen, "return !!getElement(S.root).core.ix.edit?.active")
+        and no_visible(screen, ".q-menu")
+    )
+    scene_js(screen, "getElement(S.root).core.pointer.forgetHover()")
 
 
 def fill(screen, marker, value):

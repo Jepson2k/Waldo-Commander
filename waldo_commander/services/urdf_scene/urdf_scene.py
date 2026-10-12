@@ -587,11 +587,16 @@ class UrdfScene(
         """Send the browser what its pointer handling works from."""
         if self.scene is None or self.scene.is_deleted:
             return
+        alignment = self._gizmo_alignment_state()
+        previous_alignment = self.scene.interaction.get("alignment")
+        if previous_alignment is not None and previous_alignment != alignment:
+            self.scene.gestures.bump()
         self.scene.set_interaction(
             sources=self._hover_sources(),
             rings=self._ring_specs(),
             rules=self._handle_rules(),
             edit=self._edit_state(),
+            alignment=alignment,
             shapeMove=self._shape_move_state(),
             shapeDraw=self._shape_draw_state(),
             entities=self._object_entities(),

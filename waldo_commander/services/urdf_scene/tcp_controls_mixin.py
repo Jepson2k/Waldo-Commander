@@ -1,9 +1,8 @@
 """The TCP gizmo: where it sits, and what its drags do.
 
 The browser draws the gizmo on a frame the app places on the TCP from its
-forward kinematics, each placement numbered, and drags the ball within that
-frame. A drag reports the ball's pose in the frame, so the delta is in the
-tool's axes.
+forward kinematics, each placement numbered. A drag reports translation and
+orientation in the selected alignment basis, frozen at that starting pivot.
 
 The app admits a drag only if the frame the browser showed is where the TCP
 is now; the drag's poses are then taken from the app's own frame. While live
@@ -23,6 +22,9 @@ import waldoctl
 from pinokin import arrays_equal_n, so3_from_rpy, so3_rpy
 
 from waldo_commander.scene3d.interaction import Gesture, finite
+from waldo_commander.scene3d.protocol import quaternion
+from waldo_commander.services.python_source import program_setup
+from waldo_commander.setup import SetupStore
 from waldo_commander.state import robot_state
 
 from .config import RobotAppearanceMode
@@ -50,6 +52,8 @@ class TCPControlsMixin:
     _edit_active: bool
     _edit_target_first: bool
     _edit_marker: Any
+    _edit_line: int | None
+    _editing_unified_target: bool
 
     def _refresh_editing_pose(self) -> tuple[float, ...] | None: ...
 
@@ -61,6 +65,10 @@ class TCPControlsMixin:
     _admitted: Callable[[], None]
 
     def _init_tcp_controls_state(self) -> None:
+        self._gizmo_choices = {"target": "world", "live": "tool"}
+        self._gizmo_frames: dict[str, dict[str, Any]] = {}
+        self._gizmo_setup_key: tuple | None = None
+        self._keep_tool_vertical = False
         self._tcp_cartesian_move_callback: Callable[[list[float]], None] | None = None
         self._tcp_cartesian_move_start_callback: Callable[[], int | None] | None = None
         self._tcp_cartesian_move_end_callback: Callable[[int], None] | None = None
@@ -213,6 +221,70 @@ class TCPControlsMixin:
         so3_from_rpy(p[3], p[4], p[5], self._placed_R)
         self.scene.set_tcp(p[:3], self._placed_R.tolist())
 
+    def _gizmo_alignment_state(self, *, refresh: bool = False) -> dict[str, Any]:
+        from waldo_commander.state import ui_state
+
+        target = self._edit_active
+        source = (
+            str(ui_state.active_textarea.value or "")
+            if ui_state.active_textarea
+            else ""
+        )
+        line = self._edit_line if target else None
+        key = (source, line)
+        if refresh or key != self._gizmo_setup_key:
+            self._gizmo_setup_key = key
+            self._gizmo_frames = {}
+            binding = program_setup(source, line)
+            if binding is not None:
+                try:
+                    setup = SetupStore(binding.directory).read_literal(binding.name)
+                    for name in setup.frames:
+                        matrix = setup.frame_matrix(name)
+                        self._gizmo_frames[f"frame:{name}"] = {
+                            "name": name,
+                            "quaternion": quaternion(matrix[:3, :3]),
+                            "origin": (matrix[:3, 3] / 1000).tolist(),
+                        }
+                except (OSError, ValueError) as error:
+                    logger.debug("No gizmo frames from %s: %s", binding.name, error)
+        kind = "target" if target else "live"
+        choice = self._gizmo_choices[kind]
+        if choice not in ("world", "tool") and choice not in self._gizmo_frames:
+            choice = "world" if target else "tool"
+        frame = self._gizmo_frames.get(choice)
+        return {
+            "key": choice,
+            "name": frame["name"]
+            if frame
+            else "World"
+            if choice == "world"
+            else "Tool",
+            "quaternion": frame["quaternion"] if frame else None,
+            "origin": frame["origin"] if frame else None,
+            "vertical": bool(self._editing_unified_target and self._keep_tool_vertical),
+        }
+
+    def _gizmo_basis(self, mode: str) -> np.ndarray:
+        from scipy.spatial.transform import Rotation
+
+        state = self.scene.interaction["alignment"]
+        if state["vertical"] and mode == "rotate":
+            return np.eye(3)
+        if state["key"] == "tool":
+            return self._placed_R.copy()
+        if state["quaternion"] is not None:
+            return Rotation.from_quat(state["quaternion"]).as_matrix()
+        return np.eye(3)
+
+    @staticmethod
+    def _vertical_rotation(rotation: np.ndarray) -> np.ndarray:
+        from .shape_drawing_mixin import surface_frame
+
+        return surface_frame(np.array([0.0, 0.0, 1.0]), rotation[:, 0]) @ np.diag(
+            [1, -1, -1]
+        )
+
     # ---- Drags ----
 
     def _tcp_admit(self, gesture: Gesture, args: dict[str, Any]) -> bool:
@@ -231,7 +303,14 @@ class TCPControlsMixin:
             self._push_tcp_pose(force=True)
             return False
         self._tcp_frame_p[:] = placed[:3]
-        self._tcp_frame_R[:] = self._placed_R
+        if (
+            self._keep_tool_vertical
+            and self._editing_unified_target
+            and mode == "rotate"
+            and args.get("axis") != "Z"
+        ):
+            return False
+        self._tcp_frame_R[:] = self._gizmo_basis(mode)
         self._tcp_drag_mode = mode
         self._gizmo_miss_sent = None
         if not self._edit_active:
@@ -340,7 +419,7 @@ class TCPControlsMixin:
             self._handle_tcp_transform_for_ik()
 
     def _compose_tcp_pose(self, pose: list[float]) -> None:
-        """World pose of the ball from its pose in the TCP frame.
+        """World pose from the same frozen alignment basis used by the handles.
 
         Position into ``_tcp_world_p`` (m); orientation ``R_frame · R_local``
         into ``_tcp_world_R`` and, as intrinsic XYZ, ``_tcp_world_rpy`` (rad).
@@ -351,6 +430,8 @@ class TCPControlsMixin:
         self._tcp_world_p += self._tcp_frame_p
         so3_from_rpy(pose[3], pose[4], pose[5], self._tcp_local_R)
         np.matmul(self._tcp_frame_R, self._tcp_local_R, out=self._tcp_world_R)
+        if self._keep_tool_vertical and self._editing_unified_target:
+            self._tcp_world_R[:] = self._vertical_rotation(self._tcp_world_R)
         so3_rpy(self._tcp_world_R, self._tcp_world_rpy)
 
     def _handle_tcp_transform_for_cartesian(self) -> None:

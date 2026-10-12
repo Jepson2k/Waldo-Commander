@@ -356,6 +356,8 @@ async def test_gizmo_drags_move_the_tool_in_its_own_frame_and_nothing_else(
     user.find(marker="scene-target-at-robot").click()
     assert await wait_until(lambda: ui_state.editing_target, 5)
     try:
+        right_click(user, scene, ["gizmo:tcp"])
+        user.find(marker="scene-gizmo-align-tool").click()
         solver = urdf._ik_solver
         solves = 0
         solve = solver.solve
@@ -383,6 +385,74 @@ async def test_gizmo_drags_move_the_tool_in_its_own_frame_and_nothing_else(
             _shown_frame(urdf)[0],
             landed,
         )
+    finally:
+        urdf.cancel_target_edit()
+
+
+@pytest.mark.integration
+async def test_gizmo_menu_uses_the_edited_lines_setup_and_remembers_each_kind(
+    user: User, tmp_path
+) -> None:
+    from waldoctl.setup import Frame, SetupSnapshot
+
+    from tests.test_editor_integration import _set_cursor_line
+    from waldo_commander.setup import SetupStore
+
+    store = SetupStore(tmp_path)
+    store.save(
+        "bench",
+        SetupSnapshot(
+            frames={
+                "fixture": Frame((100, 200, 30, 0, 0, 90)),
+                "nest": Frame((10, 0, 0, 0, 0, 0), "fixture"),
+            }
+        ),
+    )
+    store.save("later", SetupSnapshot(frames={"other": Frame((0, 0, 0, 0, 0, 0))}))
+    urdf = await _open(user)
+    scene = urdf.scene
+    await teleport_to_jog_pose(ui_state.control_panel.client)
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    textarea = ui_state.active_textarea
+    textarea.value = (
+        "from waldo_commander.setup import load_setup\n"
+        f"setup = load_setup('bench', directory={str(tmp_path)!r})\n"
+        "from parol6 import RobotClient\n"
+        "with RobotClient() as rbt:\n"
+        "    pass\n"
+        f"setup = load_setup('later', directory={str(tmp_path)!r})\n"
+    )
+    _set_cursor_line(textarea, 5)
+    await asyncio.sleep(0)
+    right_click(user, scene, [], [0.3, 0.1, 0.0])
+    user.find(marker="scene-target-at-robot").click()
+    assert await wait_until(lambda: urdf._editing_unified_target, 5)
+    try:
+        right_click(user, scene, ["gizmo:tcp"])
+        await user.should_see(marker="scene-gizmo-align-frame:fixture")
+        await user.should_see(marker="scene-gizmo-align-frame:nest")
+        await user.should_not_see(marker="scene-gizmo-align-frame:other")
+        before = textarea.value
+        user.find(marker="scene-gizmo-align-frame:nest").click()
+        state = scene.interaction["alignment"]
+        assert state["name"] == "nest"
+        assert state["origin"] == pytest.approx([0.1, 0.21, 0.03])
+        assert textarea.value == before
+        urdf.cancel_target_edit()
+        right_click(user, scene, ["gizmo:tcp"])
+        tool = next(iter(user.find(marker="scene-gizmo-align-tool").elements))
+        assert tool._props["aria-checked"] == "true"
+        await user.should_not_see(marker="scene-gizmo-vertical")
+        user.find(marker="scene-gizmo-align-world").click()
+        assert scene.interaction["alignment"]["name"] == "World"
+        _set_cursor_line(textarea, 5)
+        right_click(user, scene, [], [0.3, 0.1, 0.0])
+        user.find(marker="scene-target-at-robot").click()
+        assert await wait_until(lambda: urdf._editing_unified_target, 5)
+        right_click(user, scene, ["gizmo:tcp"])
+        nest = next(iter(user.find(marker="scene-gizmo-align-frame:nest").elements))
+        assert nest._props["aria-checked"] == "true"
     finally:
         urdf.cancel_target_edit()
 

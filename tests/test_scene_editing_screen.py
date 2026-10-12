@@ -1,8 +1,11 @@
 """Target preview ownership and structural source editing in the real workspace."""
 
+import ast
+
 import numpy as np
 import pytest
 import waldoctl
+from scipy.spatial.transform import Rotation
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -26,9 +29,12 @@ from tests.helpers.scene_screen import (
     field_number,
     ball_mm,
     gizmo_field,
+    gizmo_choice,
+    gizmo,
     hold,
     probe,
     program_previewed,
+    reset_target_edit,
 )
 from tests.helpers.scene_surface import (
     scene_js,
@@ -38,10 +44,166 @@ from tests.helpers.scene_surface import (
 from tests.helpers.visual_evidence import VisualEvidence
 from tests.helpers.wait import screen_wait_for_scene_ready
 from waldo_commander.state import ui_state
+from waldo_commander.services.scene_source import target_binding
 
 
 @pytest.mark.browser
 class TestSceneEditing:
+    def test_tool_aligned_target_drag_writes_world_pose(self, class_screen):
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40)
+        at_start(screen)
+        scene = ui_state.urdf_scene
+        with (
+            viewport(screen, 1920, 1080),
+            camera_kept(screen),
+            program_previewed(EDIT_PROGRAM) as targets,
+        ):
+            try:
+                scene_js(screen, "S.setCameraPose(arguments[0])", TCP_VIEW)
+                wait_for_scene_idle(screen)
+                choose(
+                    screen,
+                    *scene_object_pixel(screen, f"targetgroup:{targets[-1]}"),
+                    "Edit Target...",
+                )
+                wait(screen).until(lambda _: gizmo(screen, "tcp:ball"))
+                initial = np.array(run_in_app(lambda: scene._requested_edit_pose))
+                tool_x = Rotation.from_euler("XYZ", initial[3:]).as_matrix()[:, 0]
+                assert abs(tool_x[0]) < 0.9
+                handle = wait(screen).until(
+                    lambda _: probe(screen, "arrowTip", "tcp:ball")
+                )
+                gizmo_choice(screen, "align-tool", at=handle)
+                wait(screen).until(
+                    lambda _: gizmo(screen, "tcp:ball")["frame"] == "Tool"
+                )
+                wait_for_scene_idle(screen)
+                assert (
+                    run_in_app(lambda: ui_state.active_textarea.value) == EDIT_PROGRAM
+                )
+                spot = wait(screen).until(
+                    lambda _: probe(screen, "arrowTip", "tcp:ball", "X")
+                )
+                hold(screen, spot, 20)
+                delta = ball_mm(screen) / 1000 - initial[:3]
+                assert np.linalg.norm(delta) > 0.001
+                assert np.linalg.norm(np.cross(delta, tool_x)) < 0.0002
+                assert (
+                    abs(
+                        field_number(gizmo_field(screen)["value"]) / 1000
+                        - np.dot(delta, tool_x)
+                    )
+                    < 0.0002
+                )
+                ActionChains(screen.selenium).release().perform()
+                updated = wait(screen).until(
+                    lambda _: (
+                        value := run_in_app(lambda: ui_state.active_textarea.value)
+                    )
+                    != EDIT_PROGRAM
+                    and value
+                )
+                line = run_in_app(lambda: scene._edit_line)
+                binding = target_binding(updated, line, 6)
+                values = np.array([ast.literal_eval(e) for e in binding.vector.elts])
+                assert values[:3] / 1000 == pytest.approx(
+                    initial[:3] + delta, abs=0.0002
+                )
+                assert Rotation.from_euler(
+                    "XYZ", values[3:], degrees=True
+                ).as_matrix() == pytest.approx(
+                    Rotation.from_euler("XYZ", initial[3:]).as_matrix(), abs=1e-4
+                )
+                end_target_edit(screen)
+            finally:
+                reset_target_edit(screen)
+
+    def test_keep_tool_vertical_rewrites_once_and_undo_restores(self, class_screen):
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40)
+        at_start(screen)
+        scene = ui_state.urdf_scene
+        # A near-vertical tool with wrist travel left for the snap to vertical.
+        pose = run_in_app(
+            lambda: scene._ensure_ik_solver()
+            .forward_kinematics(np.radians([90, -75, 210, 0, 70, 180]))
+            .copy()
+        )
+        literal = [float(v) for v in pose[:3] * 1000] + [
+            float(v) for v in np.degrees(pose[3:])
+        ]
+        source = (
+            "from parol6 import RobotClient\n"
+            "rbt = RobotClient()\n"
+            "rbt.move_j([90, -85, 210, 0, 65, 180], speed=0.5)\n"
+            f"rbt.move_j(pose={literal!r}, speed=0.5)\n"
+        )
+        view = [*(np.array(TCP_VIEW[:3]) - TCP_VIEW[3:] + pose[:3]), *pose[:3]]
+        with (
+            viewport(screen, 1920, 1080),
+            camera_kept(screen),
+            program_previewed(source) as targets,
+        ):
+            evidence = VisualEvidence(screen, "gizmo-alignment")
+            try:
+                reason = run_in_app(lambda: scene._target_preview_reason(targets[-1]))
+                assert reason is None, reason
+                assert not run_in_app(lambda: scene._edit_active)
+                scene_js(screen, "S.setCameraPose(arguments[0])", view)
+                wait_for_scene_idle(screen)
+                choose(
+                    screen,
+                    *scene_object_pixel(screen, f"targetgroup:{targets[-1]}"),
+                    "Edit Target...",
+                )
+                wait(screen).until(lambda _: gizmo(screen, "tcp:ball"))
+                line = run_in_app(lambda: scene._edit_line)
+                gizmo_choice(screen, "align-tool")
+                gizmo_choice(screen, "vertical")
+                updated = wait(screen).until(
+                    lambda _: (
+                        value := run_in_app(lambda: ui_state.active_textarea.value)
+                    )
+                    != source
+                    and value
+                )
+                binding = target_binding(updated, line, 6)
+                values = [ast.literal_eval(e) for e in binding.vector.elts]
+                rotation = Rotation.from_euler(
+                    "XYZ", values[3:], degrees=True
+                ).as_matrix()
+                assert np.degrees(np.arccos(np.clip(-rotation[2, 2], -1, 1))) < 0.5
+                assert values[:3] == pytest.approx(literal[:3], abs=0.1)
+                wait(screen).until(
+                    lambda _: gizmo(screen, "tcp:ball")["rotationAxes"] == ["Z"]
+                )
+                assert gizmo(screen, "tcp:ball")["rotationDirections"][
+                    "Z"
+                ] == pytest.approx([0, 0, 1], abs=1e-6)
+                assert probe(screen, "ringSpot", "X") is None
+                assert probe(screen, "ringSpot", "Y") is None
+                evidence.capture("01-vertical-target")
+                gizmo_choice(screen, "vertical")
+                wait(screen).until(
+                    lambda _: gizmo(screen, "tcp:ball")["rotationAxes"]
+                    == ["X", "Y", "Z"]
+                )
+                assert run_in_app(lambda: ui_state.active_textarea.value) == updated
+                end_target_edit(screen)
+                click_tab(screen, "program")
+                focus_editor(screen).send_keys(Keys.CONTROL, "z")
+                wait(screen).until(
+                    lambda _: run_in_app(lambda: ui_state.active_textarea.value)
+                    == source
+                )
+                evidence.finish()
+            finally:
+                evidence.stop()
+                reset_target_edit(screen)
+                if screen.selenium.find_elements(By.CSS_SELECTOR, ".program-panel"):
+                    close_panel(screen, "program-panel")
+
     def test_preview_cancel_commit_and_source_undo(self, class_screen):
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)
@@ -242,9 +404,7 @@ class TestSceneEditing:
                 evidence.finish()
             finally:
                 evidence.stop()
-                ActionChains(screen.selenium).release().perform()
-                if run_in_app(lambda: scene._edit_active):
-                    end_target_edit(screen)
+                reset_target_edit(screen)
                 # A failure before the panel opened must not hide behind this.
                 if screen.selenium.find_elements(By.CSS_SELECTOR, ".program-panel"):
                     close_panel(screen, "program-panel")

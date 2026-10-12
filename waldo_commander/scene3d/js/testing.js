@@ -151,7 +151,9 @@ export function surface(core) {
       const tc = gizmoFor(name);
       if (!tc) return null;
       if (mark) tc.wcProbe = true;
-      return { mode: tc.mode, translationSnap: tc.translationSnap, rotationSnap: tc.rotationSnap, probe: !!tc.wcProbe };
+      return { mode: tc.mode, translationSnap: tc.translationSnap, rotationSnap: tc.rotationSnap, probe: !!tc.wcProbe,
+        frame:core.ix.alignment?.name, rotationAxes:Object.entries(tc.roots.rotate).filter(([,root])=>root.visible).map(([axis])=>axis),
+        rotationDirections:Object.fromEntries(Object.entries(tc.roots.rotate).filter(([,root])=>root.visible).map(([axis,root])=>[axis,new THREE.Vector3().setFromMatrixColumn(root.matrixWorld,2).normalize().toArray()])) };
     },
     dial(u) {
       const ring = core.pointer.ring;
@@ -261,7 +263,7 @@ export function surface(core) {
     obj.updateWorldMatrix(true, false);
     const origin = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
     const axis = new THREE.Vector3(letter === "X" ? 1 : 0, letter === "Y" ? 1 : 0, letter === "Z" ? 1 : 0);
-    if(tc.space !== "world")axis.applyQuaternion(obj.getWorldQuaternion(new THREE.Quaternion()));
+    axis.applyQuaternion(tc.frameQuaternion(new THREE.Quaternion(),"translate"));
     const toPixel = (d) => {
       const v = origin.clone().addScaledVector(axis, d).project(core.camera);
       return [v.x, v.y, ...pixel(v)];

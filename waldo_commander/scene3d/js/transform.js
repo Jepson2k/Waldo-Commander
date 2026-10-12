@@ -20,6 +20,7 @@ export class SceneTransform extends THREE.EventDispatcher {
     this.styled={axis:undefined,mode:undefined,dragging:undefined,colors:undefined,background:undefined};
     this.raycaster=new THREE.Raycaster();
     this.origin=new THREE.Vector3();this.startQ=new THREE.Quaternion();this.basis=new THREE.Quaternion();
+    this.alignment=new THREE.Quaternion();this.vertical=false;
     this.plane=new THREE.Plane();this.startHit=null;this.worldAxes=[];this.snapped=[0,0];
     this.arcX=new THREE.Vector3();this.arcY=new THREE.Vector3();this.theta=0;
     this.helper=new THREE.Group();this.helper.name="movement:handles";this.helper.visible=false;
@@ -68,19 +69,31 @@ export class SceneTransform extends THREE.EventDispatcher {
   attach(object){this.object=object;this.helper.visible=true;this.update();}
   detach(){this.object=null;this.helper.visible=false;this.axis=null;}
   setSpace(space){this.space=space;this.update();}
+  setAlignment(state) {
+    this.space=state.key==="tool"?"local":state.quaternion?"frame":"world";
+    this.alignment.fromArray(state.quaternion || [0,0,0,1]).normalize();this.vertical=!!state.vertical;this.update();
+  }
+  frameQuaternion(out,mode=this.mode) {
+    if(this.vertical&&mode==="rotate")return out.identity();
+    if(this.space==="local")return this.object.getWorldQuaternion(out);
+    return this.space==="frame"?out.copy(this.alignment):out.identity();
+  }
+  visibleAxes(mode) {return mode==="rotate"&&this.vertical?["Z"]:Object.keys(this.roots[mode]);}
   setTranslationSnap(step){this.translationSnap=step;}
   setRotationSnap(step){this.rotationSnap=step;}
 
   update() {
     if(!this.object)return;
-    if(this.dragging){this.helper.position.copy(this.origin);this.helper.quaternion.copy(this.basis);}
+    if(this.dragging){this.helper.position.copy(this.origin);this.helper.quaternion.copy(this.displayBasis);}
     else {
       this.object.getWorldPosition(this.helper.position);
-      if(this.space==="local")this.object.getWorldQuaternion(this.helper.quaternion);else this.helper.quaternion.identity();
+      this.frameQuaternion(this.helper.quaternion,"translate");
       // Sized with the arm, as its joint dials are, so the two zoom together.
       this.radius=this.core.ix.rules?.gizmoRadius ?? .05;
     }
     this.helper.scale.setScalar(this.radius);
+    this.groups.rotate.quaternion.copy(this.vertical?this.helper.quaternion:parent.identity()).invert();
+    for(const [letter,root] of Object.entries(this.roots.rotate))root.visible=!this.vertical||letter==="Z";
     this.restyle();
     this.helper.updateWorldMatrix(true,true);
   }
@@ -107,7 +120,7 @@ export class SceneTransform extends THREE.EventDispatcher {
   pick(point) {
     if(!this.object||!this.enabled||this.dragging)return null;
     this.update();this.raycaster.setFromCamera(point,this.core.camera);
-    const picked=this.raycaster.intersectObjects(this.pickers,false)[0]?.object;
+    const picked=this.raycaster.intersectObjects(this.pickers.filter(p=>p.parent.visible),false)[0]?.object;
     return picked?{axis:picked.name,mode:picked.userData.mode}:null;
   }
 
@@ -115,7 +128,7 @@ export class SceneTransform extends THREE.EventDispatcher {
   // letter, or a plane patch's centre; null for no such handle.
   anchor(axis,mode,out) {
     const root=this.roots[mode]?.[axis];
-    if(!root)return null;
+    if(!root?.visible)return null;
     return (root.userData.label||root).getWorldPosition(out);
   }
 
@@ -132,7 +145,9 @@ export class SceneTransform extends THREE.EventDispatcher {
     if(!this.object||!this.enabled||!this.axis)return false;
     this.object.getWorldPosition(this.origin);
     this.object.getWorldQuaternion(this.startQ);
-    if(this.space==="local")this.basis.copy(this.startQ);else this.basis.identity();
+    if(!this.visibleAxes(this.mode).includes(this.axis))return false;
+    this.displayBasis=this.frameQuaternion(new THREE.Quaternion(),"translate");
+    this.frameQuaternion(this.basis);
     this.worldAxes=[...this.axis].map(letter=>axes[letter].clone().applyQuaternion(this.basis));
     this.worldAxis=this.worldAxes[0];
     this.rawAngle=0;this.rotationAngle=0;this.snapped[0]=this.snapped[1]=0;

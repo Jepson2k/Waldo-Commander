@@ -139,7 +139,7 @@ const ROTATIONS={X:"Rx",Y:"Ry",Z:"Rz"};
 const unitOf=(mode)=>mode==="rotate"?"°":"mm";
 const nameOf=(mode,letter)=>mode==="rotate"?ROTATIONS[letter]:letter;
 // What a value on a handle keeps clear of.
-export const FIELD_AVOIDS=["teaching"];
+export const FIELD_AVOIDS=["teaching","gizmoFrame"];
 
 // The gizmos' instrument and values: a drag draws its scale in the scene and
 // its change on the handle it moves; a handle clicked, or the value clicked
@@ -206,7 +206,7 @@ export class Precision {
     this.end(); this.dismiss(); this.prepare();
     if(tc.mode==="rotate" && !exact)tc.rotationAngle=0;
     const origin=tc.object.getWorldPosition(new THREE.Vector3());
-    const quaternion=tc.space==="local"?tc.object.getWorldQuaternion(new THREE.Quaternion()):new THREE.Quaternion();
+    const quaternion=tc.dragging?tc.basis.clone():tc.frameQuaternion(new THREE.Quaternion());
     const pixel=this.core.metresPerPixel(origin);
     const {group,lines,fill,originDot}=this.resources;
     group.position.copy(origin);group.quaternion.copy(quaternion);group.name=`${tc.wcKind}:ticks`;
@@ -289,7 +289,8 @@ export class Precision {
       count=this.stroke(m,count,ORIGIN,delta);
       for(const letter of m.letters)m.byLetter[letter]=delta[letter.toLowerCase()]*1000;
     } else {
-      const q=tc.object.getWorldQuaternion(turn).premultiply(m.startInverse);
+      const q=tc.object.getWorldQuaternion(turn).multiply(m.startInverse);
+      q.premultiply(spin.copy(m.inverse)).multiply(m.quaternion);
       const value=m.exact?2*Math.atan2(q.x*m.axis.x+q.y*m.axis.y+q.z*m.axis.z,q.w):tc.dragging?tc.rotationAngle:0;
       count=this.stroke(m,count,ORIGIN,this.point(m,value));
       const attr=m.fill.geometry.attributes.position;
@@ -340,6 +341,7 @@ export class Precision {
   }
 
   open(tc,mode,letter,base) {
+    if(!tc.visibleAxes(mode).includes(letter))return;
     this.entry={...this.record(tc),mode,letter,base};
     if(tc===this.gizmos.tcp)this.core.pointer.hover.pinned=true;
     tc.setHover({axis:letter,mode});
@@ -351,7 +353,8 @@ export class Precision {
   // Tab: the same kind of change along the next axis.
   cycle(step) {
     const e=this.entry;if(!e)return;
-    this.open(e.tc,e.mode,LETTERS[(LETTERS.indexOf(e.letter)+step+3)%3],e.base);
+    const letters=[...LETTERS].filter(letter=>e.tc.visibleAxes(e.mode).includes(letter));
+    this.open(e.tc,e.mode,letters[(letters.indexOf(e.letter)+step+letters.length)%letters.length],e.base);
   }
 
   close() {
@@ -389,8 +392,7 @@ export class Precision {
     tc.mode=mode;tc.axis=letter;this.gizmos.down(tc.wcKind,tc,true);
     if(!this.gizmos.drag)return false;
     const object=tc.object,q=object.getWorldQuaternion(spin);
-    a.copy(axes[letter]);
-    if(tc.space==="local")a.applyQuaternion(q);
+    a.copy(axes[letter]).applyQuaternion(this.instrument.quaternion);
     if(mode==="translate")object.position.copy(object.parent.worldToLocal(object.getWorldPosition(b).addScaledVector(a,change/1000)));
     else {
       turn.setFromAxisAngle(a,change*RAD).multiply(q);

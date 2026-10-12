@@ -121,11 +121,15 @@ export class Menu {
     return this.core.gestures.active || !!this.core.pointer.drag;
   }
 
-  request(cx, cy) {
+  request(cx, cy, gizmo = false) {
     const core = this.core;
     if (core.gestures.blocked || !core.live || this.dragging) return;
     const gen = ++this.gen;
     const { hits, ground, surface } = core.pointer.contextAt(cx, cy);
+    if(gizmo || core.pointer.handlesAt(cx,cy).some(h=>h.tc===core.gizmos.tcp) ||
+       core.gizmos.gizmoShown && core.pointer.hit(cx,cy)?.object===core.gizmos.ball) {
+      hits.unshift("gizmo:tcp");core.pointer.hover.pinned=true;
+    }
     this.pending = { gen, hits, ground, surface, cx, cy, epoch: core.gestures.epoch };
     core.emit("context", this.pending);
   }

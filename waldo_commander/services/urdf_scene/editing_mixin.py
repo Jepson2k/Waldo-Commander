@@ -78,6 +78,12 @@ class EditingMixin(ShapeEditingMixin):
     _handle_tcp_transform_for_ik: Any
     _solve_target_reach: Any
     _gizmo_miss_sent: bool | None
+    _gizmo_choices: dict[str, str]
+    _gizmo_frames: dict[str, dict[str, Any]]
+    _keep_tool_vertical: bool
+    _gizmo_alignment_state: Any
+    _gizmo_shown: Any
+    _vertical_rotation: Any
 
     # Methods from other mixins / main class
     set_editing_angles: Any
@@ -285,6 +291,9 @@ class EditingMixin(ShapeEditingMixin):
         if not self.context_menu:
             return
         self.context_menu.clear()
+        if "gizmo:tcp" in hits and self._gizmo_shown():
+            self._populate_gizmo_menu()
+            return
 
         target_id = None
         for name in hits:
@@ -417,6 +426,83 @@ class EditingMixin(ShapeEditingMixin):
                 "Workcell library…", on_click=lambda: show_world_library(self)
             ).mark("scene-workcell-library")
 
+    def _populate_gizmo_menu(self) -> None:
+        state = self._gizmo_alignment_state(refresh=True)
+        self._push_interaction()
+        session = (self._edit_active, self._edit_session)
+
+        def current() -> bool:
+            return (
+                session == (self._edit_active, self._edit_session)
+                and self._gizmo_shown()
+                and (not self._edit_active or self.check_edit_context())
+            )
+
+        def align(key: str) -> None:
+            if not current():
+                return
+            self.scene.gestures.bump()
+            self._gizmo_choices["target" if self._edit_active else "live"] = key
+            self._push_interaction()
+
+        def vertical() -> None:
+            if not current() or not self._editing_unified_target:
+                return
+            self.scene.gestures.bump()
+            self._keep_tool_vertical = not self._keep_tool_vertical
+            if self._keep_tool_vertical and self._requested_edit_pose is not None:
+                from pinokin import so3_from_rpy, so3_rpy
+
+                pose = self._requested_edit_pose
+                rotation, rpy = np.empty((3, 3)), np.empty(3)
+                so3_from_rpy(pose[3], pose[4], pose[5], rotation)
+                so3_rpy(self._vertical_rotation(rotation), rpy)
+                self._requested_edit_pose = pose[:3] + tuple(rpy)
+                self._solve_target_reach()
+                self._refresh_editing_pose()
+                self._write_target_edit()
+                self._push_tcp_pose(force=True)
+            self._push_interaction()
+
+        def item(text, icon, checked, callback, mark):
+            with (
+                ui.menu_item(on_click=callback)
+                .mark(mark)
+                .props(f"role=menuitemcheckbox aria-checked={str(checked).lower()}")
+            ):
+                with ui.item_section().props("avatar"):
+                    ui.icon(icon)
+                ui.item_section(text)
+                with ui.item_section().props("side"):
+                    ui.icon("check").set_visibility(checked)
+
+        with self.context_menu:
+            ui.item("Align to").classes("text-wc-text-muted text-xs").props("dense")
+            for key, name, icon in [
+                ("world", "World", "public"),
+                ("tool", "Tool", "build"),
+                *(
+                    (key, frame["name"], "place")
+                    for key, frame in self._gizmo_frames.items()
+                ),
+            ]:
+                item(
+                    name,
+                    icon,
+                    key == state["key"],
+                    lambda k=key: align(k),
+                    f"scene-gizmo-align-{key}",
+                )
+            if self._editing_unified_target:
+                ui.separator()
+                item(
+                    "Keep tool vertical",
+                    "vertical_align_bottom",
+                    self._keep_tool_vertical,
+                    vertical,
+                    "scene-gizmo-vertical",
+                )
+
     def _is_envelope_hit(self, object_name: str) -> bool:
         """Check if object is the workspace envelope."""
         return object_name == "envelope:hull"
@@ -484,6 +570,7 @@ class EditingMixin(ShapeEditingMixin):
         if line is None:
             return
         self._editing_unified_target = True
+        self._keep_tool_vertical = False
         self._editing_target_id = edit_target_id
         self._edit_line = line
         self.enter_editing_mode(initial_angles, preview_arm=False)
@@ -674,6 +761,7 @@ class EditingMixin(ShapeEditingMixin):
         if marker is not None and not marker.deleted and written is not None:
             marker.move(written[0], written[1], written[2])
         self._editing_unified_target = False
+        self._keep_tool_vertical = False
         self._editing_target_id = None
         self._edit_start_pose = None
         self._edit_line = None
