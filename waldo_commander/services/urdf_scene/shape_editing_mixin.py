@@ -22,6 +22,7 @@ import waldoctl
 from nicegui import ui
 
 from waldo_commander.scene3d.interaction import finite
+from waldo_commander.services.fixture_meshes import FixtureMesh, MESH_PREFIX
 from waldo_commander.services.urdf_scene.config import DRAFT_PREFIX
 from waldo_commander.services.control_lease import require_browser_control
 from waldo_commander.state import ui_state
@@ -98,6 +99,8 @@ class ShapeEditingMixin:
     _selected_objects: list[str]
     _hidden_objects: set[str]
     _refresh_object_inspector: Any
+    _fixture: Any
+    fixture_meshes: tuple[FixtureMesh, ...]
 
     def _init_shape_editing(self) -> None:
         self._shape_move_active: str | None = None
@@ -162,6 +165,11 @@ class ShapeEditingMixin:
         handle = self._shape_handle()
         if taken is None:
             taken = set()
+        taken = (
+            taken
+            | {m.name for m in self.fixture_meshes}
+            | {n for m in self.fixture_meshes for n in m.proxy_names}
+        )
         if handle is not None:
             taken = taken | {
                 s.name
@@ -602,26 +610,50 @@ class ShapeEditingMixin:
     # Drag-to-move
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _move_key(name: str) -> str:
+        return name if name.startswith(MESH_PREFIX) else f"{SHAPE_PREFIX}{name}"
+
+    @staticmethod
+    def _move_name(obj) -> str:
+        return obj.key if isinstance(obj, FixtureMesh) else obj.name
+
+    def _move_object(self, name: str):
+        return (
+            self._fixture(name)
+            if name.startswith(MESH_PREFIX)
+            else self._program_shape(name)
+        )
+
     def _movable(self, key: str) -> bool:
         """Whether the program-layer object *key* may be dragged."""
         if (
-            not key.startswith(SHAPE_PREFIX)
+            not key.startswith((SHAPE_PREFIX, MESH_PREFIX))
             or key in self._locked_objects
             or key in self._hidden_objects
         ):
             return False
-        shape = self._program_shape(key[len(SHAPE_PREFIX) :])
+        shape = self._move_object(
+            key if key.startswith(MESH_PREFIX) else key[len(SHAPE_PREFIX) :]
+        )
         return shape is not None and shape.attachment is None
 
     def _start_shape_move(self, name: str) -> None:
-        shape = self._program_shape(name)
-        if shape is None or shape.attachment is not None or self._shape_locked(name):
+        shape = self._move_object(name)
+        if (
+            shape is None
+            or shape.attachment is not None
+            or self._move_key(name) in self._locked_objects
+        ):
             return
-        if f"{SHAPE_PREFIX}{name}" not in self._shape_objects:
+        if self._move_key(name) not in self._shape_objects:
             return
         self._cancel_shape_drawing()
         self._shape_move_active = name
-        selected = tuple(k[len(SHAPE_PREFIX) :] for k in self._selected_objects)
+        selected = tuple(
+            k if k.startswith(MESH_PREFIX) else k[len(SHAPE_PREFIX) :]
+            for k in self._selected_objects
+        )
         self._shape_move_members = (
             selected
             if len(selected) > 1
@@ -645,10 +677,10 @@ class ShapeEditingMixin:
     def _shape_move_state(self) -> dict[str, Any] | None:
         """The keep-out the browser shows move arrows on, and its session."""
         name = self._shape_move_active
-        obj = None if name is None else self._shape_objects.get(f"{SHAPE_PREFIX}{name}")
+        obj = None if name is None else self._shape_objects.get(self._move_key(name))
         if obj is None:
             return None
-        shape = self._program_shape(name)
+        shape = self._move_object(name)
         if shape is None:
             return None
         from scipy.spatial.transform import Rotation
@@ -656,7 +688,10 @@ class ShapeEditingMixin:
         state = {
             "primitive": shape.kind,
             "dimensions": {
-                key: getattr(shape, key) for key in param_names(type(shape))
+                key: getattr(shape, key)
+                for key in (
+                    () if isinstance(shape, FixtureMesh) else param_names(type(shape))
+                )
             },
             "quaternion": Rotation.from_matrix(pose_matrix(shape.pose)[:3, :3])
             .as_quat()
@@ -671,8 +706,8 @@ class ShapeEditingMixin:
         if len(self._shape_move_members) > 1:
             shapes, nodes = [], []
             for name in self._shape_move_members:
-                member = self._program_shape(name)
-                node = self._shape_objects.get(f"{SHAPE_PREFIX}{name}")
+                member = self._move_object(name)
+                node = self._shape_objects.get(self._move_key(name))
                 if member is None or node is None:
                     return None
                 shapes.append(member)
@@ -693,14 +728,14 @@ class ShapeEditingMixin:
             or args.get("revision") != self._shape_handle().revision
         ):
             return False
-        obj = self._shape_objects.get(f"{SHAPE_PREFIX}{name}")
-        shape = self._program_shape(name)
+        obj = self._shape_objects.get(self._move_key(name))
+        shape = self._move_object(name)
         if (
             obj is None
             or obj.id != args.get("node")
             or shape is None
             or shape.attachment is not None
-            or self._shape_locked(name)
+            or self._move_key(name) in self._locked_objects
         ):
             return False
         gesture.data.update(
@@ -720,7 +755,7 @@ class ShapeEditingMixin:
         return admitted
 
     def _group_admit(self, gesture: Any, args: dict[str, Any]) -> bool:
-        keys = [f"{SHAPE_PREFIX}{n}" for n in self._shape_move_members]
+        keys = [self._move_key(n) for n in self._shape_move_members]
         nodes = [self._shape_objects.get(k) for k in keys]
         mode = args.get("mode", "translate")
         if (
@@ -729,7 +764,7 @@ class ShapeEditingMixin:
             or any(n is None for n in nodes)
         ):
             return False
-        members = tuple(self._program_shape(n) for n in self._shape_move_members)
+        members = tuple(self._move_object(n) for n in self._shape_move_members)
         gesture.data.update(
             members=members, nodes=nodes, mode=mode, end=self._finish_selection_move
         )
@@ -780,28 +815,41 @@ class ShapeEditingMixin:
             and args.get("session") == self._shape_move_session
             and self._shape_move_active == name
             # The same keep-out, though a readback may have rebuilt it.
-            and self._program_shape(name) == shape
+            and self._move_object(name) == shape
             and self._shape_handle().revision == gesture.data["revision"]
             and self.object_history.context() == gesture.data["context"]
-            and self._shape_objects.get(f"{SHAPE_PREFIX}{name}") is obj
+            and self._shape_objects.get(self._move_key(name)) is obj
         )
         if not landed:
             obj.resend_pose()
             return None
         return values
 
-    def _commit_shape(self, gesture: Any, label: str, moved: Shape) -> None:
+    def _commit_shape(
+        self, gesture: Any, label: str, moved: Shape | FixtureMesh
+    ) -> None:
         """Write *moved* through the request path; the re-render is a diff,
         so the dragged object, and the arrows on it, survive for the next
         nudge."""
         obj = gesture.data["node"]
         shapes = [
-            moved if s.name == moved.name else s for s in self._shape_handle().shapes
+            moved if not isinstance(moved, FixtureMesh) and s.name == moved.name else s
+            for s in self._shape_handle().shapes
         ]
 
         async def commit():
             try:
-                await self._commit_objects(label, shapes, gesture.data["context"])
+                await self._commit_objects(
+                    label,
+                    shapes,
+                    gesture.data["context"],
+                    meshes=tuple(
+                        moved
+                        if isinstance(moved, FixtureMesh) and m.key == moved.key
+                        else m
+                        for m in self.fixture_meshes
+                    ),
+                )
             finally:
                 if not obj.deleted:
                     obj.resend_pose()
@@ -889,8 +937,8 @@ class ShapeEditingMixin:
         if (
             position is None
             or args.get("session") != self._shape_move_session
-            or tuple(s.name for s in members) != self._shape_move_members
-            or tuple(self._program_shape(s.name) for s in members) != members
+            or tuple(self._move_name(s) for s in members) != self._shape_move_members
+            or tuple(self._move_object(self._move_name(s)) for s in members) != members
             or self.object_history.context() != gesture.data["context"]
         ):
             restore()
@@ -910,7 +958,7 @@ class ShapeEditingMixin:
             restore()
             return
         moved = {
-            s.name: replace(
+            self._move_name(s): replace(
                 s,
                 pose=(
                     *(
@@ -933,6 +981,7 @@ class ShapeEditingMixin:
                     else "Move selection",
                     [moved.get(s.name, s) for s in self._shape_handle().shapes],
                     gesture.data["context"],
+                    meshes=tuple(moved.get(m.key, m) for m in self.fixture_meshes),
                 )
             finally:
                 restore()

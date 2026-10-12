@@ -27,6 +27,7 @@ from waldoctl.world import world_from_dict, world_to_dict
 
 from waldo_commander.constants import default_program_dir
 from waldo_commander.services.python_source import literal_argument
+from waldo_commander.services.fixture_meshes import FixtureMesh, meshes_from_data
 from waldo_commander.setup import file_revision
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,9 @@ def world_module(world: ShapeWorld, *, variable: str = "world") -> str:
     )
 
 
-def save_entry(name: str, world: ShapeWorld) -> Path:
+def save_entry(
+    name: str, world: ShapeWorld, *, meshes: tuple[FixtureMesh, ...] = ()
+) -> Path:
     """Write a library entry, replacing any previous one atomically.
 
     Through a temp file and `os.replace` so an interrupted write cannot
@@ -81,7 +84,12 @@ def save_entry(name: str, world: ShapeWorld) -> Path:
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(
         f'"""World library entry {name!r}, written by Commander; edit freely."""\n\n'
-        + world_module(world),
+        + world_module(world)
+        + (
+            f"\nmeshes = {pformat([m.to_dict() for m in meshes], sort_dicts=True)}\n"
+            if meshes
+            else ""
+        ),
         encoding="utf-8",
     )
     os.replace(tmp, path)
@@ -117,7 +125,14 @@ def entry_revision(name: str) -> str | None:
 
 def read_literal_entry(name: str) -> tuple[ShapeWorld, str]:
     """Preview saved data without executing a world module in the UI process."""
+    world, _, revision = read_authoring_entry(name)
+    return world, revision
+
+
+def read_authoring_entry(name: str) -> tuple[ShapeWorld, tuple[FixtureMesh, ...], str]:
+    """Read controller geometry and optional Commander fixture visuals separately."""
     data = _entry_path(name).read_bytes()
+    meshes = ()
     try:
         tree = ast.parse(data)
         for node in tree.body:
@@ -140,8 +155,10 @@ def read_literal_entry(name: str) -> tuple[ShapeWorld, str]:
                 isinstance(node, ast.Assign)
                 and len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id == "world"
+                and node.targets[0].id in ("world", "meshes")
             ):
+                if node.targets[0].id == "meshes":
+                    meshes = meshes_from_data(ast.literal_eval(node.value))
                 continue
             raise ValueError("The module contains executable or computed definitions")
         payload = literal_argument(tree, "world", "world_from_dict")
@@ -153,7 +170,7 @@ def read_literal_entry(name: str) -> tuple[ShapeWorld, str]:
             f"{name}: direct library loading requires a literal world_from_dict(...). "
             f"Load computed worlds through the program. {error}"
         ) from error
-    return world, hashlib.sha256(data).hexdigest()
+    return world, meshes, hashlib.sha256(data).hexdigest()
 
 
 def delete_entry(name: str) -> None:

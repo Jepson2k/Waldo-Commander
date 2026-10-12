@@ -7,6 +7,7 @@ from selenium.common.exceptions import (
     StaleElementReferenceException,
 )
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import (
@@ -31,11 +32,14 @@ from tests.helpers.scene_screen import (
     program_previewed,
 )
 from tests.helpers.scene_surface import (
+    scene_js,
     scene_object_pixel,
     wait_for_scene_idle,
 )
 from tests.helpers.visual_evidence import VisualEvidence, preserve_capture_buffers
 from tests.helpers.wait import screen_wait_for_scene_ready
+from tests.helpers.scene_objects import fixture_stl
+from waldo_commander.services import world_files
 from waldo_commander.state import ui_state
 
 
@@ -58,6 +62,56 @@ def object_screen(class_screen):
 
 @pytest.mark.browser
 class TestObjectEditing:
+    def test_imported_fixture_is_visible_at_scaled_size(
+        self, object_screen, tmp_path, monkeypatch
+    ):
+        screen = object_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40)
+        at_start(screen)
+        monkeypatch.setattr(world_files, "library_dir", lambda: tmp_path / "worlds")
+        source = fixture_stl(tmp_path / "Imported-fixture.stl")
+        view = ui_state.urdf_scene
+        before = view.fixture_meshes
+        click_marked(screen, "tab-scene")
+        click_marked(screen, "scene-import-mesh")
+        marked_element(screen, "mesh-upload").find_element(
+            By.CSS_SELECTOR, 'input[type="file"]'
+        ).send_keys(str(source))
+        wait(screen).until(
+            lambda _: marked_element(screen, "mesh-size").text == "12 × 8 × 4 mm"
+        )
+        click_marked(screen, "mesh-units-cm")
+        click_marked(screen, "mesh-add")
+        confirmed(screen, lambda: len(view.fixture_meshes) == len(before) + 1)
+        try:
+            wait_for_scene_idle(screen)
+            drawn = scene_js(
+                screen,
+                """
+                const o = S.byName('mesh:Imported-fixture');
+                const mesh = o?.children.find(c => c.isMesh);
+                if (!mesh) return null;
+                mesh.geometry.computeBoundingBox();
+                const box = mesh.geometry.boundingBox;
+                const size = box.max.clone().sub(box.min).multiply(o.scale);
+                return {visible: o.visible && mesh.visible, size: size.toArray()};
+            """,
+            )
+            assert (
+                drawn
+                and drawn["visible"]
+                and drawn["size"] == pytest.approx([0.12, 0.08, 0.04])
+            )
+            evidence = VisualEvidence(screen, "review-corrections/mesh-import")
+            try:
+                evidence.capture("08-imported-fixture")
+                evidence.finish()
+            finally:
+                evidence.stop()
+        finally:
+            click_marked(screen, "object-undo")
+            confirmed(screen, lambda: view.fixture_meshes == before)
+
     def test_select_drag_cancel_undo_and_inspector(self, object_screen):
         screen = object_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)

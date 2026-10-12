@@ -17,6 +17,7 @@ from nicegui import background_tasks, ui
 from waldoctl.shapes import Shape, ShapeWorld
 
 from waldo_commander.services import world_files
+from waldo_commander.services.fixture_meshes import FixtureMesh
 from waldo_commander.services.motion_recorder import (
     motion_recorder,
     shape_imports,
@@ -36,10 +37,16 @@ _TONES = {
 _libraries: WeakKeyDictionary[object, WorkcellLibrary] = WeakKeyDictionary()
 
 
-def show_world_library(view) -> None:
-    """Open the library in *view*'s scene panel, in place of one open there."""
+def close_world_library(view) -> None:
     if (library := _libraries.get(view)) is not None:
         library.close()
+
+
+def show_world_library(view) -> None:
+    """Open the library in *view*'s scene panel, in place of one open there."""
+    close_world_library(view)
+    if view._mesh_import is not None:
+        view._mesh_import.close()
     panel = view._scene_panel()
     if panel is None:
         return
@@ -82,6 +89,7 @@ class _Entry:
     revision: str | None = None
     installation: int = 0
     problem: str = ""
+    meshes: tuple[FixtureMesh, ...] = ()
 
     def summary(self) -> str:
         if self.problem:
@@ -93,17 +101,19 @@ class _Entry:
         text = f"{_plural(len(names), 'object')}: {listed}" if names else "No objects"
         if self.installation:
             text += "; its installation shapes are not loaded"
+        if self.meshes:
+            text += f"; {_plural(len(self.meshes), 'fixture mesh')}"
         return text
 
 
 def _read(name: str) -> _Entry:
     try:
-        world, revision = world_files.read_literal_entry(name)
+        world, meshes, revision = world_files.read_authoring_entry(name)
         shapes = _editable(world.program)
         SceneHistory.validate_names(shapes)
     except (OSError, ValueError, TypeError, KeyError) as error:
         return _Entry(name, problem=str(error))
-    return _Entry(name, shapes, revision, len(world.installation))
+    return _Entry(name, shapes, revision, len(world.installation), meshes=meshes)
 
 
 def _read_all(names: list[str]) -> list[_Entry]:
@@ -200,7 +210,7 @@ class WorkcellLibrary:
             if held
             else "",
         )
-        self.has_objects = bool(editable)
+        self.has_objects = bool(editable or self.view.fixture_meshes)
         self._enable()
 
     def _enable(self) -> None:
@@ -222,6 +232,7 @@ class WorkcellLibrary:
             and entry.revision == revision
             and not entry.problem
             and entry.shapes == _editable(_scene_shapes())
+            and entry.meshes == self.view.fixture_meshes
         )
 
     def _name_changed(self) -> None:
@@ -255,7 +266,7 @@ class WorkcellLibrary:
         try:
             handle = self.history.guard(self.history.context())
             shapes = _editable(handle.shapes)
-            if not shapes:
+            if not shapes and not self.view.fixture_meshes:
                 raise ValueError("Add an object to the scene before saving.")
             revision = world_files.entry_revision(name)
             if (
@@ -267,7 +278,9 @@ class WorkcellLibrary:
                 # say so before overwriting it.
                 self._name_changed()
                 return
-            world_files.save_entry(name, ShapeWorld(program=shapes))
+            world_files.save_entry(
+                name, ShapeWorld(program=shapes), meshes=self.view.fixture_meshes
+            )
         except (OSError, ValueError) as error:
             _say(self.feedback, str(error), "error", "text-sm")
             return
@@ -341,6 +354,7 @@ class WorkcellLibrary:
                     *(s for s in handle.shapes if s.attachment is not None),
                 ],
                 revision,
+                meshes=entry.meshes,
             )
         except (OSError, ValueError) as error:
             if not self.closed:

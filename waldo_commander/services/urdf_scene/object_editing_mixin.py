@@ -9,7 +9,8 @@ from collections.abc import Callable
 from typing import Any
 
 from .config import DRAFT_PREFIX
-from .shape_drawing_mixin import ShapeDrawingMixin
+from .mesh_editing_mixin import MeshEditingMixin
+from waldo_commander.services.fixture_meshes import MESH_PREFIX, FixtureMesh
 from .shape_editing_mixin import _PLACEABLE, RESIZE_AXES, object_label
 
 from nicegui import background_tasks, ui
@@ -74,7 +75,7 @@ class _InspectorControls:
         self.values[key] = (element, value)
 
 
-class ObjectEditingMixin(ShapeDrawingMixin):
+class ObjectEditingMixin(MeshEditingMixin):
     inspection: Any
     _install_ground: set[str]
     _current_tool: str
@@ -83,6 +84,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
     _end_editing_session: Any
 
     def _init_object_editing(self) -> None:
+        self._init_fixture_meshes()
         self.object_history = SceneHistory(self)
         self._init_shape_drawing()
         self._selected_objects: list[str] = []
@@ -127,13 +129,15 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             "items": [
                 {"id": name, "node": node.id}
                 for name, node in self._shape_objects.items()
-                if name.startswith((SHAPE_PREFIX, INSTALL_PREFIX))
+                if name.startswith((SHAPE_PREFIX, INSTALL_PREFIX, MESH_PREFIX))
                 and name not in self._hidden_objects
                 and node.glow
             ],
         }
 
     def _object_shape(self, key):
+        if key.startswith(MESH_PREFIX):
+            return self._fixture(key)
         handle = self._shape_handle()
         if handle is None:
             return None
@@ -155,21 +159,24 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         if not hits and self._editing_unified_target:
             # A click on nothing puts a target edit away, keeping it.
             self._end_editing_session()
-        selected = hits[:1]
-        if (self._multi_select or args.get("extend")) and selected:
-            selected = (
-                [k for k in self._selected_objects if k != selected[0]]
-                if selected[0] in self._selected_objects
-                else [*self._selected_objects, *selected]
-            )
-        self._select_objects(selected)
+        if hits:
+            key = hits[0]
+            for fixture in self.fixture_meshes:
+                if fixture.key in hits and key in self._fixture_keys(fixture):
+                    key = fixture.key
+                    break
+            self._pick_from_tree(key, {"ctrlKey": args.get("extend")})
+        else:
+            self._select_objects([])
 
     def _select_objects(self, selected) -> None:
         before = set(self._selected_objects)
         self._cancel_shape_drawing()
         self._end_shape_move()
         self._selected_objects = [
-            key for key in selected if self._object_shape(key) is not None
+            key
+            for key in self._expand_fixture_selection(selected)
+            if self._object_shape(key) is not None
         ]
         if self._attachment_form and self._selected_objects != [
             self._attachment_form[0]
@@ -188,7 +195,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             self.cancel_target_edit()
         if self._selected_objects and all(map(self._movable, self._selected_objects)):
             key = self._selected_objects[0]
-            self._start_shape_move(key[len(SHAPE_PREFIX) :])
+            self._start_shape_move(self._move_name(self._object_shape(key)))
         self._push_interaction()
         self._refresh_object_inspector()
         # A newly selected object opens the panel; one only refreshed, as an
@@ -206,9 +213,11 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             f"{SHAPE_PREFIX}{before}": f"{SHAPE_PREFIX}{after}"
             for before, after in self._object_renames
         }
-        existing = {f"{SHAPE_PREFIX}{s.name}" for s in handle.shapes} | {
-            f"{INSTALL_PREFIX}{s.name}" for s in handle.installation
-        }
+        existing = (
+            {m.key for m in self.fixture_meshes}
+            | {f"{SHAPE_PREFIX}{s.name}" for s in handle.shapes}
+            | {f"{INSTALL_PREFIX}{s.name}" for s in handle.installation}
+        )
 
         def kept(marks: set[str]) -> set[str]:
             return {k if k in existing else renamed.get(k, k) for k in marks} & existing
@@ -253,6 +262,11 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                 .mark("scene-multi-select")
             )
             self._show_multi_select()
+            ui.button(
+                icon="upload_file", on_click=lambda: self._open_mesh_import()
+            ).props(flat).tooltip("Import a fixture mesh (STL)").mark(
+                "scene-import-mesh"
+            )
             with (
                 ui.button(icon="add_box").props(flat).mark("scene-draw") as draw,
                 ui.menu().props('anchor="bottom right" self="top right"'),
@@ -338,6 +352,9 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         undo.set_enabled(bool(history.undo_stack) and not history.busy)
         redo.set_enabled(bool(history.redo_stack) and not history.busy)
         self._refresh_object_tree(handle, panel)
+        if any(isinstance(s, FixtureMesh) for _, s in selected):
+            self._fixture_inspector(selected, status)
+            return
         # What the properties are built from; status and shape values are
         # updated in place, so an edit does not rebuild the field being typed in.
         structure = (
@@ -637,6 +654,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             frozenset(self._hidden_objects),
             frozenset(self._locked_objects),
             tool,
+            tuple((m.name, m.proxy_names) for m in self.fixture_meshes),
         )
         if key != self._object_tree_key:
             self._object_tree_key = key
@@ -647,6 +665,14 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             with tree:
                 self._tree_robot_row(tool)
                 for title, prefix, shapes in layers:
+                    if prefix == SHAPE_PREFIX:
+                        grouped = {
+                            n for m in self.fixture_meshes for n in m.proxy_names
+                        }
+                        self._fixture_tree()
+                        shapes = tuple(s for s in shapes if s.name not in grouped)
+                        if not shapes and self.fixture_meshes:
+                            continue
                     self._tree_group(title, prefix, shapes)
         selected = tuple(self._selected_objects)
         if selected != self._tree_selected:
@@ -790,7 +816,13 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         if not extend:
             self._select_objects([key])
         elif key in self._selected_objects:
-            self._select_objects([k for k in self._selected_objects if k != key])
+            self._select_objects(
+                [
+                    k
+                    for k in self._selected_objects
+                    if k not in self._expand_fixture_selection([key])
+                ]
+            )
         else:
             self._select_objects([*self._selected_objects, key])
 
@@ -920,7 +952,9 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         self._push_interaction()
         self._refresh_object_inspector()
 
-    async def _commit_objects(self, label, shapes, revision, *, renames=(), draft=None):
+    async def _commit_objects(
+        self, label, shapes, revision, *, renames=(), draft=None, meshes=None
+    ):
         refused = False
         try:
             for current in self._shape_handle().shapes:
@@ -929,15 +963,32 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                     and current not in shapes
                 ):
                     raise ValueError(f"Unlock {current.name} before editing it")
+            if meshes is None and renames:
+                renamed = dict(renames)
+                meshes = tuple(
+                    replace(
+                        m, proxy_names=tuple(renamed.get(n, n) for n in m.proxy_names)
+                    )
+                    for m in self.fixture_meshes
+                )
+            if meshes is not None:
+                for current in self.fixture_meshes:
+                    if current.key in self._locked_objects and current not in meshes:
+                        raise ValueError(f"Unlock {current.name} before editing it")
             await self.object_history.commit(
-                label, shapes, revision=revision, renames=renames, draft=draft
+                label,
+                shapes,
+                revision=revision,
+                renames=renames,
+                draft=draft,
+                meshes=meshes,
             )
             if self.object_history.expected == self.object_history.context():
                 self._shape_move_document = self.object_history.document()
             return True
         except (ValueError, TypeError) as error:
             refused = True
-            self._notify(str(error), warning=True)
+            self.object_history.feedback = str(error)
             return False
         finally:
             self._push_interaction()
@@ -1049,7 +1100,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         handle = self._shape_handle()
         revision = self.object_history.context()
         if any(
-            not k.startswith(SHAPE_PREFIX) or k in self._locked_objects
+            not k.startswith((SHAPE_PREFIX, MESH_PREFIX)) or k in self._locked_objects
             for k in self._selected_objects
         ):
             return
@@ -1058,7 +1109,10 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             for s in handle.shapes
             if f"{SHAPE_PREFIX}{s.name}" not in self._selected_objects
         ]
-        await self._commit_objects("Delete objects", shapes, revision)
+        meshes = tuple(
+            m for m in self.fixture_meshes if m.key not in self._selected_objects
+        )
+        await self._commit_objects("Delete objects", shapes, revision, meshes=meshes)
 
     def undo_edit(self, *, redo: bool = False) -> None:
         """Ctrl+Z (Ctrl+Shift+Z or Ctrl+Y to redo) in the scene: a keep-out

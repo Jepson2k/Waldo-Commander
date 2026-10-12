@@ -9,6 +9,17 @@ from waldoctl.shapes import Box
 from tests.helpers.wait import wait_until
 
 
+def fixture_stl(path):
+    """A binary tetrahedron with an off-origin 12 × 8 × 4 bounding box."""
+    from stl import Mode, mesh
+
+    vertices = np.array([[5, -3, -2], [17, -3, -2], [5, 5, -2], [5, -3, 2]])
+    model = mesh.Mesh(np.zeros(4, dtype=mesh.Mesh.dtype))
+    model.vectors[:] = vertices[[[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]]
+    model.save(str(path), mode=Mode.BINARY)
+    return path
+
+
 def select(user, view, *names, extend=False):
     """Select ``names`` in the scene as a click (or Shift-click) would."""
     UserInteraction(user, {view.scene}, None).trigger(

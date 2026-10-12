@@ -285,6 +285,8 @@ class EditingMixin(ShapeEditingMixin):
     # Context menu
     # -------------------------------------------------------------------------
 
+    _open_mesh_import: Any
+
     def _populate_context_menu(
         self,
         hits: list[str],
@@ -366,6 +368,10 @@ class EditingMixin(ShapeEditingMixin):
                             use_click_position=True
                         ),
                     ).mark("scene-target-here")
+                    ui.menu_item(
+                        "Import mesh here…",
+                        on_click=lambda p=ground: self._open_mesh_import(p),
+                    ).mark("scene-import-mesh-here")
                 ui.menu_item(
                     "Target at robot position…",
                     on_click=lambda: self._show_unified_target_editor(

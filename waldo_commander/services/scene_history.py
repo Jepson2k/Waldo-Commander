@@ -10,6 +10,7 @@ import waldoctl
 from waldoctl.shapes import Shape, param_names
 
 from waldo_commander.services.control_lease import require_browser_control
+from waldo_commander.services.fixture_meshes import FixtureMesh, asset_path
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import (
     is_any_program_recording,
@@ -46,6 +47,8 @@ class WorldEdit:
     renames: tuple[tuple[str, str], ...]
     draft_before: tuple[Shape, ...]
     draft_after: tuple[Shape, ...]
+    meshes_before: tuple[FixtureMesh, ...]
+    meshes_after: tuple[FixtureMesh, ...]
 
 
 class SceneHistory:
@@ -81,7 +84,12 @@ class SceneHistory:
         )
 
     def context(self) -> tuple:
-        return (self._handle().revision, *self.document(), *self._recording_key())
+        return (
+            self._handle().revision,
+            *self.document(),
+            *self._recording_key(),
+            self.owner.fixture_meshes,
+        )
 
     def validate(self) -> bool:
         """Clear the history if what it would restore has changed elsewhere;
@@ -149,6 +157,7 @@ class SceneHistory:
         handle: WcSceneHandle,
         target: tuple[Shape, ...],
         draft: tuple[Shape, ...],
+        meshes: tuple[FixtureMesh, ...],
         renames: tuple[tuple[str, str], ...],
         rejected: str,
         confirmed: Callable[[tuple, tuple], None],
@@ -157,6 +166,9 @@ class SceneHistory:
         the controller; *confirmed* gets the document and recording key from
         before the assignment."""
         world = tuple(handle.shapes)
+        for mesh in meshes:
+            if not asset_path(mesh.asset).is_file():
+                raise ValueError(f"Fixture asset is missing: {mesh.asset}")
         layers = (handle.installation, handle.installation_draft)
         document = self.document()
         recording = self._recording_key()
@@ -165,13 +177,15 @@ class SceneHistory:
         self.owner._set_object_renames(renames)
         self.owner._refresh_object_inspector()
         try:
-            task = handle._assign(list(target), draft, push=True, record=False)
-            request_revision = handle.revision
-            if task is not None:
-                await task
-            await handle.wait_for_confirmation(request_revision)
+            if target != world or draft != handle.installation_draft:
+                task = handle._assign(list(target), draft, push=True, record=False)
+                request_revision = handle.revision
+                if task is not None:
+                    await task
+                await handle.wait_for_confirmation(request_revision)
             if not handle.confirmed or tuple(handle.shapes) != target:
                 raise ValueError(handle.last_error or rejected)
+            self.owner._set_fixture_meshes(meshes)
             confirmed(document, recording)
         except Exception as error:
             if (
@@ -197,14 +211,21 @@ class SceneHistory:
         revision: tuple,
         renames: tuple[tuple[str, str], ...] = (),
         draft: tuple[Shape, ...] | None = None,
+        meshes: tuple[FixtureMesh, ...] | None = None,
     ) -> None:
         handle = self.guard(revision)
         before = tuple(handle.shapes)
         target = tuple(plain(s) for s in after)
         draft_before = handle.installation_draft
         draft_after = draft_before if draft is None else draft
+        meshes_before = self.owner.fixture_meshes
+        meshes_after = meshes_before if meshes is None else meshes
         self.validate_names(target)
-        if before == target and draft_before == draft_after:
+        if (
+            before == target
+            and draft_before == draft_after
+            and meshes_before == meshes_after
+        ):
             return
 
         def confirmed(document: tuple, recording: tuple) -> None:
@@ -219,7 +240,8 @@ class SceneHistory:
                 )
                 return
             recording_before = motion_recorder.scene_checkpoint()
-            handle._record_snippet(list(target))
+            if before != target:
+                handle._record_snippet(list(target))
             recording_after = motion_recorder.scene_checkpoint()
             program, source_before = document
             self.undo_stack.append(
@@ -235,6 +257,8 @@ class SceneHistory:
                     renames,
                     draft_before,
                     draft_after,
+                    meshes_before,
+                    meshes_after,
                 )
             )
             self.undo_stack = self.undo_stack[-50:]
@@ -246,6 +270,7 @@ class SceneHistory:
             handle,
             target,
             draft_after,
+            meshes_after,
             renames,
             "The controller did not confirm this object edit",
             confirmed,
@@ -287,6 +312,7 @@ class SceneHistory:
             handle,
             edit.after if redo else edit.before,
             edit.draft_after if redo else edit.draft_before,
+            edit.meshes_after if redo else edit.meshes_before,
             edit.renames if redo else tuple((b, a) for a, b in edit.renames),
             "The controller did not confirm the restored world",
             confirmed,

@@ -39,6 +39,7 @@ from waldo_commander.common.theme import (
 )
 from waldo_commander.constants import WAYPOINT_SIZE_LARGE, WAYPOINT_SIZE_SMALL
 from waldo_commander.services.control_lease import control_lease
+from waldo_commander.services.fixture_meshes import MESH_PREFIX
 from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.programs import active_cursor_line
 from waldo_commander.services.timeline import ObjectSample
@@ -1540,7 +1541,11 @@ class UrdfScene(
                 desired[f"{prefix}{s.name}"] = (s, shape_color, SHAPE_OPACITY)
         changed = False
         with self.scene:
-            for key in [k for k in self._shape_objects if k not in desired]:
+            for key in [
+                k
+                for k in self._shape_objects
+                if k not in desired and not k.startswith(MESH_PREFIX)
+            ]:
                 self._forget_shape_object(key)
                 changed = True
             if self._shapes_group is None:
@@ -1620,6 +1625,7 @@ class UrdfScene(
                     if repaint:
                         self._paint_shape(obj, key)
                         changed = True
+        self._render_fixture_meshes()
         self._flush_reveals()
         self._install_ground = {
             f"{INSTALL_PREFIX}{shape.name}"
@@ -2089,7 +2095,8 @@ class UrdfScene(
         # Shapes keep their own base color, but must be repainted with the
         # arm/tool so a colliding one isn't re-snapshotted with red as its base.
         for key, obj in self._shape_objects.items():
-            self._paint_shape(obj, key, tinted=False)
+            if not key.startswith(MESH_PREFIX):
+                self._paint_shape(obj, key, tinted=False)
 
         logger.debug("Robot appearance mode set to %s", mode.value)
         # The repaint above clobbered any red collision tint; drop the

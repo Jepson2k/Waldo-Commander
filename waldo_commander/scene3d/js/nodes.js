@@ -11,7 +11,7 @@ import { build, clip, dispose, loadStl, materials, paint } from "./kinds.js";
 
 const DRAWN = new Set(["box", "sphere", "cylinder", "capsule", "lathe", "line", "polyline"]);
 // The workcell's objects: what isolating fades.
-const OBJECT = /^(shape|install):/;
+const OBJECT = /^(shape|install|mesh):/;
 // What is left of an object isolating leaves out: enough to keep it in place
 // as context, too little to read as something to pick.
 const FADED = 0.12;
