@@ -764,7 +764,7 @@ class SettingsContent:
 
         tool_options = {}
         for tool in ui_state.active_robot.tools.available:
-            tool_options[tool.key] = tool.display_name.replace("_", " ")
+            tool_options[tool.key] = tool.display_name
 
         default_tool = next(iter(tool_options), "NONE")
         stored_tool = ng_app.storage.general.get("selected_tool", default_tool)

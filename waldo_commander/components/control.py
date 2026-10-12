@@ -272,9 +272,9 @@ class _ToolQuickActions:
                     tool_status,
                     "key",
                     backward=lambda key: (
-                        ui_state.active_robot.tools[key].display_name.replace("_", " ")
+                        ui_state.active_robot.tools[key].display_name
                         if key in {t.key for t in ui_state.active_robot.tools.available}
-                        else key.replace("_", " ")
+                        else key
                     ),
                 ).classes("text-xs truncate text-wc-text-muted")
                 with ui.row().classes("gap-1 no-wrap text-xs tabular-nums"):
