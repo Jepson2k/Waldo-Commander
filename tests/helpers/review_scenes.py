@@ -20,6 +20,17 @@ from waldo_commander.state import ui_state
 FIXTURE_VIEW = [0.44, 0.18, 0.16, 0.3, 0, 0.045]
 SWEEP_VIEW = [0.35, 0.56, 0.44, 0, 0.19, 0.22]
 
+
+def clearance_view(clearance):
+    midpoint = np.mean([clearance.part_point, clearance.obstacle_point], axis=0)
+    gap = np.subtract(clearance.obstacle_point, clearance.part_point)
+    side = np.array([-gap[1], gap[0], 0.0])
+    if np.linalg.norm(side) < 1e-6:
+        side = np.array([0.0, 1.0, 0.0])
+    side *= 0.30 / np.linalg.norm(side)
+    return [*(midpoint + side + [0, 0, 0.12]), *midpoint]
+
+
 # Planned moves into a keep-out are rejected before they have any recorded rows.
 # A bounded jog records its requested path for the preview's collision checker.
 SWEEP_PROGRAM = """from parol6 import RobotClient
@@ -98,10 +109,10 @@ def tilted_target_program():
 
 
 @contextmanager
-def swept_preview(screen):
+def swept_preview(screen, *, obstacle: Box | None = None):
     handle = waldoctl.commander.scene
     original = list(handle.shapes)
-    obstacle = Box(
+    obstacle = obstacle or Box(
         name="Sweep keep-out",
         x=0.045,
         y=0.045,

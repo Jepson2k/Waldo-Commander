@@ -49,6 +49,58 @@ def probe(screen: Screen, name: str, *args):
     return scene_js(screen, f"return S.{name}(...arguments)", *args)
 
 
+def clearance_line(screen: Screen, obstacle: str):
+    return scene_js(
+        screen,
+        "return S.clearanceLines().find(line => line.obstacle === arguments[0]) || null",
+        obstacle,
+    )
+
+
+def clearance_button(screen: Screen):
+    button = settled_element(
+        screen, lambda: marked_element(screen, "scene-toggle-clearance")
+    )
+    assert screen.selenium.execute_script(
+        "return !!arguments[0].closest('.wc-viewcube-tools')", button
+    )
+    return button
+
+
+def clearance_endpoint_pixels(screen: Screen, obstacle: str):
+    return scene_js(
+        screen,
+        """
+        const line = S.clearanceLines().find(line => line.obstacle === arguments[0]);
+        if (!line) return null;
+        S.drawFrame();
+        const points = S.project('clearance:' + line.obstacle, line.endpoints);
+        const gl = S.renderer.getContext(), rect = S.canvas.getBoundingClientRect();
+        const ratio = S.renderer.getPixelRatio();
+        return points.map(([x,y]) => {
+            const pixel = new Uint8Array(4);
+            gl.readPixels(Math.round((x-rect.left)*ratio), Math.round((rect.bottom-y)*ratio),
+                          1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+            return Array.from(pixel).slice(0,3);
+        });
+        """,
+        obstacle,
+    )
+
+
+def park_scene_pointer(screen: Screen):
+    x, y = screen.selenium.execute_script(
+        "const r=document.querySelector('.wc-viewcube-tools').getBoundingClientRect();"
+        "return [r.x+r.width/2, r.y+1];"
+    )
+    screen.selenium.execute_cdp_cmd(
+        "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}
+    )
+    wait(screen).until(
+        lambda _: not scene_js(screen, "return S.byName('placement:ground').visible")
+    )
+
+
 def camera_pose(screen: Screen) -> list[float]:
     return scene_js(screen, "return S.cameraPose()")
 

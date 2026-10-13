@@ -145,6 +145,8 @@ def inject_panel_css() -> None:
    or under a finger. */
 .scene-panel { display: flex; flex-direction: column; gap: 0; }
 .scene-panel-head { flex-shrink: 0; padding: 4px 4px 4px 12px; border-bottom: 1px solid var(--wc-glass-border); }
+.scene-panel-tools { flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.scene-panel-tools > * { flex-shrink: 0; }
 .scene-panel-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; gap: 0; padding-bottom: 8px; }
 .scene-tree { gap: 0; padding: 2px 4px; }
 .scene-group { min-height: 28px; padding: 8px 4px 2px 8px; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--wc-text-muted); }

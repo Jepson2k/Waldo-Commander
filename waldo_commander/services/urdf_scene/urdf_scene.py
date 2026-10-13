@@ -49,6 +49,7 @@ from waldo_commander.scene3d.interaction import Handlers
 from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
 from waldo_commander.state import robot_state, simulation_state, ui_state
 
+from .clearance_overlay import ClearanceOverlay
 from .config import DRAFT_PREFIX, RobotAppearanceMode, ToolPose, UrdfSceneConfig
 from .editing_mixin import EditingMixin
 from .object_editing_mixin import ObjectEditingMixin
@@ -410,6 +411,7 @@ class UrdfScene(
         self._shown_q = np.full(len(self.joint_names), np.nan)
         self.path_renderer = PathRenderer()
         self.inspection = TrajectoryInspection(self)
+        self.clearance_overlay = ClearanceOverlay(self)
 
         # Event-driven updates on simulation state changes.
         simulation_state.add_change_listener(self._update_simulation_view)
@@ -417,6 +419,7 @@ class UrdfScene(
     def cleanup(self) -> None:
         """Remove listeners registered by this scene."""
         simulation_state.remove_change_listener(self._update_simulation_view)
+        self.clearance_overlay.dispose()
 
     def show(self, scale_stls: float = 1.0, material=None, background_color=None):
         """Plot a 3D scene from the loaded URDF.
@@ -487,6 +490,7 @@ class UrdfScene(
             ui.keyboard(on_key=self._handle_keyboard)
 
         self.scene.define_joints([self.joint_groups[n] for n in self.joint_names])
+        self.clearance_overlay.mount()
         self.scene.on_context(self._on_context)
         self.scene.on("select", self._on_object_selection)
         self.scene.on("target_tap", self._on_target_tap)
@@ -1842,6 +1846,7 @@ class UrdfScene(
         self.update_tcp_pose_from_tool(tool_key, variant_key=variant_key)
         self.swap_tool_mesh(tool_key, variant_key=variant_key)
         self.invalidate_fk_cache()
+        self.clearance_overlay.tool_revision += 1
         # The scene panel's list names the tool on the arm.
         self._refresh_object_inspector()
 

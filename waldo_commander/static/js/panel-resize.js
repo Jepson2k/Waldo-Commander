@@ -742,7 +742,7 @@
             if (container) {
                 const width = savedSize.width || defaultWidth(container, panelConfig);
                 if (width) {
-                    container.style.width = Math.min(width, getMaxWidth()) + 'px';
+                    container.style.width = Math.min(Math.max(width, panelConfig.minWidth || 0), getMaxWidth()) + 'px';
                 }
                 if (column || isFitPanel(panelId)) {
                     container.style.removeProperty('height');
@@ -921,6 +921,8 @@
                 container.style.setProperty('width', Math.min(width, maxW) + 'px');
             } else if (container.offsetWidth > maxW) {
                 container.style.setProperty('width', maxW + 'px', 'important');
+            } else if (panelId && container.offsetWidth < config.panels[panelId]?.minWidth) {
+                container.style.setProperty('width', Math.min(config.panels[panelId].minWidth, maxW) + 'px', 'important');
             }
             // CSS caps a fit panel and pins a column; pinning either here would
             // stick after the window grows back.

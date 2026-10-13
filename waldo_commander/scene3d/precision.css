@@ -18,6 +18,7 @@
 .wc-gizmo-field input { width:7ch; padding:0 2px; border:none; border-bottom:1px solid var(--wc-action); background:none; color:var(--wc-text); font:inherit; outline:none; }
 .wc-gizmo-field input[aria-invalid=true] { border-bottom-color:var(--wc-error); }
 .wc-gizmo-field-unit { color:var(--wc-text-muted); font-weight:400; }
+.wc-clearance-label { pointer-events:none; }
 .wc-gizmo-field-value:focus-visible { outline:2px solid var(--wc-action); outline-offset:2px; }
 @media (pointer:coarse) { .wc-gizmo-field { font-size:15px; line-height:36px; } }
 .wc-gizmo-field-keys { display:none; }
@@ -39,4 +40,5 @@
 .wc-viewcube { position:absolute; top:var(--wc-space-3); right:var(--wc-space-3); width:var(--viewcube-size); height:var(--viewcube-size); z-index:var(--wc-z-cards); touch-action:none; user-select:none; -webkit-user-select:none; }
 .wc-viewcube-tools { position:absolute; top:calc(var(--wc-space-3) + var(--viewcube-size)); right:var(--wc-space-3); z-index:var(--wc-z-cards); display:flex; align-items:center; gap:2px; padding:2px; border-radius:var(--wc-radius-pill); }
 .wc-viewcube-tools .q-separator--vertical { align-self:stretch; margin:4px 2px; }
+@media (pointer:coarse) { .wc-clearance-toggle { min-width:44px; min-height:44px; } }
 .wc-scene[data-gl] .wc-viewcube { display:none; }

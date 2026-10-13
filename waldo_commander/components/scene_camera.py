@@ -1,10 +1,13 @@
 """The camera's buttons under the scene's view cube."""
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from nicegui import ui
 
 from waldo_commander.scene3d.element import WcScene
+
+if TYPE_CHECKING:
+    from waldo_commander.services.urdf_scene.clearance_overlay import ClearanceOverlay
 
 _PROJECTION_ICONS = "svguse:/static/icons/projection.svg#{}"
 
@@ -16,9 +19,8 @@ def camera_action(action: str) -> None:
             break
 
 
-def build_camera_menu(scene: WcScene) -> None:
-    """Reset, focus, the previous view and the two projections, under
-    *scene*'s view cube."""
+def build_camera_menu(scene: WcScene, clearances: "ClearanceOverlay") -> None:
+    """Camera controls and display overlays under *scene*'s view cube."""
 
     def act(action: str) -> None:
         scene.run_method("camera_action", action)
@@ -51,6 +53,8 @@ def build_camera_menu(scene: WcScene) -> None:
             .mark(f"camera-{name}")
             for name in ("perspective", "orthographic")
         }
+        ui.separator().props("vertical")
+        clearances.build_toggle()
 
     def changed(status: dict[str, Any]) -> None:
         back.set_enabled(bool(status.get("back")))

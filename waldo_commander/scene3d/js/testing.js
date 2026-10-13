@@ -58,6 +58,13 @@ export function surface(core) {
     },
     byName,
     frames: () => core.frameCount,
+    clearanceLines: () => [...core.clearances.items.values()].map(item => ({
+      obstacle: item.data.obstacle,
+      label: item.label.element.textContent,
+      endpoints: [0, 3].map(offset => Array.from(item.geometry.attributes.position.array.slice(offset, offset + 3))),
+      color: '#' + item.line.material.color.getHexString(),
+      id: item.line.uuid,
+    })),
     sweptVolume() {
       const sweep = core.inspection.sweep, data = core.inspection.data;
       if (!sweep.root || !data) return null;
@@ -90,7 +97,7 @@ export function surface(core) {
     inspection() {
       const inspect = core.inspection, hit = inspect.current;
       return {revision:inspect.data?.revision, pinned:inspect.pinned, dragging:inspect.dragging,
-        current:hit,
+        current:hit, hovered:inspect.hovered,
         comparison:{state:inspect.comparison.data?"ready":"unavailable",visibility:inspect.comparison.visibility},
         time:hit ? (inspect.data.records[hit.record].blocks[hit.block]?.instant ? inspect.data.records[hit.record].blocks[hit.block].at : inspect.data.records[hit.record].source[hit.row]*inspect.data.records[hit.record].dt) : null,
         records:inspect.data?.records.map((r)=>({label:r.label,rows:r.rows,dt:r.dt,blocks:r.blocks}))};
@@ -104,6 +111,21 @@ export function surface(core) {
       return Array.from({length:block.end-block.start},(_,i)=>{
         const row=block.start+i; return [points[row*3],points[row*3+1],row];
       });
+    },
+    pathGrab(record, command, fraction=0.1) {
+      if (!core.inspection.available || core.gestures.active) return null;
+      const points = S.pathPixels(record, command);
+      if (!points?.length) return null;
+      const target = points[0][2] + (points.length - 1) * fraction;
+      const candidates = points.slice(1, -1).sort((a,b) => Math.abs(a[2]-target) - Math.abs(b[2]-target));
+      for (const [x,y,row] of candidates) {
+        const picked = S.pick(x,y);
+        if (picked.covered || picked.handles.length || picked.names.length) continue;
+        const hit = core.inspection.pick(x,y)[0];
+        if (hit?.record !== record || core.inspection.data.records[record].blocks[hit.block].command !== command) continue;
+        return [x,y,row];
+      }
+      return null;
     },
     requestRender: () => core.requestRender(),
     // One whole frame drawn now, so its pixels can be read before the page shows it.

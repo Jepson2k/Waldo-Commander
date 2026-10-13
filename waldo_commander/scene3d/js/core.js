@@ -10,6 +10,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer.js";
 import { CameraMove } from "./camera.js";
 import { CameraTools } from "./camera_tools.js";
+import { Clearances } from "./clearances.js";
 import { Fx } from "./fx.js";
 import { Gestures } from "./gestures.js";
 import { Gizmos } from "./gizmo.js";
@@ -84,6 +85,7 @@ export class SceneCore {
     this.drawingTool = new PrimitiveDrawing(this);
     this.menu = new Menu(this);
     this.inspection = new Inspection(this);
+    this.clearances = new Clearances(this);
     this.navigation = new CameraTools(this);
     this.selection = new Selection(this);
     this.pointer.tools = [this.drawingTool, this.resizeHandles, this.gizmos, this.pointer.ringTool, this.inspection];
@@ -193,6 +195,7 @@ export class SceneCore {
   }
 
   reset() {
+    this.clearances.dispose();
     this.inspection.load(null);
     this.selection.load(null);
     this.resizeHandles.load(null);
@@ -216,6 +219,7 @@ export class SceneCore {
   // rules, edit and keep-out move state, colours.
   interact(changes) {
     Object.assign(this.ix, changes);
+    if ("clearances" in changes) this.clearances.load(changes.clearances);
     if ("entities" in changes) this.selection.load(changes.entities);
     if ("shapeDraw" in changes) this.drawingTool.load(changes.shapeDraw);
     if ("colors" in changes) {
@@ -461,6 +465,7 @@ export class SceneCore {
   // The socket dropped: no drag goes on, and none starts until the app has
   // sent the scene again.
   disconnected() {
+    this.clearances.dispose();
     this.inspection.clear(false);
     this.pointer.setGlow(null);
     this.gestures.block("disconnect");
@@ -498,6 +503,7 @@ export class SceneCore {
     document.removeEventListener("visibilitychange", this.onVisibility);
     window.removeEventListener("pagehide", this.onPageHide);
     this.menu.dispose();
+    this.clearances.dispose();
     this.overlays.dispose();
     this.inspection.dispose();
     this.selection.dispose();

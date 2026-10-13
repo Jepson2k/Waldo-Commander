@@ -48,10 +48,12 @@ class ScenePanel:
         with ui.tab_panel("scene").classes(
             "overlay-card task-panel scene-panel resizable-panel p-0"
         ):
-            with ui.row().classes("scene-panel-head w-full items-center no-wrap"):
-                ui.label("Scene").classes("panel-heading flex-1")
-                self.tools = ui.row().classes("items-center no-wrap gap-0")
-                ui.button(icon="close", on_click=close).props(
+            with ui.row().classes("scene-panel-head w-full items-center no-wrap gap-0"):
+                ui.label("Scene").classes("panel-heading flex-1 min-w-0 truncate")
+                self.tools = ui.row().classes(
+                    "scene-panel-tools items-center no-wrap gap-0"
+                )
+                ui.button(icon="close", on_click=close).classes("shrink-0").props(
                     "flat round dense color=wc-text"
                 ).tooltip("Close").mark("scene-close")
             self.body = ui.column().classes("scene-panel-body w-full")

@@ -684,9 +684,9 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
         },
         "scene": {
             "selector": ".bottom-panels-container .scene-panel",
-            "minWidth": 280,
+            "minWidth": 320,
             "minHeight": 160,
-            "defaultWidth": 312,
+            "defaultWidth": 320,
             "group": "bottom",
             "fit": True,
         },

@@ -313,7 +313,7 @@ async def initialize_urdf_scene() -> None:
     if ui_state.urdf_scene.scene:
         scene = ui_state.urdf_scene.scene
         scene.move_camera(**DEFAULT_CAMERA, duration=0.0)
-        build_camera_menu(scene)
+        build_camera_menu(scene, ui_state.urdf_scene.clearance_overlay)
 
         # World coordinate frame at origin (fixed).
         world_axes_size = 0.30

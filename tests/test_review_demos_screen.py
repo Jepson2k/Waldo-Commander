@@ -36,6 +36,7 @@ from tests.helpers.review_scenes import (
     FIXTURE_VIEW,
     SWEEP_VIEW,
     bracket_stl,
+    clearance_view,
     framed_program,
     swept_preview,
     tilted_target_program,
@@ -51,11 +52,14 @@ from tests.helpers.scene_screen import (
     camera_kept,
     camera_pose,
     camera_settled,
+    clearance_button,
+    clearance_line,
     clear_selection,
     click_object,
     confirmed,
     gizmo,
     object_mode,
+    park_scene_pointer,
     path_point,
     place_shape,
     probe,
@@ -74,6 +78,7 @@ from tests.helpers.scene_surface import (
 from tests.helpers.wait import screen_wait_for_scene_ready
 from tests.test_par6_backend import par6_env, requires_par6  # noqa: F401
 from waldo_commander.services import world_files
+from waldo_commander.common.theme import hex_of
 from waldo_commander.state import ui_state
 
 # Frame-stepped recording takes a minute or two a demo; demos run only
@@ -322,6 +327,195 @@ def demo_screen(class_screen):
 
 @pytest.mark.browser
 class TestReviewDemos:
+    def test_clearance_lines(self, demo_screen):
+        screen = demo_screen
+        view, robot = ui_state.urdf_scene, ui_state.active_robot
+        box = Box(
+            name="Clearance box",
+            x=0.06,
+            y=0.06,
+            z=0.06,
+            pose=(0.12, 0.30, 0.25, 0, 0, 0),
+        )
+        obstacle = f"shape:{box.name}"
+        with swept_preview(screen, obstacle=box) as move:
+            initial = next(
+                c
+                for c in robot.clearances(run_in_app(lambda: view._shown_q.copy()))
+                if c.obstacle == obstacle
+            )
+            assert 0.06 <= initial.distance <= 0.12
+            scene_js(
+                screen,
+                "S.setCameraPose(arguments[0])",
+                clearance_view(initial),
+            )
+            wait_for_scene_idle(screen)
+            clear_selection(screen)
+            if run_in_app(lambda: ui_state.scene_panel.is_open):
+                click_marked(screen, "scene-close")
+            wait(screen).until(lambda _: no_visible(screen, ".scene-panel"))
+            park_scene_pointer(screen)
+            record = scene_js(screen, "return S.inspection().records[0]")
+            block = next(
+                i
+                for i, b in enumerate(record["blocks"])
+                if b["command"] == move["command"]
+            )
+            start = None
+            for fraction in (0.35, 0.45, 0.25, 0.55):
+                point = scene_js(
+                    screen,
+                    "return S.pathGrab(0, arguments[0], arguments[1])",
+                    move["command"],
+                    fraction,
+                )
+                if point is None:
+                    continue
+                q = run_in_app(
+                    lambda: waldoctl.commander.programs.active.dry_run.commanded.joints_rad[
+                        view.inspection._kept[0][point[2]]
+                    ].copy()
+                )
+                clearance = next(
+                    c for c in robot.clearances(q) if c.obstacle == obstacle
+                )
+                if 0.06 <= clearance.distance <= 0.12:
+                    start = point
+                    break
+            assert start is not None, (
+                "no exposed interior path point with a 60–120 mm gap"
+            )
+            samples = []
+
+            def scrubbed():
+                def grabbed(_):
+                    state = scene_js(screen, "return S.inspection()")
+                    return (
+                        state
+                        if state["current"] and state["current"]["record"] == 0
+                        else False
+                    )
+
+                state = wait(screen).until(grabbed)
+                row = state["current"]["row"]
+                q = run_in_app(
+                    lambda: waldoctl.commander.programs.active.dry_run.commanded.joints_rad[
+                        view.inspection._kept[0][row]
+                    ].copy()
+                )
+                wait(screen, 10).until(
+                    lambda _: np.allclose(
+                        run_in_app(lambda: view._shown_q.copy()),
+                        q,
+                        atol=np.radians(0.05),
+                        rtol=0,
+                    )
+                )
+                shown = run_in_app(lambda: view._shown_q.copy())
+                expected = next(
+                    c for c in robot.clearances(shown) if c.obstacle == obstacle
+                )
+
+                def matches(_):
+                    line = clearance_line(screen, obstacle)
+                    return (
+                        line
+                        if (
+                            line
+                            and line["label"] == f"{round(expected.distance * 1000)} mm"
+                            and np.allclose(
+                                line["endpoints"],
+                                [expected.part_point, expected.obstacle_point],
+                                atol=1e-6,
+                            )
+                        )
+                        else False
+                    )
+
+                line = wait(screen, 10).until(matches)
+                token = (
+                    "scene-collision"
+                    if expected.distance <= 0
+                    else "warning"
+                    if expected.distance < 0.02
+                    else "text-muted"
+                )
+                assert line["color"] == hex_of(token)
+                samples.append((expected.distance, line["color"]))
+
+            video = DemoVideo(screen, "clearance-lines")
+            try:
+                video.caption("Under the view cube: show clearances to keep-outs")
+                button = clearance_button(screen)
+                video.tap(
+                    _center(button),
+                    lambda: wait(screen).until(
+                        lambda _: scene_js(screen, "return S.clearanceLines()")
+                    ),
+                )
+                video.pause(1)
+                pixels = scene_js(
+                    screen, "return S.pathPixels(0, arguments[0])", move["command"]
+                )
+                points = [(p[0], p[1]) for p in pixels if p[2] >= start[2]]
+                video.caption("Hover the path in the gap: it lights up, ready to drag")
+                video.jump(*_outward(points[0], _arm_pixel(screen)))
+                video.glide(points[0], 1.0)
+                video.frame(
+                    lambda: wait(screen).until(
+                        lambda _: scene_js(
+                            screen,
+                            "return S.inspection().hovered === arguments[0] && S.byName('inspection:grip').visible",
+                            f"0:{block}",
+                        )
+                    )
+                )
+                video.pause(0.6)
+                video.caption("Scrub toward the keep-out: the distance counts down")
+                video.press()
+                video.frame(scrubbed)
+                assert 0.06 <= samples[-1][0] <= 0.12
+                assert video.along(
+                    points,
+                    5.0,
+                    settle=scrubbed,
+                    until=lambda: samples[-1][0] < 0.02,
+                )
+                assert 0 < samples[-1][0] < 0.02
+                video.caption("Under 20 mm: warning colour")
+                video.frame()
+                video.pause(0.8)
+                assert video.along(
+                    [video.at, points[-1]],
+                    3.0,
+                    settle=scrubbed,
+                    until=lambda: samples[-1][0] < -0.0005,
+                )
+                video.release(scrubbed)
+                video.caption("Contact turns the line red; penetration reads negative")
+                video.frame()
+                video.pause(1.2)
+                assert samples[-1][0] < samples[0][0]
+                assert {hex_of("warning"), hex_of("scene-collision")} <= {
+                    color for _, color in samples
+                }
+                video.caption("Tap again to put the measurements away")
+                video.tap(
+                    _center(clearance_button(screen)),
+                    lambda: wait(screen).until(
+                        lambda _: not scene_js(screen, "return S.clearanceLines()")
+                    ),
+                )
+                assert no_visible(screen, ".scene-panel")
+                video.pause(0.6)
+                video.save()
+            finally:
+                if video.pressed:
+                    video.release()
+                if run_in_app(lambda: view.clearance_overlay.enabled):
+                    run_in_app(view.clearance_overlay.toggle)
+
     def test_select_several(self, demo_screen):
         screen = demo_screen
         handle, view = waldoctl.commander.scene, ui_state.urdf_scene

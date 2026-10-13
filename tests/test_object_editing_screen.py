@@ -2,8 +2,10 @@
 
 from contextlib import nullcontext
 
+import numpy as np
 import pytest
 import waldoctl
+from waldoctl.shapes import Box
 from selenium.common.exceptions import (
     NoSuchElementException,
     StaleElementReferenceException,
@@ -16,10 +18,11 @@ from tests.helpers.browser_helpers import (
     click_marked,
     marked_element,
     run_in_app,
+    tap,
     viewport,
 )
 from tests.helpers.browser_session import no_visible, wait
-from tests.helpers.review_scenes import FIXTURE_VIEW, bracket_stl
+from tests.helpers.review_scenes import FIXTURE_VIEW, bracket_stl, clearance_view
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     at_start,
@@ -27,12 +30,17 @@ from tests.helpers.scene_screen import (
     camera_kept,
     camera_settled,
     choose,
+    clearance_button,
+    clearance_endpoint_pixels,
+    clearance_line,
     clear_selection,
     click_object,
     confirmed,
     fill,
+    frame_mm,
     hold,
     object_mode,
+    park_scene_pointer,
     place_shape,
     probe,
     program_previewed,
@@ -74,6 +82,150 @@ def object_screen(class_screen):
 
 @pytest.mark.browser
 class TestObjectEditing:
+    def test_clearance_lines_follow_keep_out_moves(self, object_screen):
+        screen = object_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40)
+        at_start(screen)
+        view, handle, robot = (
+            ui_state.urdf_scene,
+            waldoctl.commander.scene,
+            ui_state.active_robot,
+        )
+        original = list(handle.shapes)
+        q = run_in_app(lambda: view._shown_q.copy())
+        tcp = frame_mm(screen) / 1000
+        box = Box(
+            name="Clearance box",
+            x=0.06,
+            y=0.06,
+            z=0.06,
+            pose=(tcp[0] + 0.18, tcp[1], tcp[2] + 0.04, 0, 0, 0),
+        )
+        obstacle = f"shape:{box.name}"
+
+        def expected():
+            return next(c for c in robot.clearances(q) if c.obstacle == obstacle)
+
+        def matches(clearance):
+            line = clearance_line(screen, obstacle)
+            return (
+                line
+                if line and line["label"] == f"{round(clearance.distance * 1000)} mm"
+                else False
+            )
+
+        def touch_toggle():
+            button = clearance_button(screen)
+            rect = button.rect
+            tap(screen, rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2)
+
+        with (
+            viewport(screen, 1920, 1080) if enabled() else nullcontext(),
+            camera_kept(screen),
+        ):
+            evidence = VisualEvidence(screen, "clearance")
+            try:
+                run_in_app(lambda: setattr(handle, "shapes", [box]))
+                confirmed(screen, lambda: handle.shapes == [box])
+                if run_in_app(lambda: ui_state.scene_panel.is_open):
+                    click_marked(screen, "scene-close")
+                wait(screen).until(lambda _: no_visible(screen, ".scene-panel"))
+                assert not scene_js(screen, "return S.clearanceLines()")
+                initial = expected()
+                assert 0.02 < initial.distance < 0.3
+                touch_toggle()
+                line = wait(screen).until(lambda _: matches(initial))
+                assert no_visible(screen, ".scene-panel")
+                assert clearance_button(screen).get_attribute("aria-pressed") == "true"
+                assert np.asarray(line["endpoints"]) == pytest.approx(
+                    np.asarray([initial.part_point, initial.obstacle_point]), abs=1e-6
+                )
+                line_id, resets = line["id"], scene_js(screen, "return S.resets")
+
+                click_marked(screen, "tab-scene")
+                click_marked(screen, "scene-row-Clearance-box")
+                object_mode(screen, "Move")
+                delta = np.subtract(initial.part_point, initial.obstacle_point)
+                delta *= 0.03 / np.linalg.norm(delta)
+                for axis, change in enumerate(delta):
+                    if abs(change) < 1e-6:
+                        continue
+                    mm = round((box.pose[axis] + change) * 1000, 3)
+                    fill(screen, f"object-{'xyz'[axis]}", mm)
+                    confirmed(
+                        screen,
+                        lambda a=axis, value=mm: abs(
+                            handle.shapes[0].pose[a] * 1000 - value
+                        )
+                        < 0.001,
+                    )
+                closer = expected()
+                assert round(closer.distance * 1000) < round(initial.distance * 1000)
+                assert 0.06 <= closer.distance <= 0.12
+                assert closer.part_point[2] > 0.1
+                line = wait(screen).until(lambda _: matches(closer))
+                assert line["id"] == line_id
+                assert scene_js(screen, "return S.resets") == resets
+                clear_selection(screen)
+                click_marked(screen, "scene-eye-Clearance-box")
+                wait(screen).until(lambda _: clearance_line(screen, obstacle) is None)
+                click_marked(screen, "scene-eye-Clearance-box")
+                wait(screen).until(lambda _: matches(closer))
+                screen.selenium.execute_script(
+                    "PanelResize.resizePanel('scene', {width:1})"
+                )
+                close = settled_element(
+                    screen, lambda: marked_element(screen, "scene-close")
+                )
+                assert screen.selenium.execute_script(
+                    """
+                    const close = arguments[0], panel = close.closest('.scene-panel');
+                    const rect = panel.getBoundingClientRect();
+                    const heading = panel.querySelector('.panel-heading');
+                    const tools = panel.querySelector('.scene-panel-tools');
+                    const fits = element => {
+                        const r = element.getBoundingClientRect();
+                        return r.width > 0 && r.left >= rect.left && r.right <= rect.right;
+                    };
+                    const r = close.getBoundingClientRect();
+                    return [heading, tools, close].every(fits)
+                        && tools.scrollWidth <= tools.clientWidth + 1
+                        && close.contains(document.elementFromPoint(r.x+r.width/2, r.y+r.height/2));
+                    """,
+                    close,
+                )
+                click_marked(screen, "scene-close")
+                wait(screen).until(lambda _: no_visible(screen, ".scene-panel"))
+                scene_js(
+                    screen, "S.setCameraPose(arguments[0])", clearance_view(closer)
+                )
+                park_scene_pointer(screen)
+                wait_for_scene_idle(screen)
+                color = [int(line["color"][i : i + 2], 16) for i in (1, 3, 5)]
+                assert np.asarray(
+                    clearance_endpoint_pixels(screen, obstacle)
+                ) == pytest.approx(np.asarray([color, color]), abs=4)
+                if evidence.enabled:
+                    evidence.capture("01-lines-1920")
+                touch_toggle()
+                wait(screen).until(
+                    lambda _: not scene_js(screen, "return S.clearanceLines()")
+                )
+                assert clearance_button(screen).get_attribute("aria-pressed") == "false"
+                assert not screen.selenium.find_elements(
+                    By.CSS_SELECTOR, ".wc-clearance-label"
+                )
+                evidence.finish()
+            finally:
+                evidence.stop()
+                if run_in_app(lambda: view.clearance_overlay.enabled):
+                    run_in_app(view.clearance_overlay.toggle)
+                run_in_app(lambda: view._set_hidden([obstacle], False))
+                run_in_app(lambda: setattr(handle, "shapes", original))
+                confirmed(screen, lambda: handle.shapes == original)
+                if run_in_app(lambda: ui_state.scene_panel.is_open):
+                    click_marked(screen, "scene-close")
+
     def test_imported_fixture_is_visible_at_scaled_size(
         self, object_screen, tmp_path, monkeypatch
     ):
