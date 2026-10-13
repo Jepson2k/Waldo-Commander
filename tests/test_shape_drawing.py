@@ -150,5 +150,5 @@ async def test_draw_floor_face_cancel_stale_and_recorded_undo(user):
     await user.should_not_see(marker="object-feedback")
     assert user.find(marker="object-undo").elements.pop().enabled
     assert user.find(marker="object-undo-tooltip").elements.pop().text == (
-        "Undo object edit · Ctrl+Z"
+        "Undo scene edit · Ctrl+Z"
     )

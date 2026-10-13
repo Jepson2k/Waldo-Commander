@@ -324,7 +324,7 @@ class ObjectEditingMixin(MeshEditingMixin):
                     .props(flat)
                     .mark("object-undo")
                 )
-                self._undo_tooltip = ui.tooltip("Undo object edit · Ctrl+Z").mark(
+                self._undo_tooltip = ui.tooltip("Undo scene edit · Ctrl+Z").mark(
                     "object-undo-tooltip"
                 )
             self._history_buttons = (
