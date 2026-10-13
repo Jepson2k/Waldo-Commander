@@ -94,6 +94,7 @@ export class Inspection {
     this.comparison.reset();
     this.clear(false); this.removeCursor(); this.hoverAt(null);
     for (const m of this.markers) { m.element.remove(); m.leader.remove(); }
+    this.core.overlays.mark("pathEvents", null);
     this.markers = []; this.data = data; this.projected = []; this.seq = 0;
     this.seenView[0] = NaN;
     if (!data) { this.chunks = []; return; }
@@ -388,7 +389,7 @@ export class Inspection {
     }
   }
 
-  // A menu sits beside its anchor, off the panels and the comparison.
+  // Event markers must stay reachable while another marker's menu is open.
   place(name,sx,sy) {
     const overlays=this.core.overlays,card=overlays.sized(name);
     if(!card)return;
@@ -396,7 +397,7 @@ export class Inspection {
     const candidates=[];
     for(const x of [sx+14,sx-w-14,this.core.layoutInset.left+GAP,width-w-GAP])for(const y of [sy+10,sy-h-10,GAP,height-h-this.core.layoutInset.bottom-GAP])candidates.push([x,y]);
     const seat=overlays.seat(candidates,w,h,{bounds:{left:8,top:8,right:width-8,bottom:height-this.core.layoutInset.bottom-GAP},
-      obstacles:overlays.obstacles(COVERS),pad:8,cost:(x,y)=>Math.hypot(x-sx,y-sy)});
+      obstacles:overlays.obstacles([...COVERS,"pathEvents"]),pad:8,cost:(x,y)=>Math.hypot(x-sx,y-sy)});
     overlays.place(card,seat.x,seat.y);
   }
 
@@ -447,6 +448,10 @@ export class Inspection {
       setStyle(marker.leader,"width",`${Math.round(Math.max(0,length-radius))}px`); setStyle(marker.leader,"transform",`rotate(${Math.atan2(dy,dx).toFixed(3)}rad)`);
     }
     for(const marker of this.markers)if(!shown.has(marker)){setHidden(marker.element,true);setHidden(marker.leader,true);}
+    overlays.mark("pathEvents",used.map(({x,y,radius})=>{
+      const left=Math.round(x-radius),top=Math.round(y-radius);
+      return {left,top,right:left+radius*2,bottom:top+radius*2};
+    }));
   }
 
   chooseEvents(members,anchor) {
@@ -521,6 +526,7 @@ export class Inspection {
     this.clear(false); this.removeCursor(); this.hoverAt(null);
     this.grip.removeFromParent(); this.grip.geometry.dispose(); this.grip.material.dispose();
     for (const m of this.markers) { m.element.remove(); m.leader.remove(); }
+    this.core.overlays.mark("pathEvents", null);
     this.choices.remove();this.other.remove();
     document.removeEventListener("pointerdown", this.onDocumentDown, true);
   }
