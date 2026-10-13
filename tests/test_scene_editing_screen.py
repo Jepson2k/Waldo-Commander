@@ -20,7 +20,11 @@ from tests.helpers.browser_helpers import (
     viewport,
 )
 from tests.helpers.browser_session import no_visible, wait
-from tests.helpers.review_scenes import framed_program
+from tests.helpers.review_scenes import (
+    FRAME_STORE_VIEW,
+    frame_store_program,
+    framed_program,
+)
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     end_target_edit,
@@ -39,6 +43,7 @@ from tests.helpers.scene_screen import (
     program_previewed,
     reset_target_edit,
     settled_element,
+    settled_pixel,
 )
 from tests.helpers.scene_surface import (
     scene_js,
@@ -165,6 +170,89 @@ class TestSceneEditing:
             finally:
                 evidence.stop()
                 reset_target_edit(screen)
+
+    def test_frame_store_evidence(self, class_screen, request):
+        if not enabled():
+            pytest.skip("review captures require --evidence")
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40)
+        at_start(screen)
+        scene = ui_state.urdf_scene
+        source, _ = frame_store_program(request.getfixturevalue("tmp_path"))
+        with (
+            viewport(screen, 1920, 1080),
+            camera_kept(screen),
+            program_previewed(source) as targets,
+        ):
+            evidence = VisualEvidence(screen, "frame-store")
+            try:
+                click_tab(screen, "program")
+                settled_element(
+                    screen,
+                    lambda: screen.selenium.find_element(
+                        By.CSS_SELECTOR, ".program-panel"
+                    ),
+                )
+                scene_js(screen, "S.setCameraPose(arguments[0])", FRAME_STORE_VIEW)
+                marker = f"targetgroup:{targets[-1]}"
+                choose(screen, *settled_pixel(screen, marker), "Edit Target...")
+                wait(screen).until(lambda _: gizmo(screen, "tcp:ball"))
+                initial = np.asarray(run_in_app(lambda: scene._requested_edit_pose))
+                initial_marker = marker_mm(screen, marker)
+                screen.selenium.find_element(By.CSS_SELECTOR, ".wc-gizmo-frame").click()
+                settled_element(
+                    screen,
+                    lambda: marked_element(screen, "scene-gizmo-align-frame:fixture"),
+                ).click()
+                wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+                wait(screen).until(
+                    lambda _: gizmo(screen, "tcp:ball")["frame"] == "fixture"
+                )
+                wait(screen).until(
+                    lambda _: scene_js(
+                        screen, "return S.byName('gizmo:aligned-frame')?.visible"
+                    )
+                )
+                screen.selenium.find_element(By.CSS_SELECTOR, ".wc-gizmo-frame").click()
+                entry = settled_element(
+                    screen,
+                    lambda: marked_element(screen, "scene-target-store-frame:fixture"),
+                )
+                menu = entry.find_element(
+                    By.XPATH, "ancestor::*[contains(@class, 'q-menu')]"
+                )
+                assert "Align to" in menu.text and "Store in" in menu.text
+                for key, checked in (("world", "true"), ("frame:fixture", "false")):
+                    item = marked_element(screen, f"scene-target-store-{key}")
+                    assert item.get_attribute("role") == "menuitemradio"
+                    assert item.get_attribute("aria-checked") == checked
+                wait_for_scene_idle(screen)
+                evidence.capture("01-store-in-menu-1920")
+
+                entry.click()
+                wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+                wait(screen).until(
+                    lambda _: '"fixture")).as_list()'
+                    in screen.selenium.find_element(
+                        By.CSS_SELECTOR, ".program-panel .cm-content"
+                    ).text
+                )
+                updated = run_in_app(lambda: ui_state.active_textarea.value)
+                assert "setup.resolve(Pose((" in updated
+                assert run_in_app(lambda: scene._requested_edit_pose) == pytest.approx(
+                    initial, abs=1e-8
+                )
+                assert marker_mm(screen, marker) == pytest.approx(
+                    initial_marker, abs=0.01
+                )
+                wait_for_scene_idle(screen)
+                evidence.capture("02-line-in-frame-1920")
+                evidence.finish()
+            finally:
+                evidence.stop()
+                reset_target_edit(screen)
+                if not no_visible(screen, ".program-panel"):
+                    close_panel(screen, "program-panel")
 
     def test_keep_tool_vertical_rewrites_once_and_undo_restores(self, class_screen):
         screen = class_screen

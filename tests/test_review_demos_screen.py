@@ -7,6 +7,7 @@ recording it.
 """
 
 import asyncio
+import ast
 import math
 import time
 from contextlib import contextmanager
@@ -34,10 +35,12 @@ from tests.helpers.browser_session import no_visible, wait
 from tests.helpers.demo_video import DemoVideo
 from tests.helpers.review_scenes import (
     FIXTURE_VIEW,
+    FRAME_STORE_VIEW,
     SWEEP_VIEW,
     bracket_stl,
     clearance_view,
     framed_program,
+    frame_store_program,
     swept_preview,
     tilted_target_program,
 )
@@ -58,6 +61,7 @@ from tests.helpers.scene_screen import (
     click_object,
     confirmed,
     gizmo,
+    marker_mm,
     object_mode,
     park_scene_pointer,
     path_point,
@@ -78,6 +82,7 @@ from tests.helpers.scene_surface import (
 from tests.helpers.wait import screen_wait_for_scene_ready
 from tests.test_par6_backend import par6_env, requires_par6  # noqa: F401
 from waldo_commander.services import world_files
+from waldo_commander.services.scene_source import target_binding
 from waldo_commander.common.theme import hex_of
 from waldo_commander.state import ui_state
 
@@ -725,6 +730,183 @@ class TestReviewDemos:
                 video.pause(1.2)
                 video.save()
             finally:
+                reset_target_edit(screen)
+
+    def test_frame_store(self, demo_screen, tmp_path):
+        from waldoctl.setup import Frame, Pose
+
+        from waldo_commander.setup import SetupStore
+
+        screen = demo_screen
+        scene = ui_state.urdf_scene
+        source, setup = frame_store_program(tmp_path)
+        world = Pose((0, 280, 250, 90, 0, 90))
+
+        def relative_pose(text):
+            binding = target_binding(text, ast.parse(text).body[-1].lineno, 6)
+            assert binding.storage.name == "fixture"
+            assert binding.storage.variable == "setup"
+            return Pose(tuple(ast.literal_eval(binding.vector)), "fixture")
+
+        with program_previewed(source) as targets, program_panel(screen):
+            scene_js(screen, "S.setCameraPose(arguments[0])", FRAME_STORE_VIEW)
+            wait_for_scene_idle(screen)
+            video = DemoVideo(screen, "frame-store")
+
+            def edit_target(target):
+                _approach(video, settled_pixel(screen, f"targetgroup:{target}"), 0.4)
+                video.context_click()
+                item = _menu_item(screen, "Edit Target")
+                video.glide(_center(item), 0.4)
+                video.click(
+                    lambda: wait(screen).until(lambda _: gizmo(screen, "tcp:ball"))
+                )
+                wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+
+            try:
+                video.caption("Edit this world-literal target beside the saved fixture")
+                video.frame()
+                video.pause(1)
+                edit_target(targets[-1])
+                initial = np.asarray(run_in_app(lambda: scene._requested_edit_pose))
+                marker = f"targetgroup:{targets[-1]}"
+                initial_marker = marker_mm(screen, marker)
+
+                video.caption(
+                    "Store in › fixture: keep the target here, rewrite its line"
+                )
+                badge = _settled(
+                    screen,
+                    lambda: screen.selenium.find_element(
+                        By.CSS_SELECTOR, ".wc-gizmo-frame"
+                    ),
+                )
+                _approach(video, _center(badge), 0.4)
+                video.click()
+                _settled(
+                    screen,
+                    lambda: marked_element(screen, "scene-target-store-frame:fixture"),
+                )
+                assert (
+                    marked_element(screen, "scene-target-store-world").get_attribute(
+                        "aria-checked"
+                    )
+                    == "true"
+                )
+                video.frame()
+                video.pause(0.8)
+                _press_mark(video, "scene-target-store-frame:fixture")
+                wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+                stored = wait(screen).until(
+                    lambda _: (
+                        text := run_in_app(lambda: ui_state.active_textarea.value)
+                    )
+                    != source
+                    and text
+                )
+                local = relative_pose(stored)
+                assert local.as_list() == pytest.approx(
+                    setup.relative_pose(world, "fixture").as_list(), abs=0.00051
+                )
+                assert run_in_app(lambda: scene._requested_edit_pose) == pytest.approx(
+                    initial, abs=1e-8
+                )
+                assert marker_mm(screen, marker) == pytest.approx(
+                    initial_marker, abs=0.01
+                )
+                wait(screen).until(
+                    lambda _: '"fixture")).as_list()'
+                    in screen.selenium.find_element(
+                        By.CSS_SELECTOR, ".program-panel .cm-content"
+                    ).text
+                )
+                video.frame()
+                video.pause(1.5)
+
+                video.caption("Align to fixture, then drag a little along its X")
+                _frame_choice(video, "align-frame:fixture", "fixture")
+                wait(screen).until(
+                    lambda _: scene_js(
+                        screen, "return S.byName('gizmo:aligned-frame')?.visible"
+                    )
+                )
+                _drag_arrow(
+                    video,
+                    "tcp:ball",
+                    length=24,
+                    seconds=1.4,
+                    settle=lambda: _target_caught_up(screen),
+                )
+                video.release(
+                    lambda: wait(screen).until(
+                        lambda _: run_in_app(lambda: ui_state.active_textarea.value)
+                        != stored
+                    )
+                )
+                dragged = run_in_app(lambda: ui_state.active_textarea.value)
+                dragged_local = relative_pose(dragged)
+                delta = np.subtract(dragged_local.as_list(), local.as_list())
+                assert delta[0] > 1
+                assert delta[1:] == pytest.approx(np.zeros(5), abs=0.002)
+                assert not run_in_app(lambda: scene._tcp_ik_missed)
+                video.pause(0.8)
+
+                moved = setup.with_frame("fixture", Frame((95, 240, 210, 15, 20, 50)))
+                expected = moved.resolve(dragged_local).as_list()
+                video.caption("The fixture is re-taught 60 mm over and rotated 15°")
+                video.frame()
+                video.pause(1.1)
+                run_in_app(lambda: SetupStore(tmp_path).save("bench", moved))
+                video.live(1.5)
+
+                def relocated(_):
+                    dry = waldoctl.commander.programs.active.dry_run
+                    target = run_in_app(
+                        lambda: dry.targets[-1]
+                        if dry.commanded_revision == dry.revision and dry.targets
+                        else None
+                    )
+                    return (
+                        target
+                        if target
+                        and np.allclose(
+                            target.pose[:3],
+                            np.asarray(expected[:3]) / 1000,
+                            atol=0.0001,
+                        )
+                        else None
+                    )
+
+                target = wait(screen, 30).until(relocated)
+                assert (
+                    waldoctl.commander.programs.active.dry_run.commanded.stop
+                    == "completed"
+                )
+                assert Rotation.from_euler(
+                    "XYZ", target.pose[3:]
+                ).as_matrix() == pytest.approx(
+                    Rotation.from_euler("XYZ", expected[3:], degrees=True).as_matrix(),
+                    abs=1e-4,
+                )
+                video.caption(
+                    "Preview reloads the setup: the target follows; the numbers stay"
+                )
+                edit_target(target.id)
+                wait(screen).until(
+                    lambda _: scene_js(
+                        screen, "return S.byName('gizmo:aligned-frame')?.visible"
+                    )
+                )
+                assert marker_mm(screen, f"targetgroup:{target.id}") == pytest.approx(
+                    expected[:3], abs=0.1
+                )
+                assert run_in_app(lambda: ui_state.active_textarea.value) == dragged
+                video.frame()
+                video.pause(2.5)
+                video.save()
+            finally:
+                if video.pressed:
+                    video.release()
                 reset_target_edit(screen)
 
     def test_keep_vertical(self, demo_screen):

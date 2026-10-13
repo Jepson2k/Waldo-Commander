@@ -19,6 +19,7 @@ from waldo_commander.state import ui_state
 
 FIXTURE_VIEW = [0.44, 0.18, 0.16, 0.3, 0, 0.045]
 SWEEP_VIEW = [0.35, 0.56, 0.44, 0, 0.19, 0.22]
+FRAME_STORE_VIEW = [0.275, 0.46, 0.405, 0.05, 0.26, 0.245]
 
 
 def clearance_view(clearance):
@@ -87,6 +88,27 @@ def framed_program(directory):
         f"setup = load_setup('review-bench', directory={str(directory)!r})\n"
         + EDIT_PROGRAM
     )
+
+
+def frame_store_program(directory):
+    from waldoctl.setup import Frame, SetupSnapshot
+
+    from waldo_commander.setup import SetupStore
+
+    setup = SetupSnapshot(frames={"fixture": Frame((35, 240, 210, 15, 20, 35))})
+    run_in_app(lambda: SetupStore(directory).save("bench", setup))
+    source = (
+        "from waldo_commander.setup import load_setup\n"
+        f"setup = load_setup('bench', directory={str(directory)!r})\n"
+        "from parol6 import RobotClient\n"
+        "rbt = RobotClient()\n"
+        "rbt.move_j([85, -85, 175, 5, 5, 175], speed=0.5)\n"
+        "rbt.move_l(\n"
+        "    pose=[0, 280, 250, 90, 0, 90],\n"
+        "    speed=0.5,\n"
+        ")\n"
+    )
+    return source, setup
 
 
 def tilted_target_program():
