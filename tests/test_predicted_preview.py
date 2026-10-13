@@ -24,6 +24,30 @@ rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
 """
 
 
+async def _open_preview(user: User, source: str) -> waldoctl.Program:
+    from waldo_commander.components.simulation_engine import simulation
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await wait_for_urdf_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    program = waldoctl.commander.programs.active
+    textarea = ui_state.active_textarea
+    assert program is not None and textarea is not None
+    simulation._debounce_delay = 0.2
+    textarea.value = source
+    program.source = source
+    # The debounce timer needs the editor's client slot.
+    with textarea:
+        simulation.schedule_debounced_simulation(program.id)
+    assert await wait_until(lambda: program.dry_run.commanded is not None, timeout_s=30)
+    return program
+
+
 def _pair(q_rad, rows: int = 30) -> tuple[waldoctl.TickIndex, waldoctl.TickIndex]:
     """A commanded record and a predicted one that lags it."""
     t = np.linspace(0.0, 1.0, rows, dtype=np.float32)
@@ -72,30 +96,11 @@ async def test_a_predicted_pass_never_locks_the_bar_and_draws_only_against_its_p
     from waldo_commander.services.preview_segments import segments_from_record
     from waldo_commander.state import simulation_state, ui_state
 
-    await user.open("/")
-    await wait_for_app_ready()
-    await wait_for_urdf_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
     # The backend probe is learned once per session; this test is about it.
     path_visualizer._predicted_diverges.clear()
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-    program = waldoctl.commander.programs.active
-    assert program is not None and ui_state.active_textarea is not None
-    dry_run = program.dry_run
-    simulation._debounce_delay = 0.2
     simulation._physics_delay = 0.2
-
-    textarea = ui_state.active_textarea
-    textarea.value = _SCRIPT
-    program.source = _SCRIPT
-    # The editor schedules from its change handler, inside its client's
-    # slot; the debounce timer needs that client.
-    with textarea:
-        simulation.schedule_debounced_simulation(program.id)
-
-    assert await wait_until(lambda: dry_run.commanded is not None, timeout_s=30)
+    program = await _open_preview(user, _SCRIPT)
+    dry_run = program.dry_run
     assert dry_run.predicted_current is None
     assert playback._ensure_timeline() is not None
 
@@ -174,50 +179,54 @@ async def test_the_preview_is_timed_by_the_profile_settings_selects(
     user: User,
 ) -> None:
     """The preview plans with the profile the controller will run the
-    program under: choosing QUINTIC in Settings plans the open program
-    again, and its move takes as long as QUINTIC takes it, not TOPPRA."""
+    program under: choosing QUINTIC in Settings plans every open program
+    again, including the background tab."""
     from waldo_commander.components.simulation_engine import simulation
     from waldo_commander.state import ui_state
 
-    await user.open("/")
-    await wait_for_app_ready()
-    await wait_for_urdf_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
     ng_app.storage.general["motion_profile"] = "TOPPRA"
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-    program = waldoctl.commander.programs.active
-    assert program is not None and ui_state.active_textarea is not None
-    dry_run = program.dry_run
-    simulation._debounce_delay = 0.2
-
     script = """from parol6 import RobotClient
 rbt = RobotClient()
 rbt.move_j([40, -60, 200, 30, 20, 150], speed=0.5, accel=1.0)
 """
+    first = await _open_preview(user, script)
+    user.find(marker="editor-new-tab-btn").click()
+    await asyncio.sleep(0)
+    second = waldoctl.commander.programs.active
     textarea = ui_state.active_textarea
+    assert second is not None and second.id != first.id and textarea is not None
     textarea.value = script
-    program.source = script
+    second.source = script
     with textarea:
-        simulation.schedule_debounced_simulation(program.id)
-    assert await wait_until(lambda: dry_run.commanded is not None, timeout_s=30)
+        simulation.schedule_debounced_simulation(second.id)
+    assert await wait_until(lambda: second.dry_run.commanded is not None, timeout_s=30)
 
-    def planned_s() -> float:
-        record = dry_run.commanded
+    def planned_s(program: waldoctl.Program) -> float:
+        record = program.dry_run.commanded
         assert record is not None
         return record.duration_s
 
-    toppra = planned_s()
+    programs = (first, second)
+    toppra = [planned_s(p) for p in programs]
     user.find(marker="tab-settings").click()
     await asyncio.sleep(0)
     profile_select = next(iter(user.find(marker="select-motion-profile").elements))
     try:
         profile_select.set_value("QUINTIC")
-        assert await wait_until(lambda: planned_s() > toppra + 0.3, timeout_s=30), (
-            f"the preview still plans {planned_s():.2f} s, as TOPPRA does "
-            f"({toppra:.2f} s), after QUINTIC was selected"
+        assert await wait_until(
+            lambda: all(
+                planned_s(p) > before + 0.3 for p, before in zip(programs, toppra)
+            ),
+            timeout_s=30,
+        ), (
+            f"both tabs must re-plan after QUINTIC was selected: "
+            f"{[planned_s(p) for p in programs]} vs TOPPRA {toppra}"
         )
     finally:
         profile_select.set_value("TOPPRA")
-        assert await wait_until(lambda: abs(planned_s() - toppra) < 1e-6, timeout_s=30)
+        assert await wait_until(
+            lambda: all(
+                abs(planned_s(p) - before) < 1e-6 for p, before in zip(programs, toppra)
+            ),
+            timeout_s=30,
+        )

@@ -41,6 +41,7 @@ import waldoctl
 from waldoctl import CommandNote, LinearMotion, TickIndex
 from waldoctl.skills import UnresolvedPreview
 
+from waldo_commander.services.motion_profile import stored_motion_profile
 from waldo_commander.services.preview_segments import (
     index_boundaries,
     segments_from_record,
@@ -388,6 +389,13 @@ def _run_simulation_isolated(
             from dataclasses import replace
             from waldoctl import shape_from_wire
 
+            def seed_command(method: str, *args: Any) -> None:
+                if getattr(preview._client, method)(*args) != 1:
+                    raise ValueError(f"Preview {method} was not confirmed")
+                # The live run never sends this, so it must not take the
+                # ordinal of the program's first command.
+                preview._attribute_commands(0, method=method)
+
             if initial_tool is not None:
                 first_note = len(preview.notes)
                 first_selection = len(preview.tool_selection_collector)
@@ -402,13 +410,7 @@ def _run_simulation_isolated(
                 for selection in preview.tool_selection_collector[first_selection:]:
                     selection.line_number = 0
             if initial_profile is not None:
-                if preview._client.select_profile(initial_profile) != 1:
-                    raise ValueError(
-                        f"Preview refused the motion profile {initial_profile}"
-                    )
-                # The live run never sends this, so it must not take the
-                # ordinal of the program's first command.
-                preview._attribute_commands(0, method="select_profile")
+                seed_command("select_profile", initial_profile)
             shapes = [shape_from_wire(*t) for t in shapes_wire or []]
             if not shapes:
                 return
@@ -429,15 +431,7 @@ def _run_simulation_isolated(
                         ),
                     )
                 bound.append(shape)
-            if preview._client.set_shapes(bound) != 1:
-                raise ValueError("Preview world application was not confirmed")
-            # The live run never sends this, so it must not take the ordinal
-            # of the program's first command.
-            preview._attribute_commands(0, method="set_shapes")
-
-        from waldo_commander.profiles import get_robot
-
-        _preview_robot = get_robot(backend_package)
+            seed_command("set_shapes", bound)
 
         class LocalPathPreviewClient(PathPreviewClient):
             def __new__(cls, *args: Any, **kwargs: Any) -> Any:
@@ -916,13 +910,9 @@ class PathVisualizer:
         # planned-motion gate: an unhomed robot's preview refuses planned
         # moves until the script homes.
         initial_homed = robot_state.homed
-        # The profile Settings selects on the controller, at startup and on
-        # every change: the run is timed by it, so the preview is too.
         # Asking the controller instead would hold its request lock, which
         # a stop waits on.
-        initial_profile = ng_app.storage.general.get("motion_profile")
-        if initial_profile not in robot.motion_profiles:
-            initial_profile = None
+        initial_profile = stored_motion_profile(robot)
 
         from waldo_commander.setup import SetupStore
 
@@ -995,10 +985,7 @@ class PathVisualizer:
                 )
 
             sim_args = self._simulation_args(
-                program_text,
-                ui_state.active_robot,
-                revision,
-                program_dir=program_dir,
+                program_text, ui_state.active_robot, revision, program_dir=program_dir
             )
             if sim_args is None:
                 simulation_state.notify_changed()

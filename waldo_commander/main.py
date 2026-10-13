@@ -79,6 +79,7 @@ from waldo_commander.services.control_lease import (
     restore_control_mode,
 )
 from waldo_commander.services.motion_guard import motion_guard
+from waldo_commander.services.motion_profile import stored_motion_profile
 from waldo_commander.services.path_visualizer import warm_process_pool
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene import (
@@ -130,6 +131,7 @@ class _PageState:
     warning_notification: ui.notification | None = None
     ping_timer: ui.timer | None = None
     last_ping_ok: bool = False
+    motion_profile_restored: bool = False
 
 
 _page_state: _PageState | None = None
@@ -456,6 +458,19 @@ async def _switch_to_hardware() -> None:
     waldoctl.commander.status.simulator_active = False
 
 
+async def _restore_motion_profile() -> bool:
+    profile = stored_motion_profile(ui_state.active_robot)
+    try:
+        if await client.select_profile(profile) != 1:
+            logger.warning("select_profile(%s) was not confirmed", profile)
+            return False
+    except Exception as exc:
+        logger.warning("select_profile(%s) failed: %s", profile, exc)
+        return False
+    logger.debug("Restored motion profile to %s", profile)
+    return True
+
+
 async def check_ping() -> None:
     """Check connectivity via PING (1Hz) and arbitrate multi-tab ownership.
 
@@ -504,12 +519,23 @@ async def check_ping() -> None:
                 if scene_handle is not None:
                     asyncio.create_task(scene_handle.refresh_from_backend())
                 asyncio.create_task(refresh_applied_tcp(client))
+        if result is None or (new_ok and not ps.last_ping_ok):
+            ps.motion_profile_restored = False
+        # A restarted controller is back on its default profile. Not mid-run:
+        # the program may have selected its own.
+        if (
+            result is not None
+            and not ps.motion_profile_restored
+            and not is_any_program_running()
+        ):
+            ps.motion_profile_restored = await _restore_motion_profile()
         ps.last_ping_ok = new_ok
     except Exception as e:
         logger.debug("ping failed: %s", e)
         if ps.last_ping_ok:
             logger.debug("ping: connected True → False (exception)")
         ps.last_ping_ok = False
+        ps.motion_profile_restored = False
 
     # A ping that was in flight when shutdown began can resume here after
     # _clear_commander has run; bail before touching the commander surface.
@@ -1283,12 +1309,7 @@ def _register_handlers() -> None:
 
     async def _restore_settings() -> None:
         """Restore persisted motion profile and tool selection."""
-        try:
-            saved_profile = ng_app.storage.general.get("motion_profile", "TOPPRA")
-            await client.select_profile(saved_profile)
-            logger.debug("startup: set motion profile to %s", saved_profile)
-        except Exception as e:
-            logger.warning("startup: select_profile failed: %s", e)
+        await _restore_motion_profile()
 
         try:
             saved_tool = ng_app.storage.general.get("selected_tool", "")

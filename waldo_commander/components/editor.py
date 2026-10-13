@@ -1461,14 +1461,35 @@ class EditorPanel(FileOperationsMixin):
         background = [tab_id for tab_id in stale if tab_id != programs.active_id]
         if background:
             background_tasks.create(
-                self._resimulate(background), name="setup-resimulate"
+                self._resimulate(background, client), name="setup-resimulate"
+            )
+
+    def replan_all(self) -> None:
+        """Re-plan every open program, as after a motion profile change."""
+        client = self._client
+        if client is None or is_any_program_running():
+            return
+        programs = waldoctl.commander.programs
+        with client:
+            simulation.schedule_debounced_simulation(tab_id=programs.active_id)
+        background = [p for p in programs.items if p.id != programs.active_id]
+        for program in background:
+            # The source is unchanged, but a plan for it is now stale.
+            program.dry_run.revision += 1
+        if background:
+            background_tasks.create(
+                self._resimulate([p.id for p in background], client),
+                name="replan-all",
             )
 
     @staticmethod
-    async def _resimulate(tab_ids: list[str]) -> None:
+    async def _resimulate(tab_ids: list[str], client: Client) -> None:
         for tab_id in tab_ids:
+            if not client.has_socket_connection or is_any_program_running():
+                return
             if waldoctl.commander.programs.get(tab_id) is not None:
-                await simulation.run_simulation(tab_id)
+                with client:
+                    await simulation.run_simulation(tab_id)
 
     def _on_tab_content_change(self, tab: Program, new_value: str) -> None:
         """Handle content change for a tab."""

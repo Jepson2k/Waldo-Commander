@@ -35,6 +35,7 @@ from waldo_commander.services.control_lease import (
     require_browser_control,
 )
 from waldo_commander.services.motion_guard import motion_guard
+from waldo_commander.services.motion_profile import stored_motion_profile
 from waldo_commander.services.motion_recorder import JOG_BLEND_R_MAX, jog_blend_r
 from waldo_commander.services.tcp_calibration import ToolChanged, read_applied_tcp
 from waldo_commander.state import automation_state, simulation_state, ui_state
@@ -180,17 +181,13 @@ class SettingsContent:
 
     def _load_preferences(self) -> dict:
         """Load persisted preferences from storage."""
-        valid_profiles = ui_state.active_robot.motion_profiles
-        stored_profile = ng_app.storage.general.get("motion_profile", "TOPPRA")
-        if stored_profile not in valid_profiles and valid_profiles:
-            stored_profile = valid_profiles[0]
         return {
             "com_port": ng_app.storage.general.get("com_port", ""),
             "show_route": ng_app.storage.general.get("show_route", True),
             "envelope_mode": EnvelopeMode(
                 ng_app.storage.general.get("envelope_mode", "auto")
             ),
-            "motion_profile": stored_profile,
+            "motion_profile": stored_motion_profile(ui_state.active_robot),
             "jog_blend_r": jog_blend_r(),
             "translation_frame": ng_app.storage.general.get("translation_frame", "WRF"),
             "jog_invert_x": bool(ng_app.storage.general.get("jog_invert_x", False)),
@@ -915,15 +912,21 @@ class SettingsContent:
     def _build_motion_profile(self, prefs: dict) -> None:
         async def _on_motion_profile_change(e):
             profile = e.value
+            # Also where reverting the select after a refusal lands.
+            if profile == stored_motion_profile(ui_state.active_robot):
+                return
             try:
-                await self.client.select_profile(profile)
+                if await self.client.select_profile(profile) != 1:
+                    raise ValueError("Profile change was not confirmed")
             except Exception as exc:
                 logger.warning("select_profile(%s) failed: %s", profile, exc)
-                ui.notify(f"Profile change failed: {exc}", color="negative")
+                self._notify(self._page, f"Profile change failed: {exc}", "negative")
+                if self._page.has_socket_connection:
+                    e.sender.set_value(stored_motion_profile(ui_state.active_robot))
                 return
             ng_app.storage.general["motion_profile"] = profile
-            # The preview is timed by the profile the run will use.
-            simulation.schedule_debounced_simulation()
+            if self._page.has_socket_connection:
+                ui_state.editor_panel.replan_all()
 
         motion_profile_options = {}
         for p in ui_state.active_robot.motion_profiles:
