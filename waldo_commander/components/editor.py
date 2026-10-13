@@ -270,24 +270,36 @@ class EditorPanel(FileOperationsMixin):
         *,
         move_type: str | None = None,
         joint_angles_deg: list[float] | None = None,
+        storage_frame: str | None = None,
     ) -> bool:
         """``sync_code_from_target`` for the target on *line*."""
         textarea = ui_state.active_textarea
         if textarea is None:
             return False
         try:
-            updated = replace_target(
+            updated, position = replace_target(
                 str(textarea.value or ""),
                 line,
                 ui_state.active_robot.joints.count,
                 pose=[v * 1000 if i < 3 else v for i, v in enumerate(pose)],
                 joints=joint_angles_deg,
                 as_joints=move_type == "joints",
+                storage_frame=storage_frame,
             )
         except ValueError as error:
-            ui.notify(str(error), color="warning")
+            logger.warning("Target edit unavailable: %s", error)
             return False
         textarea.commit_scene_value(updated)
+        view = ui_state.urdf_scene
+        if (
+            view is not None
+            and view._editing_unified_target
+            and view._edit_line == line
+        ):
+            view._edit_line = position
+            view._edit_source = updated
+        if view is not None:
+            view._refresh_object_inspector()
         return True
 
     _RETEACHABLE_MOVE_TYPES = ("joints", "cartesian", "pose")

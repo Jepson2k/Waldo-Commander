@@ -1,7 +1,7 @@
 """STL import in the scene panel."""
 
 from pathlib import Path
-from uuid import uuid4
+import hashlib
 
 from nicegui import events, run, ui
 from waldoctl.shapes import Box
@@ -128,7 +128,6 @@ class MeshImport:
         data, bounds, generation = self.data, self.bounds, self._upload_generation
         self.busy = True
         self.refresh()
-        path = None
         try:
             view = self.view
             revision = view.object_history.context()
@@ -148,10 +147,11 @@ class MeshImport:
                 z=size[2],
                 pose=(x, y, size[2] / 2, 0.0, 0.0, 0.0),
             )
-            asset = f"assets/{uuid4().hex}.stl"
+            asset = f"assets/{hashlib.sha256(data).hexdigest()[:20]}.stl"
             path = world_files.library_dir() / asset
             await run.io_bound(path.parent.mkdir, parents=True, exist_ok=True)
-            await run.io_bound(path.write_bytes, data)
+            if not path.exists():
+                await run.io_bound(path.write_bytes, data)
             if self.card.is_deleted or generation != self._upload_generation:
                 return
             fixture = FixtureMesh(asset, scale, pose, name, (proxy_name,), bounds)
@@ -162,15 +162,12 @@ class MeshImport:
                 meshes=(*view.fixture_meshes, fixture),
             ):
                 raise ValueError(view.object_history.feedback)
-            path = None
             view._select_objects([fixture.key])
             self.close()
         except (ValueError, OSError) as error:
             if not self.card.is_deleted:
                 self.feedback.set_text(str(error))
         finally:
-            if path is not None:
-                await run.io_bound(path.unlink, missing_ok=True)
             self.busy = False
             if not self.card.is_deleted:
                 self.refresh()

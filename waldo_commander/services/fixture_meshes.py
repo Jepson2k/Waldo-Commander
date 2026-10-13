@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import math
 import re
+import logging
+import json
 from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +20,59 @@ STORAGE_KEY = "scene_fixture_meshes"
 MAX_STL_BYTES = 10 * 1024 * 1024
 MAX_STL_TRIANGLES = 100_000
 UNITS = {"mm": 0.001, "cm": 0.01, "m": 1.0, "in": 0.0254}
+logger = logging.getLogger(__name__)
+_assets_swept = False
+
+
+def sweep_unused_assets() -> None:
+    """Once per startup, collect all references before removing orphaned STLs."""
+    from nicegui import app
+    from nicegui.persistence.file_persistent_dict import FilePersistentDict
+
+    from .world_files import entry_asset_references, library_dir, list_entries
+
+    global _assets_swept
+    if _assets_swept:
+        return
+    _assets_swept = True
+    try:
+        root = library_dir()
+        if not root.exists():
+            return
+        storage = app.storage.general
+        manifests = [storage.get(STORAGE_KEY, [])]
+        if isinstance(storage, FilePersistentDict) and storage.filepath.exists():
+            saved = json.loads(storage.filepath.read_text(encoding=storage.encoding))
+            if not isinstance(saved, dict):
+                raise ValueError("Saved scene storage must be a dictionary")
+            manifests.append(saved.get(STORAGE_KEY, []))
+        referenced = set().union(*(asset_references(data) for data in manifests))
+        for name in list_entries():
+            referenced.update(entry_asset_references(name))
+        assets = root / "assets"
+        if assets.is_symlink():
+            raise ValueError("The assets directory is a symlink")
+        candidates = (
+            [
+                path
+                for path in assets.iterdir()
+                if path.suffix.lower() == ".stl"
+                and not path.is_symlink()
+                and path.is_file()
+                and path.resolve() not in referenced
+            ]
+            if assets.exists()
+            else []
+        )
+    except (OSError, ValueError, TypeError, KeyError, OverflowError) as error:
+        logger.warning("Skipping unused STL sweep: %s", error)
+        return
+    for path in candidates:
+        try:
+            path.unlink()
+            logger.info("Deleted unused STL asset %s", path)
+        except OSError as error:
+            logger.warning("Cannot delete unused STL asset %s: %s", path, error)
 
 
 def stl_bounds(data: bytes) -> tuple[tuple[float, ...], tuple[float, ...]]:
@@ -84,6 +139,17 @@ def asset_path(asset: str) -> Path:
     if Path(asset).is_absolute() or not path.is_relative_to(root / "assets"):
         raise ValueError("Fixture assets must be inside the library's assets folder")
     return path
+
+
+def asset_references(data: object) -> set[Path]:
+    if not isinstance(data, (list, tuple)):
+        raise ValueError("meshes must be a list")
+    result = set()
+    for item in data:
+        if not isinstance(item, dict) or not isinstance(item.get("asset"), str):
+            raise ValueError("Each fixture must name its asset")
+        result.add(asset_path(item["asset"]))
+    return result
 
 
 @dataclass(frozen=True)

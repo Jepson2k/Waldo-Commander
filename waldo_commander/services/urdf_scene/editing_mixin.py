@@ -124,8 +124,7 @@ class EditingMixin(ShapeEditingMixin):
         self._edit_target_first: bool = False
         # The pose (m, rad) the edit last wrote into the program.
         self._edit_start_pose: tuple[float, ...] | None = None
-        # The line the edit writes, and the target marker it moves: the
-        # target's id changes as the preview runs again, its line does not.
+        # The rewrite remaps this source position when it inserts imports.
         self._edit_line: int | None = None
         self._edit_marker: Any | None = None
         # The source as the edit last left it: a change from anywhere else
@@ -344,7 +343,11 @@ class EditingMixin(ShapeEditingMixin):
                     # for this source disables an item here.
                     program = waldoctl.commander.programs.active
                     current = program is not None and preview_is_current(program)
-                    reason = self._target_preview_reason(tid) if current else None
+                    reason = (
+                        self._target_preview_reason(tid)
+                        if current
+                        else ui_state.editor_panel.target_edit_reason(tid)
+                    )
                     item = ui.menu_item("Edit Target...", on_click=make_edit()).mark(
                         "scene-edit-target"
                     )
@@ -508,17 +511,39 @@ class EditingMixin(ShapeEditingMixin):
                 self._push_tcp_pose(force=True)
             self._push_interaction()
 
-        def item(text, icon, checked, callback, mark):
+        def store(frame: str) -> None:
+            if (
+                not current()
+                or not self._editing_unified_target
+                or self._edit_line is None
+            ):
+                return
+            if frame == stored:
+                return
+            pose = self._get_editing_tcp_pose()
+            if pose is None:
+                return
+            self.scene.gestures.bump()
+            if ui_state.editor_panel.sync_code_at_line(
+                self._edit_line, pose, storage_frame=frame
+            ):
+                self._push_interaction()
+
+        def item(text, icon, checked, callback, mark, *, radio=False, tooltip=None):
             with (
                 ui.menu_item(on_click=callback)
                 .mark(mark)
-                .props(f"role=menuitemcheckbox aria-checked={str(checked).lower()}")
-            ):
+                .props(
+                    f"role={'menuitemradio' if radio else 'menuitemcheckbox'} aria-checked={str(checked).lower()}"
+                )
+            ) as entry:
                 with ui.item_section().props("avatar"):
                     ui.icon(icon)
                 ui.item_section(text)
                 with ui.item_section().props("side"):
                     ui.icon("check").set_visibility(checked)
+            if tooltip:
+                entry.tooltip(tooltip)
 
         with self.context_menu:
             ui.item("Align to").classes("text-wc-text-muted text-xs").props("dense")
@@ -538,6 +563,38 @@ class EditingMixin(ShapeEditingMixin):
                     f"scene-gizmo-align-{key}",
                 )
             if self._editing_unified_target:
+                try:
+                    binding = target_binding(
+                        self._program_text() or "",
+                        self._edit_line or 0,
+                        len(self.joint_names),
+                    )
+                except ValueError as error:
+                    ui.item(str(error)).classes("text-wc-text-muted text-xs")
+                else:
+                    stored = (
+                        f"frame:{binding.storage.name}" if binding.storage else "world"
+                    )
+                    ui.separator()
+                    ui.item("Store in").classes("text-wc-text-muted text-xs").props(
+                        "dense"
+                    )
+                    for key, name, icon in [
+                        ("world", "World", "public"),
+                        *(
+                            (key, frame["name"], "place")
+                            for key, frame in self._gizmo_frames.items()
+                        ),
+                    ]:
+                        item(
+                            name,
+                            icon,
+                            key == stored,
+                            lambda f=key: store(f),
+                            f"scene-target-store-{key}",
+                            radio=True,
+                            tooltip=f"Keep this world pose; write the line relative to {name}.",
+                        )
                 ui.separator()
                 item(
                     "Keep tool vertical",
@@ -573,7 +630,7 @@ class EditingMixin(ShapeEditingMixin):
             try:
                 endpoint = self._target_endpoint(edit_target_id)
             except ValueError as error:
-                ui.notify(str(error), color="warning")
+                logger.debug("Target edit unavailable: %s", error)
                 return
 
         solver = self._ensure_ik_solver()
@@ -680,11 +737,14 @@ class EditingMixin(ShapeEditingMixin):
             self._push_tcp_pose(force=True)
             return
         written = self._get_editing_tcp_pose()
-        if written is None or not ui_state.editor_panel.sync_code_at_line(
+        if written is None:
+            return
+        if not ui_state.editor_panel.sync_code_at_line(
             self._edit_line,
             written,
             joint_angles_deg=[math.degrees(q) for q in self._editing_angles],
         ):
+            self.cancel_target_edit()
             return
         self._edit_start_pose = pose
         self._edit_source = self._program_text()
@@ -774,7 +834,7 @@ class EditingMixin(ShapeEditingMixin):
         program = waldoctl.commander.programs.active
         assert program is not None
         binding = target_binding(program.source, line, len(self.joint_names))
-        values = [float(ast.literal_eval(e)) for e in binding.vector.elts]
+        values = binding.world_values()
         if binding.kind == "joints":
             return [math.radians(v) for v in values], None
         pose = [v / 1000 for v in values[:3]] + values[3:6]

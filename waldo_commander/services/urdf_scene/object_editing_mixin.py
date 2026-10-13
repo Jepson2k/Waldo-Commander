@@ -320,9 +320,7 @@ class ObjectEditingMixin(MeshEditingMixin):
             # The wrapper keeps the reason accessible while Undo is disabled.
             with ui.element("span").classes("inline-flex"):
                 undo = (
-                    ui.button(
-                        icon="undo", on_click=lambda: self._restore_objects(False)
-                    )
+                    ui.button(icon="undo", on_click=self.undo_edit)
                     .props(flat)
                     .mark("object-undo")
                 )
@@ -331,9 +329,9 @@ class ObjectEditingMixin(MeshEditingMixin):
                 )
             self._history_buttons = (
                 undo,
-                ui.button(icon="redo", on_click=lambda: self._restore_objects(True))
+                ui.button(icon="redo", on_click=lambda: self.undo_edit(redo=True))
                 .props(flat)
-                .tooltip("Redo object edit · Ctrl+Shift+Z")
+                .tooltip("Redo scene edit · Ctrl+Shift+Z")
                 .mark("object-redo"),
             )
         with panel.body:
@@ -405,12 +403,19 @@ class ObjectEditingMixin(MeshEditingMixin):
         self._fixture_feedback.set_text(self._fixture_restore_error)
         self._fixture_feedback.set_visibility(bool(self._fixture_restore_error))
         undo, redo = self._history_buttons
-        undo.set_enabled(bool(history.undo_stack) and not history.busy)
-        redo.set_enabled(bool(history.redo_stack) and not history.busy)
+        editor = ui_state.active_textarea
+        program_undo = editor is not None and editor.can_undo_scene
+        program_redo = editor is not None and editor.can_redo_scene
+        undo.set_enabled(
+            (bool(history.undo_stack) or program_undo) and not history.busy
+        )
+        redo.set_enabled(
+            (bool(history.redo_stack) or program_redo) and not history.busy
+        )
         self._undo_tooltip.set_text(
             "Undo history cleared — the world or program changed elsewhere"
-            if history.invalidated
-            else "Undo object edit · Ctrl+Z"
+            if history.invalidated and not program_undo
+            else "Undo scene edit · Ctrl+Z"
         )
         self._refresh_object_tree(handle, panel)
         if any(isinstance(s, FixtureMesh) for _, s in selected):
@@ -1197,6 +1202,7 @@ class ObjectEditingMixin(MeshEditingMixin):
         textarea = ui_state.active_textarea
         if textarea is not None:
             textarea.redo() if redo else textarea.undo()
+        self._refresh_object_inspector()
 
     async def _restore_objects(self, redo):
         previous = {s.name for s in self._shape_handle().shapes}

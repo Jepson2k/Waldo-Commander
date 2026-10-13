@@ -28,6 +28,7 @@ from waldoctl.commands import CommandKind, command_table
 from waldoctl.skills import UnresolvedPreview
 
 from waldo_commander.services.preview_segments import targets_from_record
+from waldo_commander.services.scene_source import frame_pose_expression
 from waldo_commander.state import ShapeChange, ToolAction, ToolSelection
 
 logger = logging.getLogger(__name__)
@@ -422,7 +423,7 @@ class PathPreviewClient:
 
     def _motion_source(self, line_no: int) -> tuple[str, bool]:
         """The motion call at *line_no* as written, and whether its first
-        argument is a literal coordinate list."""
+        argument has literal coordinates, including a frame-relative Pose."""
         if self._motion_lines is None:
             self._motion_lines = self._index_motion_calls()
         known = self._motion_lines.get(line_no)
@@ -458,9 +459,10 @@ class PathPreviewClient:
                 if node.keywords
                 else None
             )
+            frame_pose = frame_pose_expression(first)
             entry = (
                 "".join(lines[node.lineno - 1 : end]).strip(),
-                _literal_list(first),
+                _literal_list(frame_pose[0] if frame_pose is not None else first),
             )
             for line in range(node.lineno, end + 1):
                 if line in out:

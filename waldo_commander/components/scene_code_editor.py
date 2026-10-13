@@ -48,6 +48,14 @@ class SceneCodeEditor(
         since in some other way."""
         self._step(self._done, self._undone, back=True)
 
+    @property
+    def can_undo_scene(self) -> bool:
+        return bool(self._done and self._done[-1][1] == str(self.value or ""))
+
+    @property
+    def can_redo_scene(self) -> bool:
+        return bool(self._undone and self._undone[-1][0] == str(self.value or ""))
+
     def redo(self) -> None:
         """Make the scene's last undone edit again."""
         self._step(self._undone, self._done, back=False)

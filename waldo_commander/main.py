@@ -1316,6 +1316,9 @@ def _register_handlers() -> None:
             _quiet_shutdown_exception_handler
         )
         try:
+            from waldo_commander.services.fixture_meshes import sweep_unused_assets
+
+            sweep_unused_assets()
             # Pre-warm process pool workers with RTB imports (runs in background)
             backend_pkg = ui_state.active_robot.backend_package
             asyncio.create_task(warm_process_pool(backend_pkg))

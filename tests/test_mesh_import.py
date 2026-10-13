@@ -1,6 +1,7 @@
 """Fixture authoring through the upload UI and the real simulator world."""
 
 import asyncio
+import hashlib
 
 import pytest
 import waldoctl
@@ -27,6 +28,76 @@ async def upload(user, name, data):
         [ui.upload.SmallFileUpload(name=name, content_type="model/stl", _data=data)]
     )
     await asyncio.sleep(0)
+
+
+def test_startup_asset_sweep_requires_complete_references(
+    tmp_path, monkeypatch, caplog
+):
+    from nicegui.persistence.file_persistent_dict import FilePersistentDict
+
+    from waldo_commander.services import fixture_meshes
+
+    library = tmp_path / "worlds"
+    assets = library / "assets"
+    assets.mkdir(parents=True)
+    monkeypatch.setattr(world_files, "library_dir", lambda: library)
+    storage = FilePersistentDict(tmp_path / "general.json", encoding="utf-8")
+    monkeypatch.setattr(app.storage, "_general", storage)
+    monkeypatch.setattr(fixture_meshes, "_assets_swept", False)
+    scene_asset, workcell_asset, orphan = [
+        fixture_stl(assets / f"{name}.stl") for name in ("scene", "workcell", "orphan")
+    ]
+    nested = assets / "nested"
+    nested.mkdir()
+    nested_asset = fixture_stl(nested / "unused.stl")
+    unrelated = assets / "notes.txt"
+    unrelated.write_text("Keep non-STL files")
+    link = assets / "linked.stl"
+    try:
+        link.symlink_to(orphan)
+    except (OSError, NotImplementedError):
+        link = None
+
+    def manifest(path, name):
+        return dict(
+            asset=f"assets/{path.name}",
+            scale=0.001,
+            pose=[0, 0, 0, 0, 0, 0],
+            name=name,
+            proxy_names=[],
+        )
+
+    storage[STORAGE_KEY] = [
+        manifest(scene_asset, "Scene"),
+        manifest(assets / "missing.stl", "Unavailable"),
+    ]
+    world_files.save_entry(
+        "bench",
+        ShapeWorld(),
+        meshes=fixture_meshes.meshes_from_data([manifest(workcell_asset, "Workcell")]),
+    )
+    broken = library / "broken.py"
+    broken.write_text("world = (")
+    with caplog.at_level("INFO", logger=fixture_meshes.__name__):
+        fixture_meshes.sweep_unused_assets()
+        assert orphan.exists() and scene_asset.exists() and workcell_asset.exists()
+        assert "Skipping unused STL sweep" in caplog.text
+        broken.unlink()
+        monkeypatch.setattr(fixture_meshes, "_assets_swept", False)
+        fixture_meshes.sweep_unused_assets()
+        assert not orphan.exists()
+        assert scene_asset.exists() and workcell_asset.exists()
+        assert nested_asset.exists() and unrelated.exists()
+        assert link is None or link.is_symlink()
+        assert f"Deleted unused STL asset {orphan}" in caplog.text
+        fixture_stl(orphan)
+        fixture_meshes.sweep_unused_assets()
+        assert orphan.exists(), "Session deletions must keep their assets for undo"
+        for corrupt in ("[", '{"scene_fixture_meshes": "unreadable"}'):
+            storage.filepath.write_text(corrupt)
+            monkeypatch.setattr(fixture_meshes, "_assets_swept", False)
+            fixture_meshes.sweep_unused_assets()
+            assert orphan.exists() and scene_asset.exists() and workcell_asset.exists()
 
 
 @pytest.mark.integration
@@ -241,6 +312,19 @@ async def test_fixture_upload_group_edit_undo_and_workcell_roundtrip(
     assert handle.shapes[0].pose == pytest.approx(proxy.pose)
     await user.should_not_see(marker="mesh-no-keepout")
 
+    asset = library / fixture.asset
+    modified = asset.stat().st_mtime_ns
+    user.find(marker="scene-import-mesh").click()
+    await upload(user, "Same-bytes.stl", data)
+    await user.should_see("12 × 8 × 4 mm")
+    user.find(marker="mesh-add").click()
+    await confirmed(view, lambda: len(view.fixture_meshes) == 2)
+    assert {m.asset for m in view.fixture_meshes} == {
+        f"assets/{hashlib.sha256(data).hexdigest()[:20]}.stl"
+    }
+    assert list((library / "assets").iterdir()) == [asset]
+    assert asset.stat().st_mtime_ns == modified
+
 
 @pytest.mark.integration
 async def test_fixture_identity_proxy_deletion_and_partial_asset_recovery(
@@ -257,7 +341,9 @@ async def test_fixture_identity_proxy_deletion_and_partial_asset_recovery(
     await confirmed(view)
     for name in ("Fixture", "Other"):
         user.find(marker="scene-import-mesh").click()
-        await upload(user, f"{name}.stl", data)
+        await upload(
+            user, f"{name}.stl", data if name == "Fixture" else b"Other" + data[5:]
+        )
         await user.should_see("12 × 8 × 4 mm")
         user.find(marker="mesh-add").click()
         await confirmed(view, lambda: view._mesh_import is None)

@@ -27,7 +27,11 @@ from waldoctl.world import world_from_dict, world_to_dict
 
 from waldo_commander.constants import default_program_dir
 from waldo_commander.services.python_source import literal_argument
-from waldo_commander.services.fixture_meshes import FixtureMesh, meshes_from_data
+from waldo_commander.services.fixture_meshes import (
+    FixtureMesh,
+    meshes_from_data,
+    asset_references,
+)
 from waldo_commander.setup import file_revision
 
 logger = logging.getLogger(__name__)
@@ -139,10 +143,25 @@ def read_literal_entry(name: str) -> tuple[ShapeWorld, str]:
 
 def read_authoring_entry(name: str) -> tuple[ShapeWorld, tuple[FixtureMesh, ...], str]:
     """Read controller geometry and optional Commander fixture visuals separately."""
+    world, data, revision = _read_authoring_data(name)
+    try:
+        meshes = meshes_from_data(data)
+    except (TypeError, KeyError, ValueError, OverflowError) as error:
+        raise ValueError(f"{name}: cannot read fixture meshes: {error}") from error
+    return world, meshes, revision
+
+
+def entry_asset_references(name: str) -> set[Path]:
+    _, data, _ = _read_authoring_data(name)
+    return asset_references(data)
+
+
+def _read_authoring_data(name: str) -> tuple[ShapeWorld, object, str]:
     data = _entry_path(name).read_bytes()
-    meshes = ()
+    meshes = []
     try:
         tree = ast.parse(data)
+        assigned: set[str] = set()
         for node in tree.body:
             if (
                 isinstance(node, ast.Expr)
@@ -165,8 +184,11 @@ def read_authoring_entry(name: str) -> tuple[ShapeWorld, tuple[FixtureMesh, ...]
                 and isinstance(node.targets[0], ast.Name)
                 and node.targets[0].id in ("world", "meshes")
             ):
+                if node.targets[0].id in assigned:
+                    raise ValueError("World and meshes require unique assignments")
+                assigned.add(node.targets[0].id)
                 if node.targets[0].id == "meshes":
-                    meshes = meshes_from_data(ast.literal_eval(node.value))
+                    meshes = ast.literal_eval(node.value)
                 continue
             raise ValueError("The module contains executable or computed definitions")
         payload = literal_argument(tree, "world", "world_from_dict")

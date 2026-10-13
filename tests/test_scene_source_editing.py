@@ -15,6 +15,169 @@ from waldo_commander.state import ui_state
 
 
 @pytest.mark.integration
+async def test_target_storage_frame_rewrite_edit_undo_and_setup_relocation(
+    user: User, tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from waldoctl.setup import Frame, Pose, SetupSnapshot
+
+    from waldo_commander.setup import SetupStore
+
+    setup = SetupSnapshot(frames={"fixture": Frame((100, 200, 30, 15, 20, 35))})
+    store = SetupStore(tmp_path)
+    store.save("bench", setup)
+    urdf = await _open(user)
+    textarea = ui_state.active_textarea
+    program = waldoctl.commander.programs.active
+    world = Pose((0, 280, 250, 90, 0, 90))
+    source = (
+        "from waldo_commander.setup import load_setup\n"
+        f"cell = load_setup('bench', directory={str(tmp_path)!r})\n"
+        "from parol6 import RobotClient\nrbt = RobotClient()\n"
+        "rbt.move_j([85, -85, 175, 5, 5, 175], speed=0.5)\n"
+        "rbt.move_l(pose=[0, 280, 250, 90, 0, 90], speed=0.5)  # approach\n"
+    )
+    textarea.value = source
+
+    async def preview():
+        await simulation.run_simulation()
+        assert await wait_until(
+            lambda: program.dry_run.commanded_revision == program.dry_run.revision, 5
+        )
+        assert program.dry_run.commanded.stop == "completed"
+        motions = ast.parse(textarea.value).body[-2:]
+        assert [t.line_number for t in program.dry_run.targets] == [
+            motion.lineno for motion in motions
+        ]
+        return program.dry_run.targets[-1]
+
+    async def edit():
+        target = await preview()
+        right_click(user, urdf.scene, [f"target:{target.id}"])
+        user.find(marker="scene-edit-target").click()
+        assert urdf._editing_unified_target
+        assert urdf._edit_line == target.line_number
+
+    def storage_checked(frame):
+        right_click(user, urdf.scene, ["gizmo:tcp"])
+        for key in ("world", "frame:fixture"):
+            entry = user.find(marker=f"scene-target-store-{key}").elements.pop()
+            assert entry._props["aria-checked"] == str(key == frame).lower()
+            assert entry._props["role"] == "menuitemradio"
+
+    def coordinates():
+        call = ast.parse(textarea.value).body[-1].value
+        argument = next(k.value for k in call.keywords if k.arg == "pose")
+        if isinstance(argument, ast.List):
+            return ast.literal_eval(argument)
+        resolve = argument.func.value
+        assert resolve.func.value.id == "cell"
+        pose = resolve.args[0]
+        assert pose.func.id == "Pose" and ast.literal_eval(pose.args[1]) == "fixture"
+        return ast.literal_eval(pose.args[0])
+
+    await edit()
+    marker = urdf._edit_marker
+    position = (marker.x, marker.y, marker.z)
+    shown = urdf._requested_edit_pose
+    right_click(user, urdf.scene, ["gizmo:tcp"])
+    user.find(marker="scene-target-store-frame:fixture").click()
+    stored = textarea.value
+    expected = setup.relative_pose(world, "fixture").as_list()
+    assert coordinates() == pytest.approx(expected, abs=0.00051)
+    assert stored.count("from waldoctl.setup import Pose") == 1
+    assert stored.startswith(
+        "from waldoctl.setup import Pose\nfrom waldo_commander.setup"
+    )
+    assert stored.endswith("speed=0.5)  # approach\n")
+    assert (marker.x, marker.y, marker.z) == pytest.approx(position)
+    assert urdf._requested_edit_pose == shown
+    assert urdf.scene.interaction["alignment"]["key"] == "frame:fixture"
+    urdf.cancel_target_edit()
+    await edit()
+    assert urdf.scene.interaction["alignment"]["key"] == "frame:fixture"
+    storage_checked("frame:fixture")
+    user.find(marker="scene-gizmo-align-tool").click()
+    user.find(marker="object-undo").click()
+    assert textarea.value == source
+    user.find(marker="object-redo").click()
+    assert textarea.value == stored
+    await edit()
+    assert urdf.scene.interaction["alignment"]["key"] == "tool"
+    storage_checked("frame:fixture")
+    user.find(marker="scene-gizmo-align-frame:fixture").click()
+    # Precision.apply sends the same begin/move/end gesture for a typed value.
+    before = coordinates()
+    translation = translated_ball(urdf.scene, x=0.010)
+    gizmo(user, urdf.scene).move(**translation).release(**translation)
+    assert not urdf._tcp_ik_missed
+    assert coordinates() == pytest.approx([before[0] + 10, *before[1:]], abs=0.00051)
+    assert textarea.value.count("from waldoctl.setup import Pose") == 1
+    dragged = textarea.value
+    user.find(marker="object-undo").click()
+    assert textarea.value == stored
+    await edit()
+    storage_checked("frame:fixture")
+    user.find(marker="object-redo").click()
+    assert textarea.value == dragged
+    await edit()
+    storage_checked("frame:fixture")
+    assert coordinates() == pytest.approx([before[0] + 10, *before[1:]], abs=0.00051)
+    user.find(marker="object-undo").click()
+    assert textarea.value == stored
+    await edit()
+    storage_checked("frame:fixture")
+    user.find(marker="scene-target-store-world").click()
+    assert coordinates() == pytest.approx(world.as_list(), abs=0.005)
+    assert "resolve(Pose" not in textarea.value
+    user.find(marker="object-undo").click()
+    assert textarea.value == stored
+    moved = setup.with_frame("fixture", Frame((110, 200, 30, 15, 20, 35)))
+    store.save("bench", moved)
+    target = await preview()
+    expected_world = moved.resolve(Pose(tuple(coordinates()), "fixture")).as_list()
+    assert target.pose[:3] == pytest.approx(
+        [v / 1000 for v in expected_world[:3]], abs=1e-4
+    )
+    assert target.pose[0] == pytest.approx(0.010, abs=1e-4)
+    failed_line = ast.parse(stored).body[-1].lineno
+    missing_frame = "Unknown frame 'fixture'"
+    store.save("bench", SetupSnapshot())
+    assert await wait_until(
+        lambda: any(
+            d["line"] == failed_line
+            and d.get("severity") == "error"
+            and d.get("source") == "simulation"
+            and missing_frame in d["message"]
+            for d in textarea.diagnostics
+        ),
+        10,
+    )
+    location = f'File "simulation_script.py", line {failed_line},'
+    assert any(
+        entry.stream == "stderr"
+        and entry.text.startswith("[SIM ERROR]")
+        and missing_frame in entry.text
+        and location in entry.text
+        for entry in program.log.entries
+    )
+    assert all(t.line_number != failed_line for t in program.dry_run.targets)
+    assert textarea.value == stored
+    # Only this deliberately failed preview is exempt from the ERROR-log gate.
+    records = caplog.get_records("call")
+    expected = [
+        r
+        for r in records
+        if r.name == "waldo_commander.services.path_visualizer"
+        and r.levelname == "ERROR"
+        and r.getMessage().startswith("Simulation error (sim_id=")
+        and missing_frame in r.getMessage()
+        and location in r.getMessage()
+    ]
+    assert expected
+    records[:] = [r for r in records if r not in expected]
+
+
+@pytest.mark.integration
 async def test_multiline_target_edit_preserves_source_and_rejects_stale_edits(
     user: User,
 ) -> None:

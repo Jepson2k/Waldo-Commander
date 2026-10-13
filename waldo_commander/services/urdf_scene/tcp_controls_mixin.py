@@ -24,6 +24,7 @@ from pinokin import arrays_equal_n, so3_from_rpy, so3_rpy
 from waldo_commander.scene3d.interaction import Gesture, finite
 from waldo_commander.scene3d.protocol import quaternion
 from waldo_commander.services.python_source import program_setup
+from waldo_commander.services.scene_source import target_binding
 from waldo_commander.setup import SetupStore
 from waldo_commander.state import robot_state
 
@@ -54,6 +55,7 @@ class TCPControlsMixin:
     _edit_marker: Any
     _edit_line: int | None
     _editing_unified_target: bool
+    cancel_target_edit: Callable[[], None]
 
     def _refresh_editing_pose(self) -> tuple[float, ...] | None: ...
 
@@ -66,9 +68,10 @@ class TCPControlsMixin:
     _admitted: Callable[[], None]
 
     def _init_tcp_controls_state(self) -> None:
-        self._gizmo_choices = {"target": "world", "live": "tool"}
+        self._gizmo_choices = {"live": "tool"}
         self._gizmo_frames: dict[str, dict[str, Any]] = {}
         self._gizmo_setup_key: tuple | None = None
+        self._gizmo_storage_key = "world"
         self._keep_tool_vertical = False
         self._tcp_cartesian_move_callback: Callable[[list[float]], None] | None = None
         self._tcp_cartesian_move_start_callback: Callable[[], int | None] | None = None
@@ -236,6 +239,16 @@ class TCPControlsMixin:
         if refresh or key != self._gizmo_setup_key:
             self._gizmo_setup_key = key
             self._gizmo_frames = {}
+            self._gizmo_storage_key = "world"
+            if target and line is not None:
+                try:
+                    storage = target_binding(
+                        source, line, len(self.joint_names)
+                    ).storage
+                    if storage is not None:
+                        self._gizmo_storage_key = f"frame:{storage.name}"
+                except ValueError:
+                    pass
             binding = program_setup(source, line)
             if binding is not None:
                 try:
@@ -250,7 +263,8 @@ class TCPControlsMixin:
                 except (OSError, ValueError) as error:
                     logger.debug("No gizmo frames from %s: %s", binding.name, error)
         kind = "target" if target else "live"
-        choice = self._gizmo_choices[kind]
+        default = self._gizmo_storage_key if target else "tool"
+        choice = self._gizmo_choices.get(kind, default)
         if choice not in ("world", "tool") and choice not in self._gizmo_frames:
             choice = "world" if target else "tool"
         frame = self._gizmo_frames.get(choice)
@@ -278,6 +292,14 @@ class TCPControlsMixin:
         ):
             return
         self.scene.gestures.bump()
+        if self._editing_unified_target and line is not None:
+            try:
+                stored = target_binding(source, line, len(self.joint_names)).storage
+            except ValueError:
+                self.cancel_target_edit()
+            else:
+                if stored is not None:
+                    self.cancel_target_edit()
         self._gizmo_setup_key = None
         self._push_interaction()
 
@@ -306,6 +328,19 @@ class TCPControlsMixin:
     def _tcp_admit(self, gesture: Gesture, args: dict[str, Any]) -> bool:
         if self._teaching is not None:
             return False
+        if self._editing_unified_target and self._edit_line is not None:
+            from waldo_commander.state import ui_state
+
+            try:
+                target_binding(
+                    str(ui_state.active_textarea.value or ""),
+                    self._edit_line,
+                    len(self.joint_names),
+                )
+            except ValueError:
+                self.cancel_target_edit()
+                self._push_interaction()
+                return False
         mode = args.get("mode")
         if mode not in ("translate", "rotate") or not self._gizmo_shown():
             return False
