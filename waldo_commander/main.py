@@ -131,7 +131,6 @@ class _PageState:
     warning_notification: ui.notification | None = None
     ping_timer: ui.timer | None = None
     last_ping_ok: bool = False
-    motion_profile_restored: bool = False
 
 
 _page_state: _PageState | None = None
@@ -519,23 +518,12 @@ async def check_ping() -> None:
                 if scene_handle is not None:
                     asyncio.create_task(scene_handle.refresh_from_backend())
                 asyncio.create_task(refresh_applied_tcp(client))
-        if result is None or (new_ok and not ps.last_ping_ok):
-            ps.motion_profile_restored = False
-        # A restarted controller is back on its default profile. Not mid-run:
-        # the program may have selected its own.
-        if (
-            result is not None
-            and not ps.motion_profile_restored
-            and not is_any_program_running()
-        ):
-            ps.motion_profile_restored = await _restore_motion_profile()
         ps.last_ping_ok = new_ok
     except Exception as e:
         logger.debug("ping failed: %s", e)
         if ps.last_ping_ok:
             logger.debug("ping: connected True → False (exception)")
         ps.last_ping_ok = False
-        ps.motion_profile_restored = False
 
     # A ping that was in flight when shutdown began can resume here after
     # _clear_commander has run; bail before touching the commander surface.

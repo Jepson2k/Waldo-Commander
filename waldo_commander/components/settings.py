@@ -912,8 +912,9 @@ class SettingsContent:
     def _build_motion_profile(self, prefs: dict) -> None:
         async def _on_motion_profile_change(e):
             profile = e.value
+            stored_profile = stored_motion_profile(ui_state.active_robot)
             # Also where reverting the select after a refusal lands.
-            if profile == stored_motion_profile(ui_state.active_robot):
+            if profile == stored_profile:
                 return
             try:
                 if await self.client.select_profile(profile) != 1:
@@ -922,7 +923,7 @@ class SettingsContent:
                 logger.warning("select_profile(%s) failed: %s", profile, exc)
                 self._notify(self._page, f"Profile change failed: {exc}", "negative")
                 if self._page.has_socket_connection:
-                    e.sender.set_value(stored_motion_profile(ui_state.active_robot))
+                    e.sender.set_value(stored_profile)
                 return
             ng_app.storage.general["motion_profile"] = profile
             if self._page.has_socket_connection:

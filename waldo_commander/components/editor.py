@@ -186,6 +186,7 @@ class EditorPanel(FileOperationsMixin):
 
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
+        self._replan_task: asyncio.Task | None = None
 
         self._drop_setup_listener: Callable[[], None] = lambda: None
 
@@ -727,6 +728,9 @@ class EditorPanel(FileOperationsMixin):
         if self._tab_switch_render_task is not None:
             self._tab_switch_render_task.cancel()
             self._tab_switch_render_task = None
+        if self._replan_task is not None:
+            self._replan_task.cancel()
+            self._replan_task = None
         self.playback.cleanup()
         decorations.cleanup()
         log_panel.cleanup()
@@ -1453,33 +1457,38 @@ class EditorPanel(FileOperationsMixin):
                 if widgets.get("strip") is not None:
                     widgets["strip"].on_setup_saved(directory, name, revision)
         stale = [p.id for p in programs.items if loads_setup(p.source, name)]
-        if programs.active_id in stale:
-            with client:
-                simulation.schedule_debounced_simulation(tab_id=programs.active_id)
-        # One debounced run is pending at a time, and it belongs to the active
-        # program; the others re-plan in turn now.
-        background = [tab_id for tab_id in stale if tab_id != programs.active_id]
-        if background:
-            background_tasks.create(
-                self._resimulate(background, client), name="setup-resimulate"
-            )
+        self._replan(stale, client, "setup-resimulate")
 
     def replan_all(self) -> None:
         """Re-plan every open program, as after a motion profile change."""
         client = self._client
         if client is None or is_any_program_running():
             return
+        self._replan(
+            [p.id for p in waldoctl.commander.programs.items], client, "replan-all"
+        )
+
+    def _replan(self, tab_ids: list[str], client: Client, name: str) -> None:
+        if self._replan_task is not None:
+            self._replan_task.cancel()
+            self._replan_task = None
         programs = waldoctl.commander.programs
-        with client:
-            simulation.schedule_debounced_simulation(tab_id=programs.active_id)
-        background = [p for p in programs.items if p.id != programs.active_id]
+        if programs.active_id in tab_ids:
+            with client:
+                simulation.schedule_debounced_simulation(tab_id=programs.active_id)
+        background = [
+            p
+            for p in programs.items
+            if p.id in tab_ids
+            and p.id != programs.active_id
+            and not is_default_script(p.source)
+        ]
         for program in background:
             # The source is unchanged, but a plan for it is now stale.
             program.dry_run.revision += 1
         if background:
-            background_tasks.create(
-                self._resimulate([p.id for p in background], client),
-                name="replan-all",
+            self._replan_task = background_tasks.create(
+                self._resimulate([p.id for p in background], client), name=name
             )
 
     @staticmethod
