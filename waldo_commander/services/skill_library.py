@@ -495,6 +495,7 @@ async def plan_preview(
     import waldoctl
     from nicegui import run
 
+    from waldo_commander.services.motion_profile import preview_motion_profile
     from waldo_commander.services.path_visualizer import _simulation_timeout_s
 
     source = call_source(entry, arguments)
@@ -511,6 +512,9 @@ async def plan_preview(
                 joints_rad,
                 tool,
                 shapes_wire,
+                preview_motion_profile(robot)
+                if len(robot.motion_profiles) >= 2
+                else None,
             )
     except TimeoutError:
         planned = None
@@ -529,6 +533,7 @@ def _plan_isolated(
     joints_rad: Any,
     tool: tuple[str, str],
     shapes_wire: list[tuple],
+    initial_profile: str | None = None,
 ) -> tuple[list[PathSegment], list[ToolAction]]:
     """Run a generated call against a dry run; :func:`plan_preview` in a worker."""
     from waldoctl import shape_from_wire
@@ -554,6 +559,13 @@ def _plan_isolated(
     key, variant = tool
     if key not in ("", "NONE") and client.select_tool(key, variant_key=variant) < 0:
         raise RuntimeError(f"The preview refused tool {key}")
+    if (
+        initial_profile is not None
+        and len(robot.motion_profiles) >= 2
+        and callable(getattr(client._client, "select_profile", None))
+    ):
+        if client.select_profile(initial_profile) != 1:
+            raise RuntimeError("Preview select_profile was not confirmed")
     exec(source, {"rbt": client})
     client.close()
     if client.accumulated_errors:

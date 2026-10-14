@@ -187,6 +187,8 @@ class EditorPanel(FileOperationsMixin):
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
         self._replan_task: asyncio.Task | None = None
+        self._replan_remaining: list[str] = []
+        self._replan_after_run = False
 
         self._drop_setup_listener: Callable[[], None] = lambda: None
 
@@ -713,6 +715,7 @@ class EditorPanel(FileOperationsMixin):
         ``_on_disconnect`` and ``_on_shutdown``."""
         waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
         simulation_state.remove_change_listener(self._update_capture_button)
+        simulation_state.remove_change_listener(self._resume_profile_replan)
         motion_recorder.remove_session_listener(self._on_session_changed)
         self._drop_setup_listener()
         for widgets in self._tab_widgets.values():
@@ -731,6 +734,8 @@ class EditorPanel(FileOperationsMixin):
         if self._replan_task is not None:
             self._replan_task.cancel()
             self._replan_task = None
+        self._replan_remaining = []
+        self._replan_after_run = False
         self.playback.cleanup()
         decorations.cleanup()
         log_panel.cleanup()
@@ -958,6 +963,13 @@ class EditorPanel(FileOperationsMixin):
                 if client is not None:
                     with client:
                         self.playback.update_scrub_segments()
+                        active = waldoctl.commander.programs.active
+                        if (
+                            active is not None
+                            and active.dry_run.commanded is not None
+                            and active.dry_run.predicted is None
+                        ):
+                            simulation.schedule_physics_simulation(active.id)
                 simulation_state.notify_changed()
             finally:
                 if self._tab_switch_render_task is task:
@@ -1462,13 +1474,22 @@ class EditorPanel(FileOperationsMixin):
     def replan_all(self) -> None:
         """Re-plan every open program, as after a motion profile change."""
         client = self._client
-        if client is None or is_any_program_running():
+        if client is None:
             return
+        if is_any_program_running():
+            self._replan_after_run = True
+            return
+        self._replan_after_run = False
         self._replan(
             [p.id for p in waldoctl.commander.programs.items], client, "replan-all"
         )
 
+    def _resume_profile_replan(self) -> None:
+        if self._replan_after_run and not is_any_program_running():
+            self.replan_all()
+
     def _replan(self, tab_ids: list[str], client: Client, name: str) -> None:
+        tab_ids = list(dict.fromkeys([*self._replan_remaining, *tab_ids]))
         if self._replan_task is not None:
             self._replan_task.cancel()
             self._replan_task = None
@@ -1484,21 +1505,25 @@ class EditorPanel(FileOperationsMixin):
             and not is_default_script(p.source)
         ]
         for program in background:
-            # The source is unchanged, but a plan for it is now stale.
             program.dry_run.revision += 1
+        self._replan_remaining = [p.id for p in background]
         if background:
             self._replan_task = background_tasks.create(
-                self._resimulate([p.id for p in background], client), name=name
+                self._resimulate(self._replan_remaining, client), name=name
             )
 
     @staticmethod
     async def _resimulate(tab_ids: list[str], client: Client) -> None:
-        for tab_id in tab_ids:
-            if not client.has_socket_connection or is_any_program_running():
+        while tab_ids:
+            tab_id = tab_ids[0]
+            if not client.has_socket_connection:
                 return
             if waldoctl.commander.programs.get(tab_id) is not None:
                 with client:
                     await simulation.run_simulation(tab_id)
+                    if tab_id == waldoctl.commander.programs.active_id:
+                        simulation.schedule_physics_simulation(tab_id)
+            tab_ids.pop(0)
 
     def _on_tab_content_change(self, tab: Program, new_value: str) -> None:
         """Handle content change for a tab."""
@@ -1725,6 +1750,7 @@ class EditorPanel(FileOperationsMixin):
         # Re-teach enablement tracks dry-run results, which refresh through
         # this channel (sim completion, tab switch).
         simulation_state.add_change_listener(self._update_capture_button)
+        simulation_state.add_change_listener(self._resume_profile_replan)
         # A staged recording is reviewed where a pending edit is.
         motion_recorder.add_session_listener(self._on_session_changed)
         # A saved setup changes what the programs that load it do.

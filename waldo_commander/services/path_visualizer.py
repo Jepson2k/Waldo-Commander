@@ -41,7 +41,7 @@ import waldoctl
 from waldoctl import CommandNote, LinearMotion, TickIndex
 from waldoctl.skills import UnresolvedPreview
 
-from waldo_commander.services.motion_profile import stored_motion_profile
+from waldo_commander.services.motion_profile import preview_motion_profile
 from waldo_commander.services.preview_segments import (
     index_boundaries,
     segments_from_record,
@@ -409,7 +409,11 @@ def _run_simulation_isolated(
                     )
                 for selection in preview.tool_selection_collector[first_selection:]:
                     selection.line_number = 0
-            if initial_profile is not None:
+            if (
+                initial_profile is not None
+                and len(_preview_robot.motion_profiles) >= 2
+                and callable(getattr(preview._client, "select_profile", None))
+            ):
                 seed_command("select_profile", initial_profile)
             shapes = [shape_from_wire(*t) for t in shapes_wire or []]
             if not shapes:
@@ -912,7 +916,9 @@ class PathVisualizer:
         initial_homed = robot_state.homed
         # Asking the controller instead would hold its request lock, which
         # a stop waits on.
-        initial_profile = stored_motion_profile(robot)
+        initial_profile = (
+            preview_motion_profile(robot) if len(robot.motion_profiles) >= 2 else None
+        )
 
         from waldo_commander.setup import SetupStore
 

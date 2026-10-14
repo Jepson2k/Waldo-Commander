@@ -79,7 +79,11 @@ from waldo_commander.services.control_lease import (
     restore_control_mode,
 )
 from waldo_commander.services.motion_guard import motion_guard
-from waldo_commander.services.motion_profile import stored_motion_profile
+from waldo_commander.services.motion_profile import (
+    select_motion_profile,
+    store_motion_profile,
+    stored_motion_profile,
+)
 from waldo_commander.services.path_visualizer import warm_process_pool
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene import (
@@ -460,12 +464,13 @@ async def _switch_to_hardware() -> None:
 async def _restore_motion_profile() -> bool:
     profile = stored_motion_profile(ui_state.active_robot)
     try:
-        if await client.select_profile(profile) != 1:
-            logger.warning("select_profile(%s) was not confirmed", profile)
+        if not await select_motion_profile(client, profile):
             return False
     except Exception as exc:
         logger.warning("select_profile(%s) failed: %s", profile, exc)
         return False
+    if robot_state.motion_profile is None:
+        store_motion_profile(profile)
     logger.debug("Restored motion profile to %s", profile)
     return True
 
@@ -1864,6 +1869,13 @@ async def _status_consumer() -> None:
                         robot_state.speeds[:] = status.speeds
                         st.joints.speeds = robot_state.speeds.tolist()
                     robot_state.homed = status.homed
+                    profile = getattr(status, "motion_profile", None)
+                    if profile != robot_state.motion_profile:
+                        robot_state.motion_profile = profile
+                        if profile is not None:
+                            store_motion_profile(profile)
+                        if ui_state._editor_panel is not None:
+                            ui_state.editor_panel.replan_all()
                     session = (status.session_id, status.simulator_active)
                     if robot_state.controller_session != session or not status.homed:
                         robot_state.gripper_calibrated = False

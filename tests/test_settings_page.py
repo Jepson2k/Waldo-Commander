@@ -2,10 +2,11 @@
 
 import asyncio
 import socket
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from nicegui import app as ng_app
+from nicegui import ui
 from nicegui.testing import User
 
 from tests.helpers.wait import (
@@ -22,8 +23,11 @@ app_storage: Any = getattr(ng_app, "storage")
 
 
 @pytest.mark.integration
-async def test_an_unconfirmed_motion_profile_change_is_not_stored(user: User) -> None:
+async def test_an_unconfirmed_motion_profile_change_follows_controller_truth(
+    user: User,
+) -> None:
     from parol6.client.async_client import AsyncRobotClient
+    from waldo_commander.state import robot_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -36,7 +40,9 @@ async def test_an_unconfirmed_motion_profile_change_is_not_stored(user: User) ->
     requested = "QUINTIC" if profile != "QUINTIC" else "TOPPRA"
     user.find(marker="tab-settings").click()
     await asyncio.sleep(0)
-    select = next(iter(user.find(marker="select-motion-profile").elements))
+    select = cast(
+        ui.select, next(iter(user.find(marker="select-motion-profile").elements))
+    )
 
     # A bound, quiet port cannot be claimed by a controller during the test.
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as quiet:
@@ -48,8 +54,14 @@ async def test_an_unconfirmed_motion_profile_change_is_not_stored(user: User) ->
             assert await absent.select_profile(requested) == 0
             content.client = absent
             select.set_value(requested)
-            await user.should_see(
-                "Profile change failed: Profile change was not confirmed"
+            if robot_state.motion_profile is None:
+                await user.should_see(
+                    "Profile change failed: Profile change was not confirmed"
+                )
+            await poll_until(
+                lambda: select.value,
+                lambda shown: shown == profile,
+                what="Settings following the unchanged controller profile",
             )
             assert app_storage.general["motion_profile"] == profile
             assert select.value == profile

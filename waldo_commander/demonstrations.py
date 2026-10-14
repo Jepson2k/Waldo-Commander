@@ -547,6 +547,7 @@ def _probe(
     the recording is the one the controller would drive, not an interpolation
     of the generated waypoints.
     """
+    from waldo_commander.services.motion_profile import preview_motion_profile
     from waldo_commander.services.path_preview_client import PathPreviewClient
 
     client = PathPreviewClient(
@@ -554,6 +555,11 @@ def _probe(
         initial_joints=np.radians(start_joints_deg),
     )
     try:
+        if len(robot.motion_profiles) >= 2 and callable(
+            getattr(client._client, "select_profile", None)
+        ):
+            if client.select_profile(preview_motion_profile(robot)) != 1:
+                raise RuntimeError("Preview select_profile was not confirmed")
         exec(
             compile("\n".join((*setup, *lines)), "converted_demonstration.py", "exec"),
             {"rbt": client},
