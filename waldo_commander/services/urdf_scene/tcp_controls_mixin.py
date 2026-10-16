@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 _SHOWN_FRAME_MM = 2.0
 _SHOWN_FRAME_DEG = 1.0
 _IK_INTERVAL_S = 1 / 30
+# asyncio runs a timer up to one clock tick early (15.6 ms on Windows).
+_CLOCK_TICK_S = time.get_clock_info("monotonic").resolution
 
 
 class TCPControlsMixin:
@@ -461,7 +463,9 @@ class TCPControlsMixin:
         if self._ik_handle is not None:
             return
         loop = self.scene._loop
-        delay = max(0.0, self._ik_last + _IK_INTERVAL_S - time.monotonic())
+        delay = max(
+            0.0, self._ik_last + _IK_INTERVAL_S + _CLOCK_TICK_S - time.monotonic()
+        )
         self._ik_handle = loop.call_later(delay, self._run_queued_ik)
 
     def _run_queued_ik(self) -> None:
