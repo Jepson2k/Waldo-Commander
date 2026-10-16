@@ -1,9 +1,8 @@
 """Collision visualization: red-tint of colliding parts + keep-out shape render.
 
-The ``user`` fixture has no WebGL, but the scene's Python ``Object3D`` colors are
-the exact input three.js renders from — asserting them verifies the highlight
-logic (name mapping, recolor, restore) deterministically. A browser-level render
-check lives in ``test_collision_viz_screen.py``.
+The ``user`` fixture has no WebGL, but the colours on the scene's Python
+``Node`` mirror are the exact input three.js renders from — asserting them
+verifies the highlight logic (name mapping, recolor, restore) deterministically.
 """
 
 import asyncio
@@ -12,6 +11,7 @@ import pytest
 from nicegui.testing import User
 from nicegui.testing.user_interaction import UserInteraction
 
+from tests.helpers.scene_events import Drag, right_click
 from tests.helpers.wait import wait_for_urdf_ready
 from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
 
@@ -42,7 +42,7 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
 
     from waldo_commander.common.theme import SceneColors
     from waldo_commander.services.path_visualizer import _mark_colliding_commands
-    from waldo_commander.state import ui_state
+    from waldo_commander.state import simulation_state, ui_state
 
     await user.open("/")
     await wait_for_urdf_ready()
@@ -68,9 +68,8 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
     assert obj_a.color == before_a
     assert obj_b.color == before_b
 
-    # The floor a robot stands on is an ordinary installation fixture: it
-    # tints like any keep-out, survives a repaint, and displaces the
-    # placeholder disc simply by existing.
+    # Controller ground keeps its collision identity without replacing the
+    # workspace floor used in other robot modes.
     assert scene._floor is not None and scene._floor.visible_
     floor_shape = Box(
         name="floor",
@@ -86,22 +85,23 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
     )
     floor = scene._shape_objects["install:floor"]
     assert floor.color == SceneColors.SHAPE_INSTALL_HEX
-    assert not scene._floor.visible_, (
-        "a described installation displaces the placeholder disc"
-    )
+    assert scene._floor.visible_
+    assert not floor.visible_
     assert scene._shape_objects["shape:wall"].args[:3] == [0.1, 2.0, 1.0]
+    # The reported ground tints the floor that is drawn, not the hidden node.
+    disc = scene._floor.color
     coll.pairs = [(a, "install:floor")]
     coll.active = True
     scene.update_from_robot_state()
-    assert floor.color == SceneColors.COLLISION_HEX
+    assert scene._floor.color == SceneColors.COLLISION_HEX
     coll.active = False
     coll.pairs = []
     scene.update_from_robot_state()
+    assert scene._floor.color == disc
     assert floor.color == SceneColors.SHAPE_INSTALL_HEX
     scene.set_appearance_mode(RobotAppearanceMode.EDITING)
     assert floor.color == SceneColors.SHAPE_INSTALL_HEX
     scene.set_appearance_mode(RobotAppearanceMode.LIVE)
-    # A backend describing no installation gets the placeholder back.
     scene.render_shapes([])
     assert "install:floor" not in scene._shape_objects
     assert scene._floor.visible_
@@ -142,16 +142,24 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
     assert bench_obj.color == SceneColors.SHAPE_INSTALL_HEX
 
     # Re-rendering reconciles against what is drawn: a no-op sends nothing, a
-    # pose-only change moves the same object, a geometry change recreates it
-    # and a dropped shape is deleted — the group persists throughout.
+    # pose-only change moves the same object in one message, a geometry
+    # change recreates it and a dropped shape is deleted — the group persists
+    # throughout. The page's view mounts first: before it does, nothing is
+    # sent at all.
     group = scene._shapes_group
+    UserInteraction(user, {scene.scene}, None).trigger("init")
+    await asyncio.sleep(0)
     with patch.object(scene.scene.client, "run_javascript") as sent:
         scene.render_shapes([wall, post], installation=[bench])
+        await asyncio.sleep(0)
     assert sent.call_count == 0, "an unchanged world must not be re-sent"
     assert scene._shape_objects["shape:wall"] is wall_obj
     assert scene._shapes_group is group
     moved = replace(wall, pose=(0.5, 0.0, 0.3, 0, 0, 0))
-    scene.render_shapes([moved, post], installation=[bench])
+    with patch.object(scene.scene.client, "run_javascript") as sent:
+        scene.render_shapes([moved, post], installation=[bench])
+        await asyncio.sleep(0)
+    assert sent.call_count == 1, "a moved shape goes out in one message"
     assert scene._shape_objects["shape:wall"] is wall_obj, "pose-only: same object"
     assert wall_obj.x == pytest.approx(0.5)
     bigger = Box(name="wall", x=0.2, y=0.1, z=0.1, pose=moved.pose)
@@ -207,23 +215,6 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
         assert scene._shape_objects["shape:block"].color == SceneColors.COLLISION_HEX
         assert scene._link_to_meshes[link][0].color == SceneColors.COLLISION_HEX
 
-        # A joint-ring drag must also refresh the highlight — the status loop
-        # is skipped in EDITING.
-        ring = scene.joint_groups[scene.joint_names[0]].with_name("edit_joint_group:0")
-        UserInteraction(user, {scene.scene}, None).trigger(
-            "transform",
-            {
-                "type": "transform",
-                "mode": "rotate",
-                "object_id": ring.id,
-                "object_name": "edit_joint_group:0",
-                **dict.fromkeys(("x", "y", "z", "wx", "wy", "wz"), 0.0),
-                **dict.fromkeys(("rx", "ry", "rz"), 0.3),
-            },
-        )
-        assert scene._editing_angles[0] == pytest.approx(0.3)
-        assert scene._editing_collision_q == tuple(scene._editing_angles)
-
         # A command whose rows pass through the box is reported with its first
         # colliding row; a command that owns no rows is never checked. The
         # passed world is applied explicitly (a reused pool worker's checker
@@ -255,6 +246,12 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
         for handler in previous_page.disconnect_handlers:
             previous_page.safe_invoke(handler)
         previous_page.delete()
+        # The closed page's scene stops listening, so it is not kept alive
+        # and redrawn on every program change for as long as the app runs.
+        assert not any(
+            getattr(listener, "__self__", None) is scene
+            for listener in simulation_state._change_listeners
+        ), "the closed page's scene still listens for simulation changes"
         await user.open("/")
         await wait_for_urdf_ready()
         rebuilt = ui_state.urdf_scene
@@ -534,17 +531,24 @@ async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
     async def _enforced() -> ShapeWorld:
         return ShapeWorld(installation=(enforced_wall,), program=())
 
+    real_shapes = waldoctl.commander.client.shapes
     monkeypatch.setattr(waldoctl.commander.client, "shapes", _enforced)
     await handle.refresh_from_backend()
     assert handle.installation_draft == ()
     assert "draft:wall" not in scene._shape_objects
     assert scene._shape_objects["install:wall"].color == SceneColors.SHAPE_INSTALL_HEX
 
-    # A withdrawn proposal is a program keep-out again.
+    # A withdrawn proposal is a program keep-out again; its commit reads back
+    # what the controller now holds.
+    monkeypatch.setattr(waldoctl.commander.client, "shapes", real_shapes)
     post = Box(name="post", x=0.05, y=0.05, z=0.2, pose=(0.4, 0.0, 0.1, 0, 0, 0))
     handle.shapes = [post]
     handle.propose_installation(["post"])
-    scene._withdraw_proposal("post")
+    for _ in range(200):
+        if handle.confirmed:
+            break
+        await asyncio.sleep(0.05)
+    await scene._withdraw_proposal("post")
     assert handle.installation_draft == () and [s.name for s in handle.shapes] == [
         "post"
     ]
@@ -752,7 +756,7 @@ async def test_shape_pushes_confirm_by_readback_and_never_restore_an_older_world
     """The program layer travels through the REAL client to the REAL
     (fake-serial) controller: a world a program sets reaches the display via
     the epoch readback, an edit is a draft until acked and read back, a lost
-    ack leaves it a draft, and no delayed readback or push can bring back a
+    lost ack is reconciled by readback, and no delayed readback or push can bring back a
     world a newer edit replaced."""
     import waldoctl
     from waldoctl import Box
@@ -800,8 +804,7 @@ async def test_shape_pushes_confirm_by_readback_and_never_restore_an_older_world
         await _until(lambda: handle.confirmed, "clear never confirmed")
         assert "shape:rb" not in scene._shape_objects
 
-        # The real client answers 0 when no ack arrives (it does not raise):
-        # the edit stays a draft and the push says it is not enforced.
+        # Readback remains authoritative after an unacknowledged request.
         async def _unacked(shapes):
             client.set_shapes = real_set_shapes
             return 0
@@ -811,11 +814,11 @@ async def test_shape_pushes_confirm_by_readback_and_never_restore_an_older_world
         async with asyncio.timeout(5):
             while handle._pushes_inflight:
                 await asyncio.sleep(0)
-        assert handle.confirmed is False
-        assert scene._shape_objects["shape:lost"].color == SceneColors.SHAPE_DRAFT_HEX
+        assert handle.confirmed is True
+        assert handle.shapes == []
+        assert "shape:lost" not in scene._shape_objects
         records = caplog.get_records("call")
-        assert any("NOT enforced" in r.getMessage() for r in records)
-        records[:] = [r for r in records if "NOT enforced" not in r.getMessage()]
+        assert any("not acknowledged" in r.getMessage() for r in records)
         handle.shapes = []
         await _until(
             lambda: handle.confirmed and not handle._pushes_inflight,
@@ -914,13 +917,12 @@ async def test_shape_pushes_confirm_by_readback_and_never_restore_an_older_world
 
 @pytest.mark.integration
 async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None:
-    """The viewer's keep-out editor, end to end: place a box at a clicked
-    point through the dialog, drag it via the scene's transform dispatch,
-    resize it through the edit dialog (bad input refused), delete it with
-    confirmation — asserting the request path (``commander.scene.shapes``)
+    """The viewer's keep-out editor, end to end from its context menu: place a
+    box at a right-clicked floor point through the dialog, drag it by its
+    arrows, resize it through the edit dialog (bad input refused), delete it
+    with confirmation — asserting the request path (``commander.scene.shapes``)
     and the rendered scene object at every step."""
     import asyncio
-    from types import SimpleNamespace
 
     import waldoctl
 
@@ -932,14 +934,28 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     handle = waldoctl.commander.scene
     assert scene is not None and handle is not None
 
-    # Place — exactly what the context menu's "Box Here..." item runs.
-    with scene.scene.client:
-        scene._show_shape_dialog(kind="box", at=(0.4, 0.1, 0.0))
-    await user.should_see(marker="shape-dialog-save")
-    name_el = list(user.find(marker="shape-dialog-name").elements)[-1]
+    def menu(hits: list[str], item: str, ground: list[float] | None = None) -> None:
+        right_click(user, scene.scene, hits, ground)
+        user.find(marker=item).click()
+
+    # Placed at once with a default size, then named in its inspector.
+    menu([], "scene-add-box", [0.4, 0.1, 0.0])
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and len(handle.shapes) == 1
+        and scene._selected_objects == [f"shape:{handle.shapes[0].name}"],
+        "creation was not confirmed",
+    )
+    name_el = list(user.find(marker="object-name").elements)[-1]
     name_el.set_value("bench")
-    user.find(marker="shape-dialog-save").click()
-    await asyncio.sleep(0)
+    user.find(marker="object-name").trigger("blur")
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and any(s.name == "bench" for s in handle.shapes),
+        "the rename was not confirmed",
+    )
 
     bench = next(s for s in handle.shapes if s.name == "bench")
     assert bench.kind == "box"
@@ -947,48 +963,60 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     assert bench.pose[:3] == pytest.approx((0.4, 0.1, 0.05))
     assert "shape:bench" in scene._shape_objects
 
-    # Drag — through the scene's transform_end dispatch, the entry the JS
-    # controls hit (same event fields the target handler consumes).
-    scene._start_shape_move("bench")
-    scene._handle_transform_event(
-        SimpleNamespace(
-            type="transform_end",
-            object_name="shape:bench",
-            x=0.25,
-            y=-0.1,
-            z=0.05,
-            rx=None,
-            ry=None,
-            rz=None,
-        )
+    # Drag — its arrows, as the browser reports the drag let go. A click on
+    # empty space in the view puts the selection away first.
+    UserInteraction(user, {scene.scene}, None).trigger(
+        "select", {"revision": handle.revision, "hits": [], "extend": False}
+    )
+    assert not scene._selected_objects
+    menu(["shape:bench"], "shape-menu-move")
+    arrows = scene.scene.interaction["shapeMove"]
+    assert arrows["node"] == scene._shape_objects["shape:bench"].id
+    Drag(user, scene.scene, "shape").begin(**arrows).release(
+        **arrows, x=0.25, y=-0.1, z=0.05
+    )
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and handle.shapes[0].pose[0] == 0.25,
+        "movement was not confirmed",
     )
     bench = next(s for s in handle.shapes if s.name == "bench")
     assert bench.pose[:3] == pytest.approx((0.25, -0.1, 0.05))
-    # The setter re-rendered the layer and the move re-armed on the new object.
-    assert "shape:bench" in scene._shape_objects
-    scene._end_shape_move()
+    # The setter re-rendered the layer as a diff: the arrows stay on the
+    # same object, now drawn where it was let go.
+    obj = scene._shape_objects["shape:bench"]
+    assert scene.scene.interaction["shapeMove"]["node"] == obj.id
+    assert (obj.x, obj.y, obj.z) == pytest.approx((0.25, -0.1, 0.05))
+    menu(["shape:bench"], "shape-menu-stop-move")
+    assert scene.scene.interaction["shapeMove"] is None
 
-    # Edit — grow x to 300 mm through the dialog. A negative dimension must
-    # be refused by the shape's own validation, leaving the world untouched.
-    with scene.scene.client:
-        scene._show_shape_dialog(shape=bench)
+    menu(["shape:bench"], "shape-menu-edit")
     await asyncio.sleep(0)
-    dim_x = list(user.find(marker="shape-dialog-dim-x").elements)[-1]
+    assert scene._selected_objects == ["shape:bench"]
+    dim_x = list(user.find(marker="object-dim-x").elements)[-1]
     dim_x.set_value(-50)
-    user.find(marker="shape-dialog-save").click()
+    user.find(marker="object-dim-x").trigger("blur")
     await asyncio.sleep(0)
     assert next(s for s in handle.shapes if s.name == "bench").x == pytest.approx(0.1)
     dim_x.set_value(300)
-    user.find(marker="shape-dialog-save").click()
-    await asyncio.sleep(0)
+    user.find(marker="object-dim-x").trigger("blur")
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and handle.shapes[0].x == 0.3,
+        "dimension edit was not confirmed",
+    )
     assert next(s for s in handle.shapes if s.name == "bench").x == pytest.approx(0.3)
 
-    # Delete — with confirmation.
-    with scene.scene.client:
-        scene._delete_shape("bench")
-    await user.should_see(marker="shape-delete-confirm")
-    user.find(marker="shape-delete-confirm").click()
-    await asyncio.sleep(0)
+    # Delete — at once; undo brings it back.
+    menu(["shape:bench"], "shape-menu-delete")
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and not handle.shapes,
+        "deletion was not confirmed",
+    )
     assert all(s.name != "bench" for s in handle.shapes)
     assert "shape:bench" not in scene._shape_objects
     await _until(

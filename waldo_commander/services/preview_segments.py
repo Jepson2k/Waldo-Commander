@@ -19,6 +19,7 @@ from waldoctl import (
     PathSegment,
     ProgramTarget,
     ShapeChange,
+    TickBlock,
     TickIndex,
     ToolAction,
     ToolSelection,
@@ -30,16 +31,27 @@ from waldo_commander.common.theme import SceneColors, get_color_for_move_type
 #: as nothing in the scene and as a zero-width division on the scrub bar.
 MARKER_COLOR = ""  # never drawn: a marker segment has no points
 
-#: Within this many metres two TCP samples are one place: a hold.
-_STILL_M = 1e-6
+#: Within this many metres two TCP samples are one place: a hold. Solver
+#: residuals give an in-place turn a few hundredths of a mm of drift.
+_STILL_M = 1e-4
 
 
-def _moves(points: Sequence[Sequence[float]]) -> bool:
+def moves(points: Sequence[Sequence[float]] | np.ndarray) -> bool:
     """Whether a run of TCP points goes anywhere."""
     if len(points) < 2:
         return False
-    first = np.asarray(points[0], dtype=np.float64)
-    return bool(np.abs(np.asarray(points, dtype=np.float64) - first).max() > _STILL_M)
+    run = np.asarray(points, dtype=np.float64)
+    return bool(np.abs(run - run[0]).max() > _STILL_M)
+
+
+def marker_block(block: TickBlock, note: CommandNote) -> bool:
+    """A block that owns no rows yet marks a boundary: a checkpoint, a
+    refusal or a tool selection."""
+    return block.rows == 0 and (
+        note.checkpoint is not None
+        or block.error is not None
+        or note.method == "select_tool"
+    )
 
 
 def _runs(valid: np.ndarray) -> list[tuple[int, int, bool]]:
@@ -73,8 +85,8 @@ def segments_from_record(
 
     A block whose rows the record marks partly unreachable is split into
     runs of one validity, each run a segment sharing the block's
-    ``command``. A block that owns no rows is kept only when it carries a
-    checkpoint label or a refusal, as a zero-width marker. *collisions*
+    ``command``. Tool selections, checkpoints and refusals without rows remain
+    zero-width markers so stepping can visit their command boundaries. *collisions*
     maps a command to the first row of its block that collides.
     """
     collisions = collisions or {}
@@ -85,7 +97,7 @@ def segments_from_record(
         line = note.line_number or block.line_number or 0
         move_type = block.move_type or note.method or "unknown"
         if block.rows == 0:
-            if note.checkpoint is None and block.error is None:
+            if not marker_block(block, note):
                 continue
             out.append(
                 PathSegment(
@@ -125,7 +137,7 @@ def segments_from_record(
             lo = max(start - 1, 0)
             hi = min(end + 1, block.rows)
             points = record.tcp[first + lo : first + hi, :3].astype(float).tolist()
-            moving = _moves(points)
+            moving = moves(points)
             if not moving:
                 # A hold owns its time on the bar and no length in the scene.
                 points = [points[0], points[-1]]

@@ -199,14 +199,17 @@ def replace_lines(
     return "\n".join(new_lines), first_line, len(replacement)
 
 
-def insert_below_line(text: str, snippet: str, after_line: int) -> tuple[str, int, int]:
+def insert_below_line(
+    text: str, snippet: str, after_line: int, indent: str | None = None
+) -> tuple[str, int, int]:
     """Insert *snippet* below 1-indexed *after_line* of *text*; an
     ``after_line`` of 0 (cursor unset) or at/past the last content line
     appends at EOF. Splits on "\\n" only — matching CodeMirror's line model —
     so existing bytes (including any exotic separators) are never rewritten.
 
-    The snippet matches the anchor line's indentation (one level deeper below
-    a block opener) so an at-cursor insert can't split an indented suite.
+    The snippet takes *indent*, or else the anchor line's indentation (one
+    level deeper below a block opener), so an at-cursor insert can't split an
+    indented suite.
 
     Returns ``(new_text, first_inserted_line, inserted_line_count)``.
     """
@@ -215,7 +218,9 @@ def insert_below_line(text: str, snippet: str, after_line: int) -> tuple[str, in
     content_lines = len(lines) - 1 if lines and lines[-1] == "" else len(lines)
     anchor = lines[after_line - 1] if 0 < after_line <= content_lines else ""
     prefix = anchor[: len(anchor) - len(anchor.lstrip(" \t"))]
-    if anchor.strip().endswith(":"):
+    if indent is not None:
+        prefix = indent
+    elif anchor.strip().endswith(":"):
         prefix += _indent_unit(lines)
     if prefix:
         snippet = "\n".join(prefix + ln if ln else ln for ln in snippet.split("\n"))

@@ -1,18 +1,6 @@
-"""The key to the predicted overlays.
-
-A picture whose magnitudes are unstated lies. The predicted path is
-coloured by following error and contact arrows are scaled by force, and
-neither number is guessable from the scene — a millimetre of sag drawn
-at its true size is invisible, and an arrow whose length means nothing
-in particular reads as though it did. So the scale is written down.
-
-Shown only while a predicted record that differs from the commanded one
-is on screen, row by row for what that record carries.
-"""
+"""Units and colors for recorded contact-force and centre-of-mass overlays."""
 
 from __future__ import annotations
-
-import math
 
 import waldoctl
 from nicegui import ui
@@ -21,11 +9,9 @@ from waldo_commander.common.theme import hex_of
 from waldo_commander.components.playback import layers_available
 from waldo_commander.services.urdf_scene.physics_overlay import (
     FORCE_SCALE_M_PER_N,
-    FULL_FOLLOWING_ERROR_RAD,
 )
 from waldo_commander.state import simulation_state
 
-_TRACKING_DEG = math.degrees(FULL_FOLLOWING_ERROR_RAD)
 _ARROW_CM_PER_N = FORCE_SCALE_M_PER_N * 100.0
 
 
@@ -48,14 +34,6 @@ class PhysicsLegend:
         ):
             self._root = root
             self._rows = [
-                (
-                    self._swatch_row(
-                        "Predicted path",
-                        f"green on its command, red at {_TRACKING_DEG:.1f}° of error",
-                        (hex_of("physics-on-track"), hex_of("physics-diverged")),
-                    ),
-                    "predicted_visible",
-                ),
                 (
                     self._swatch_row(
                         "Contact force",

@@ -11,6 +11,8 @@ authoring is config authoring: the GUI and MCP draft it, the config enforces it.
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import keyword
 import logging
@@ -24,6 +26,13 @@ from waldoctl.shapes import Shape, ShapeWorld
 from waldoctl.world import world_from_dict, world_to_dict
 
 from waldo_commander.constants import default_program_dir
+from waldo_commander.services.python_source import literal_argument
+from waldo_commander.services.fixture_meshes import (
+    FixtureMesh,
+    meshes_from_data,
+    asset_references,
+)
+from waldo_commander.setup import file_revision
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +74,9 @@ def world_module(world: ShapeWorld, *, variable: str = "world") -> str:
     )
 
 
-def save_entry(name: str, world: ShapeWorld) -> Path:
+def save_entry(
+    name: str, world: ShapeWorld, *, meshes: tuple[FixtureMesh, ...] | None = None
+) -> Path:
     """Write a library entry, replacing any previous one atomically.
 
     Through a temp file and `os.replace` so an interrupted write cannot
@@ -73,11 +84,24 @@ def save_entry(name: str, world: ShapeWorld) -> Path:
     work, and a half-written world reads back as an import failure.
     """
     path = _entry_path(name)
+    if meshes is None:
+        meshes = ()
+        if path.exists():
+            for node in ast.parse(path.read_bytes()).body:
+                if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "meshes" for t in node.targets
+                ):
+                    meshes = meshes_from_data(ast.literal_eval(node.value))
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(
         f'"""World library entry {name!r}, written by Commander; edit freely."""\n\n'
-        + world_module(world),
+        + world_module(world)
+        + (
+            f"\nmeshes = {pformat([m.to_dict() for m in meshes], sort_dicts=True)}\n"
+            if meshes
+            else ""
+        ),
         encoding="utf-8",
     )
     os.replace(tmp, path)
@@ -105,6 +129,78 @@ def load_entry(name: str) -> ShapeWorld:
             f"world module {path.name} must define `world = ...` as a ShapeWorld"
         )
     return world
+
+
+def entry_revision(name: str) -> str | None:
+    return file_revision(_entry_path(name))
+
+
+def read_literal_entry(name: str) -> tuple[ShapeWorld, str]:
+    """Preview saved data without executing a world module in the UI process."""
+    world, _, revision = read_authoring_entry(name)
+    return world, revision
+
+
+def read_authoring_entry(name: str) -> tuple[ShapeWorld, tuple[FixtureMesh, ...], str]:
+    """Read controller geometry and optional Commander fixture visuals separately."""
+    world, data, revision = _read_authoring_data(name)
+    try:
+        meshes = meshes_from_data(data)
+    except (TypeError, KeyError, ValueError, OverflowError) as error:
+        raise ValueError(f"{name}: cannot read fixture meshes: {error}") from error
+    return world, meshes, revision
+
+
+def entry_asset_references(name: str) -> set[Path]:
+    _, data, _ = _read_authoring_data(name)
+    return asset_references(data)
+
+
+def _read_authoring_data(name: str) -> tuple[ShapeWorld, object, str]:
+    data = _entry_path(name).read_bytes()
+    meshes = []
+    try:
+        tree = ast.parse(data)
+        assigned: set[str] = set()
+        for node in tree.body:
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                continue
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module == "waldoctl.world"
+                and node.level == 0
+                and all(
+                    n.name == "world_from_dict" and n.asname is None for n in node.names
+                )
+            ):
+                continue
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in ("world", "meshes")
+            ):
+                if node.targets[0].id in assigned:
+                    raise ValueError("World and meshes require unique assignments")
+                assigned.add(node.targets[0].id)
+                if node.targets[0].id == "meshes":
+                    meshes = ast.literal_eval(node.value)
+                continue
+            raise ValueError("The module contains executable or computed definitions")
+        payload = literal_argument(tree, "world", "world_from_dict")
+        if not isinstance(payload, dict):
+            raise ValueError("World data must be a dictionary")
+        world = world_from_dict(payload)
+    except (SyntaxError, TypeError, KeyError, ValueError, OverflowError) as error:
+        raise ValueError(
+            f"{name}: direct library loading requires a literal world_from_dict(...). "
+            f"Load computed worlds through the program. {error}"
+        ) from error
+    return world, meshes, hashlib.sha256(data).hexdigest()
 
 
 def delete_entry(name: str) -> None:

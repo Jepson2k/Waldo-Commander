@@ -21,7 +21,8 @@
             bottomContainer: null,
             controlPanel: null,
             bottomCovers: [],
-            columnCovers: []
+            columnCovers: [],
+            obstacles: []
         },
         constraints: {
             viewportMarginX: 80,
@@ -247,15 +248,16 @@
     }
 
     // ========== Shell geometry ==========
-    // What covers the 3D view: the column's right edge and the height the
-    // footer and bottom panel take from the bottom. The scene frames itself
-    // from the `wc:layout` event; CSS reads --wc-column-cover (the column
-    // stops above it and above the bottom plugin panels) and
+    // What covers the 3D view: the column's right edge, the height the
+    // footer and bottom panel take from the bottom, and the boxes of the
+    // `obstacles`, which the scene places its cards clear of. The scene
+    // frames itself from the `wc:layout` event; CSS reads --wc-column-cover
+    // (the column stops above it and above the bottom plugin panels) and
     // --wc-control-inset (the bottom panel stops short of the control panel).
 
     let columnOpen = false;
     let coupled = false;
-    let layout = { columnRight: 0, bottomCover: 0 };
+    let layout = { columnRight: 0, leftCover: 0, bottomCover: 0, obstacles: [] };
     let layoutFrame = 0;
 
     function setRootPx(name, value) {
@@ -278,12 +280,35 @@
         return cover;
     }
 
+    function obstacleBoxes() {
+        const boxes = [];
+        for (const selector of config.selectors.obstacles) {
+            for (const element of document.querySelectorAll(selector)) {
+                const rect = element.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0 && getComputedStyle(element).visibility !== 'hidden') {
+                    boxes.push({ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom });
+                }
+            }
+        }
+        return boxes;
+    }
+
     function publishLayout() {
         layoutFrame = 0;
         let columnRight = 0;
         const container = columnOpen ? getContainer('top') : null;
         if (container) {
             columnRight = Math.round(container.getBoundingClientRect().left + container.offsetWidth);
+        }
+        // A panel open over the settings gear covers the view's left as the
+        // column does, so the view centres on what it leaves uncovered.
+        let leftCover = columnRight;
+        const bottomPanels = getContainer('bottom');
+        if (bottomPanels) {
+            for (const panel of bottomPanels.querySelectorAll(':scope > .q-panel > .q-tab-panel')) {
+                const rect = panel.getBoundingClientRect();
+                if (rect.width > 0) leftCover = Math.max(leftCover, Math.round(rect.right));
+            }
         }
         const bottomCover = coverOf(config.selectors.bottomCovers);
         const columnCover = Math.max(bottomCover, coverOf(config.selectors.columnCovers));
@@ -294,7 +319,8 @@
         if (controlPanel) setRootPx('--wc-control-height', Math.ceil(controlPanel.getBoundingClientRect().height));
         setRootPx('--wc-control-inset', inset);
         setRootPx('--wc-column-cover', columnCover);
-        layout = { columnRight: columnRight, bottomCover: bottomCover };
+        setRootPx('--wc-bottom-cover', bottomCover);
+        layout = { columnRight: columnRight, leftCover: leftCover, bottomCover: bottomCover, obstacles: obstacleBoxes() };
         window.dispatchEvent(new CustomEvent('wc:layout', { detail: { ...layout } }));
     }
 
@@ -656,6 +682,12 @@
     function onTabChange(group, toTab) {
         console.log('[PanelResize] Tab change:', group, '->', toTab);
 
+        // A panel put away stays mounted, so a tooltip showing on one of its
+        // buttons would stay on screen with nothing under it.
+        for (const tip of document.querySelectorAll('.q-tooltip[id^="c"]')) {
+            getElement(tip.id.slice(1))?.hide?.();
+        }
+
         rememberTab(group, toTab);
 
         const containerSelector = group === 'top'
@@ -710,7 +742,7 @@
             if (container) {
                 const width = savedSize.width || defaultWidth(container, panelConfig);
                 if (width) {
-                    container.style.width = Math.min(width, getMaxWidth()) + 'px';
+                    container.style.width = Math.min(Math.max(width, panelConfig.minWidth || 0), getMaxWidth()) + 'px';
                 }
                 if (column || isFitPanel(panelId)) {
                     container.style.removeProperty('height');
@@ -848,10 +880,15 @@
             if (container) containerObserver.observe(container);
         });
         const layoutObserver = new ResizeObserver(scheduleLayout);
-        const watched = [config.selectors.controlPanel, ...config.selectors.bottomCovers];
-        for (const selector of watched) {
+        const watched = new Set();
+        for (const selector of [config.selectors.controlPanel, ...config.selectors.bottomCovers]) {
             const element = selector ? document.querySelector(selector) : null;
-            if (!element) continue;
+            if (element) watched.add(element);
+        }
+        for (const selector of config.selectors.obstacles) {
+            for (const element of document.querySelectorAll(selector)) watched.add(element);
+        }
+        for (const element of watched) {
             layoutObserver.observe(element);
             // A transform scales what is published without resizing the
             // box, so a resize can publish a size mid-transition and nothing
@@ -884,6 +921,8 @@
                 container.style.setProperty('width', Math.min(width, maxW) + 'px');
             } else if (container.offsetWidth > maxW) {
                 container.style.setProperty('width', maxW + 'px', 'important');
+            } else if (panelId && container.offsetWidth < config.panels[panelId]?.minWidth) {
+                container.style.setProperty('width', Math.min(config.panels[panelId].minWidth, maxW) + 'px', 'important');
             }
             // CSS caps a fit panel and pins a column; pinning either here would
             // stick after the window grows back.

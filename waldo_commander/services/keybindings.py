@@ -337,6 +337,27 @@ def _register_default_keybindings() -> None:
 
     cp = ui_state.control_panel
 
+    def scene_undo(redo: bool = False) -> None:
+        if ui_state.urdf_scene is not None:
+            ui_state.urdf_scene.undo_edit(redo=redo)
+
+    for key, shift, redo, display in (
+        ("z", False, False, "Ctrl+Z"),
+        ("z", True, True, "Ctrl+Shift+Z"),
+        ("y", False, True, "Ctrl+Y"),
+    ):
+        keybindings_manager.register(
+            Keybinding(
+                key=key,
+                display=display,
+                requires_ctrl=True,
+                requires_shift=shift,
+                description="Redo" if redo else "Undo the last scene or program edit",
+                action=lambda redo=redo: scene_undo(redo),
+                category="Editing",
+            )
+        )
+
     keybindings_manager.register(
         Keybinding(
             key="h",
@@ -379,6 +400,23 @@ def _register_default_keybindings() -> None:
             or ((dr := active_dry_run()) is not None and dr.total_steps > 0),
         )
     )
+
+    from waldo_commander.components.scene_camera import camera_action
+
+    for shifted, action, description in (
+        (False, "focus", "Focus inspected pose, edited object, or robot"),
+        (True, "previous", "Restore previous camera view"),
+    ):
+        keybindings_manager.register(
+            Keybinding(
+                key="f",
+                display="F",
+                requires_shift=shifted,
+                description=description,
+                action=lambda a=action: camera_action(a),
+                category="Camera",
+            )
+        )
 
     # Holdable jog keys: click = single step, hold = continuous jog.
     _register_cartesian_jog_keybindings(cp)

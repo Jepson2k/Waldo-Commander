@@ -6,9 +6,11 @@ import contextlib
 import logging
 import math
 import re
+import textwrap
 import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
@@ -40,11 +42,13 @@ from waldo_commander.services.programs import (
     shift_active_cursor,
 )
 from waldo_commander.services import python_source
+from waldo_commander.services import scene_source
 from waldo_commander.state import (
     ui_state,
 )
 from waldo_commander.common.logging_config import TRACE_ENABLED
 from waldo_commander.services.command_discovery import discover_robot_commands
+from waldo_commander.services.motion_guard import motion_guard
 
 logger = logging.getLogger(__name__)
 
@@ -67,22 +71,41 @@ CAPTURE_GAP_S = 0.2
 OBSERVER_STALE_S = 2.0
 
 
+# Decimal places shape code keeps: 0.1 mm in metres, 1e-4 rad.
+_SHAPE_DIGITS = 4
+_SHAPE_RESOLUTION = 10.0**-_SHAPE_DIGITS
+
+
+def _rounded(value: float) -> float:
+    # Adding 0.0 turns the -0.0 a tiny negative value rounds to into 0.0.
+    return round(float(value), _SHAPE_DIGITS) + 0.0
+
+
 def _shape_to_code(s) -> str:
-    """One waldoctl Shape as a constructor call, omitting default fields."""
-    parts = [f"name={s.name!r}"]
+    """One waldoctl Shape as a constructor call with one keyword per line,
+    omitting default fields. Lengths and angles keep the metres and radians
+    the constructor takes, rounded to 0.1 mm and 1e-4 rad."""
+    args = [f"name={s.name!r}"]
     for p in param_names(type(s)):
-        parts.append(f"{p}={getattr(s, p)!r}")
-    if tuple(s.pose) != _SHAPE_DEFAULT_POSE:
-        parts.append(f"pose={tuple(s.pose)!r}")
+        value = getattr(s, p)
+        shown = _rounded(value)
+        # A small dimension rounded to nothing would not construct.
+        if value > 0 and shown == 0:
+            shown = _SHAPE_RESOLUTION
+        args.append(f"{p}={shown!r}")
+    pose = tuple(_rounded(v) for v in s.pose)
+    if pose != _SHAPE_DEFAULT_POSE:
+        args.append(f"pose={pose!r}")
     if not s.collision:
-        parts.append("collision=False")
+        args.append("collision=False")
     if s.margin is not None:
-        parts.append(f"margin={s.margin!r}")
+        args.append(f"margin={_rounded(s.margin)!r}")
     if s.physics is not None:
-        parts.append(f"physics={s.physics!r}")
+        args.append(f"physics={s.physics!r}")
     if s.attachment is not None:
-        parts.append(f"attachment={s.attachment!r}")
-    return f"{type(s).__name__}({', '.join(parts)})"
+        args.append(f"attachment={s.attachment!r}")
+    body = "".join(f"    {arg},\n" for arg in args)
+    return f"{type(s).__name__}(\n{body})"
 
 
 def shapes_to_code(shapes) -> str:
@@ -90,8 +113,60 @@ def shapes_to_code(shapes) -> str:
     the environment's durable form is program code, not GUI state."""
     if not shapes:
         return "rbt.set_shapes([])"
-    body = "\n".join(f"    {_shape_to_code(s)}," for s in shapes)
+    body = "\n".join(textwrap.indent(_shape_to_code(s), "    ") + "," for s in shapes)
     return f"rbt.set_shapes([\n{body}\n])"
+
+
+def _add_imports(source: str, imports: str, code_line: int) -> tuple[str, int, int]:
+    """*source* with the statements *imports* added to its import block for
+    code starting on line *code_line*: below the program's leading imports,
+    or directly above that code when it comes first. Returns the new source,
+    the line the imports start on and how many lines went in."""
+    lines = source.split("\n")
+    added = imports.rstrip("\n").split("\n")
+    try:
+        body = ast.parse(source).body
+    except SyntaxError:
+        # Where the import block ends is unknown: the imports go directly
+        # above the code, at its indentation.
+        at = code_line - 1
+        anchor = lines[at] if at < len(lines) else ""
+        indent = anchor[: len(anchor) - len(anchor.lstrip(" \t"))]
+        added = [indent + line for line in added]
+    else:
+        header, joined = 0, False
+        for index, node in enumerate(body):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                header, joined = node.end_lineno or node.lineno, True
+            elif (
+                index == 0
+                and isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                header = node.end_lineno or node.lineno
+            else:
+                # Without imports or a docstring they go after the comments
+                # the program opens with.
+                header = header or node.lineno - 1
+                break
+        at = min(header, code_line - 1)
+        if not joined and at < len(lines) and lines[at].strip():
+            added.append("")
+    lines[at:at] = added
+    return "\n".join(lines), at + 1, len(added)
+
+
+def shape_imports(shapes, text: str, above: int) -> str:
+    """The import line for the constructors ``shapes_to_code(shapes)`` uses
+    that *text* has not imported for code below line *above*, or nothing."""
+    names = {type(s).__name__ for s in shapes}
+    if any(s.physics is not None for s in shapes):
+        names.add("Physical")  # _shape_to_code emits it by repr
+    if any(s.attachment is not None for s in shapes):
+        names.add("Attachment")
+    missing = sorted(names - _imported_waldoctl_names(text, above))
+    return f"from waldoctl import {', '.join(missing)}\n" if missing else ""
 
 
 JOG_BLEND_R_MAX = 100.0
@@ -281,6 +356,15 @@ class RecordingSession:
         return ui_state.textareas_by_tab.get(self.tab_id)
 
 
+@dataclass(frozen=True)
+class SceneRecordingCheckpoint:
+    session: RecordingSession | None
+    blocks: tuple[StagedBlock, ...]
+    insert_line: int | None
+    retake: tuple[int, int] | None
+    retake_text: str
+
+
 @dataclass
 class PendingCapture:
     """A captured span still converting, holding its place in the take's
@@ -318,6 +402,7 @@ class MotionRecorder:
     """
 
     def __init__(self):
+        self.scene_revision = 0
         self._active_jog: ActiveJog | None = None
         # Actions queued while a jog is in progress (arm still moving).
         # Each entry: (action_type, params, timestamp_of_click)
@@ -473,6 +558,45 @@ class MotionRecorder:
     def session(self) -> RecordingSession | None:
         return self._session
 
+    def scene_checkpoint(self) -> SceneRecordingCheckpoint:
+        if self.scene_edit_busy:
+            raise ValueError(
+                "Finish the current recording operation before editing objects"
+            )
+        self._sync_from_mirror()
+        session = self._session
+        return SceneRecordingCheckpoint(
+            session,
+            tuple(replace(block) for block in session.blocks) if session else (),
+            self._insert_line,
+            session.retake if session else None,
+            session.retake_text if session else "",
+        )
+
+    @property
+    def scene_edit_busy(self) -> bool:
+        return bool(
+            self._active_jog
+            or self._span
+            or self._pending
+            or (self._session and any(block.busy for block in self._session.blocks))
+        )
+
+    def restore_scene_checkpoint(self, checkpoint: SceneRecordingCheckpoint) -> None:
+        session = self._session
+        if session is None or session is not checkpoint.session:
+            return
+        self._confirmed = False
+        session.blocks = [replace(block) for block in checkpoint.blocks]
+        session.retake = checkpoint.retake
+        session.retake_text = checkpoint.retake_text
+        self._insert_line = (
+            checkpoint.insert_line if is_any_program_recording() else None
+        )
+        self.stamp_action_clock()
+        self._push_anchors()
+        self._notify_session()
+
     def add_session_listener(self, callback: Callable[[], None]) -> None:
         if callback not in self._session_listeners:
             self._session_listeners.append(callback)
@@ -501,12 +625,16 @@ class MotionRecorder:
             return {}
         return dict(textarea.line_anchors)
 
-    def _write(self, textarea, text: str) -> None:
-        """Set the editor text. Every anchor the browser reported is from
-        before this change, so none is current until it reports again."""
+    def _write(self, textarea, text: str, *, scene: bool = False) -> None:
+        """Set the editor text, as one undoable step for a *scene* edit. Every
+        anchor the browser reported is from before this change, so none is
+        current until it reports again."""
         self._writing = True
         try:
-            textarea.value = text
+            if scene:
+                textarea.commit_scene_value(text)
+            else:
+                textarea.value = text
         finally:
             self._writing = False
         self._confirmed = False
@@ -759,6 +887,7 @@ class MotionRecorder:
         ):
             return
         block.busy = True
+        self.scene_revision += 1
         self._notify_session()
         program = waldoctl.commander.programs.get(session.tab_id)
         name = Path(program.filename).stem if program is not None else "program"
@@ -1010,7 +1139,12 @@ class MotionRecorder:
     def _record_action_impl(self, action_type: str, **params) -> None:
         """Core recording logic (no is_recording guard)."""
         snippet = self._generate_code(action_type, params)
-        self._insert_snippet(snippet)
+        self._insert_snippet(
+            snippet,
+            partial(shape_imports, params["shapes"])
+            if action_type == "set_shapes"
+            else None,
+        )
         self._last_action_wall_time = time.time()
         if action_type in ("move_j", "move_l") and jog_blend_r() > 0:
             self._blend_terminator_pending = True
@@ -1091,19 +1225,8 @@ class MotionRecorder:
             return snippet
 
         elif action_type == "set_shapes":
-            shapes = params["shapes"]
-            snippet = shapes_to_code(shapes)
-            # Prepend the constructor imports the program doesn't have yet.
-            imported = _imported_waldoctl_names(_editor_text(), self.insertion_line())
-            names = {type(s).__name__ for s in shapes}
-            if any(s.physics is not None for s in shapes):
-                names.add("Physical")  # _shape_to_code emits it by repr
-            if any(s.attachment is not None for s in shapes):
-                names.add("Attachment")
-            missing = sorted(names - imported)
-            if missing:
-                snippet = f"from waldoctl import {', '.join(missing)}\n{snippet}"
-            return snippet
+            # Its imports join the program's import block as it is inserted.
+            return shapes_to_code(params["shapes"])
 
         else:
             return f"# Unknown action: {action_type}"
@@ -1229,6 +1352,78 @@ class MotionRecorder:
             return self._insert_line
         return active_cursor_line()
 
+    def insert_scene_code(
+        self,
+        compose: Callable[[str, int], str],
+        *,
+        cursor: int | None = None,
+        imports: Callable[[str, int], str] | None = None,
+    ) -> tuple[int, int]:
+        """Insert the code ``compose(source, line)`` builds for the line it
+        goes below, with the import statements ``imports(source, line)``
+        names joining the program's import block, as one editor undo step,
+        and flash it; returns the code's first line and how many it takes.
+
+        During a take it goes at the recording cursor and is staged like any
+        recorded step, so the take's Undo takes it out. Otherwise it goes
+        below the statement at *cursor* (the user's cursor by default). Raises
+        ``ValueError`` for a program that does not parse or would not compile.
+        """
+        textarea = ui_state.active_textarea
+        if not textarea:
+            raise ValueError("Open a program before inserting.")
+        if self._insert_line is not None and not is_any_program_recording():
+            self._insert_line = None
+        session = self._session
+        tracked = session is not None and session.textarea is textarea
+        staging = tracked and is_any_program_recording()
+        if tracked or self._insert_line:
+            self._sync_from_mirror()
+        original = str(textarea.value or "")
+        if staging:
+            cursor = self._insert_line or 0
+        elif cursor is None:
+            cursor = active_cursor_line()
+        line = scene_source.insertion_line(original, cursor)
+        new_value, first_line, count = scene_source.insert_scene_code(
+            original, line, compose(original, line)
+        )
+        needed = imports(original, line) if imports is not None else ""
+        import_line, import_count = 0, 0
+        if needed:
+            new_value, import_line, import_count = _add_imports(
+                new_value, needed, first_line
+            )
+        self._write(textarea, new_value, scene=True)
+        if tracked:
+            self._shift(first_line - 1, count)
+            self._shift(import_line - 1, import_count)
+        first_line += import_count
+        last_line = first_line + count - 1
+        if staging:
+            self._stage(first_line, count, "action")
+            if import_count:
+                self._stage(import_line, import_count, "action", merge=False)
+            self._insert_line = last_line
+            shift_active_cursor(import_line - 1, import_count)
+        else:
+            advance_active_cursor(last_line)
+        self._last_action_wall_time = time.time()
+        if tracked or self._insert_line:
+            self._push_anchors()
+
+        from waldo_commander.components.editor_decorations import decorations
+
+        decorations.flash_editor_lines(
+            [
+                *range(import_line, import_line + import_count),
+                *range(first_line, last_line + 1),
+            ]
+        )
+        if staging:
+            self._notify_session()
+        return first_line, count
+
     def insert_prelude(self, prelude: str) -> tuple[int, int]:
         """Put *prelude* at the top of the active program, below its docstring
         and future imports, and flash it; returns the first line written and
@@ -1273,12 +1468,16 @@ class MotionRecorder:
             self._notify_session()
         return first_line, count
 
-    def _insert_snippet(self, snippet: str) -> tuple[int, int]:
+    def _insert_snippet(
+        self, snippet: str, imports: Callable[[str, int], str] | None = None
+    ) -> tuple[int, int]:
         """Insert code below the recording session's insertion cursor (or the
-        user's cursor line outside a session) and flash the inserted lines.
-        What recording writes into the session's editor is staged, and the
-        first write of a re-recording replaces the selected lines instead.
-        Returns the first line written and how many."""
+        user's cursor line outside a session), with the import statements
+        ``imports(source, line)`` names for code below *line* joining the
+        program's import block, and flash the inserted lines. What recording
+        writes into the session's editor is staged, and the first write of a
+        re-recording replaces the selected lines instead. Returns the code's
+        first line and how many it takes."""
         textarea = ui_state.active_textarea
         if not textarea:
             logger.error("Editor textarea not ready - open Program tab first")
@@ -1298,14 +1497,10 @@ class MotionRecorder:
         if staging or self._insert_line:
             self._sync_from_mirror()
         val = str(textarea.value or "")
-        if staging and session is not None and session.retake is not None:
-            first, last = session.retake
+        retake = session.retake if staging and session is not None else None
+        if retake is not None:
+            first, last = retake
             new_value, first_line, count = replace_lines(val, first, last, snippet)
-            self._write(textarea, new_value)
-            session.retake = None
-            self._shift(last, count - (last - first + 1))
-            block = self._stage(first_line, count, "action", merge=False)
-            block.original = session.retake_text
         else:
             after = (
                 self._insert_line
@@ -1313,19 +1508,40 @@ class MotionRecorder:
                 else active_cursor_line()
             )
             new_value, first_line, count = insert_below_line(val, snippet, after)
-            # Assigning value triggers the editor's on_change -> debounced simulation.
-            self._write(textarea, new_value)
-            if staging:
-                self._shift(first_line - 1, count)
-                self._stage(first_line, count, "action")
+        needed = imports(new_value, first_line - 1) if imports is not None else ""
+        import_line, import_count = 0, 0
+        if needed:
+            new_value, import_line, import_count = _add_imports(
+                new_value, needed, first_line
+            )
+        # Assigning value triggers the editor's on_change -> debounced simulation.
+        self._write(textarea, new_value)
+        if session is not None and retake is not None:
+            first, last = retake
+            session.retake = None
+            self._shift(last, count - (last - first + 1))
+        elif staging:
+            self._shift(first_line - 1, count)
+        if staging:
+            self._shift(import_line - 1, import_count)
+        first_line += import_count
+        if session is not None and retake is not None:
+            block = self._stage(first_line, count, "action", merge=False)
+            block.original = session.retake_text
+        elif staging:
+            self._stage(first_line, count, "action")
+        if staging and import_count:
+            self._stage(import_line, import_count, "action", merge=False)
 
         last_line = first_line + count - 1
         if self._insert_line is None:
             advance_active_cursor(last_line)
-        elif self._insert_line or staging:
-            # The session cursor advances past each insert so recorded steps
-            # stay chronological while the user's cursor stays put.
-            self._insert_line = last_line
+        else:
+            if self._insert_line or staging:
+                # The session cursor advances past each insert so recorded
+                # steps stay chronological while the user's cursor stays put.
+                self._insert_line = last_line
+            shift_active_cursor(import_line - 1, import_count)
         if staging or self._insert_line:
             self._push_anchors()
 
@@ -1334,7 +1550,12 @@ class MotionRecorder:
         # layered dependency direction. Keep it lazy.
         from waldo_commander.components.editor_decorations import decorations
 
-        decorations.flash_editor_lines(list(range(first_line, last_line + 1)))
+        decorations.flash_editor_lines(
+            [
+                *range(import_line, import_line + import_count),
+                *range(first_line, last_line + 1),
+            ]
+        )
         if staging:
             self._notify_session()
         return first_line, count
@@ -1344,6 +1565,7 @@ class MotionRecorder:
     @contextlib.contextmanager
     def owned(self) -> Iterator[None]:
         """A window of motion WC commanded, which the observer leaves alone."""
+        motion_guard.note_command()
         self._owned += 1
         try:
             yield
@@ -1555,6 +1777,7 @@ class MotionRecorder:
     def _reserve_capture(self, take: RecordingSession) -> PendingCapture:
         """Hold a capture's place in its take with a line anchor: below the
         recording cursor, so whatever is recorded meanwhile goes after it."""
+        self.scene_revision += 1
         current = self._session is take
         if current:
             self._sync_from_mirror()

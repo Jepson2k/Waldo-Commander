@@ -254,9 +254,10 @@ async def test_commander_runs_on_the_par6_runtime(
         predicted = program.dry_run.predicted_current
         assert predicted is not None, "the predicted pass never ran"
         assert "setpoint_rad" in predicted.channels
-        assert layers_available(program.dry_run)["predicted_visible"]
+        assert "com" in predicted.channels
+        assert layers_available(program.dry_run)["com_visible"]
         playback.refresh_layers()
-        assert playback._layer_checks["predicted_visible"].enabled
+        assert playback._layer_checks["com_visible"].enabled
         assert playback._scrub_slider.enabled
 
         # Diagnostics off the wire, all of it from the status broadcast:

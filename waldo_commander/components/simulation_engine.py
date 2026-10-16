@@ -270,6 +270,8 @@ class SimulationEngine:
         edited = waldoctl.commander.programs.get(tab_id)
         if edited is not None:
             edited.dry_run.revision += 1
+        if tab_id == waldoctl.commander.programs.active_id and ui_state.urdf_scene:
+            ui_state.urdf_scene.inspection.clear()
 
         async def run_simulation_quietly():
             try:
@@ -322,7 +324,7 @@ class SimulationEngine:
         )
         if (
             is_any_program_running()
-            or waldoctl.commander.status.editing_mode
+            or ui_state.editing_target
             or self._simulation_debounce_timer is not None
             or playback_coordination.sim_pose_override
             or is_playback_active
