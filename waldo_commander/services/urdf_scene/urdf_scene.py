@@ -20,7 +20,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Coroutine
-from typing import Any, Mapping, NamedTuple, Sequence
+from typing import Any, Mapping, NamedTuple, Sequence, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -131,7 +131,10 @@ def object_render_poses(kind: str, poses: np.ndarray) -> np.ndarray:
         return out
     rows = np.isfinite(out).all(axis=1)
     if rows.any():
-        turned = Rotation.from_quat(out[rows][:, [4, 5, 6, 3]]) * _Y_TO_Z_UP_ROTATION
+        turned = cast(
+            Rotation,
+            Rotation.from_quat(out[rows][:, [4, 5, 6, 3]]) * _Y_TO_Z_UP_ROTATION,
+        )
         out[rows, 3:7] = turned.as_quat()[:, [3, 0, 1, 2]]
     return out
 

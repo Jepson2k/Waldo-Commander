@@ -84,7 +84,8 @@ def _errors(
         if len(selected):
             a = Rotation.from_euler("XYZ", commanded.tcp[ideal, 3:6])
             b = Rotation.from_euler("XYZ", predicted.tcp[selected, 3:6])
-            orientation[selected] = np.rad2deg((a.inv() * b).magnitude())
+            relative = Rotation.from_matrix(a.inv().as_matrix() @ b.as_matrix())
+            orientation[selected] = np.rad2deg(relative.magnitude())
         delta = predicted.joints_rad[selected] - commanded.joints_rad[ideal]
         for index, wraps in enumerate(continuous):
             if wraps:

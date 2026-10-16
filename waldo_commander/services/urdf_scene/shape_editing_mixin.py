@@ -956,8 +956,9 @@ class ShapeEditingMixin:
                         np.asarray(position)
                         + rotation.apply(np.asarray(s.pose[:3]) - center)
                     ),
-                    *(
-                        rotation * Rotation.from_matrix(pose_matrix(s.pose)[:3, :3])
+                    *cast(
+                        Rotation,
+                        rotation * Rotation.from_matrix(pose_matrix(s.pose)[:3, :3]),
                     ).as_euler("xyz"),
                 ),
             )

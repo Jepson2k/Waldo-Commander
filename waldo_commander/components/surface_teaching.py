@@ -268,7 +268,7 @@ class SurfaceTeaching:
 
     @staticmethod
     def _arrow(origin, axis, length, token):
-        rotation, _ = Rotation.align_vectors([axis], [[0, 1, 0]])
+        rotation = Rotation.align_vectors([axis], [[0, 1, 0]])[0]
         with s3d.group().move(*origin).rotate_R(rotation.as_matrix().tolist()):
             s3d.cylinder(0.001, 0.001, length - 0.01).move(
                 0, (length - 0.01) / 2, 0
