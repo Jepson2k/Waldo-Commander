@@ -921,6 +921,10 @@ class SettingsContent:
 
     def _build_motion_profile(self, prefs: dict) -> None:
         synchronizing = False
+        # The select follows changes in the reported profile, not its value:
+        # the status frames between a confirmed change and the first one that
+        # carries it still report the old profile.
+        followed = robot_state.motion_profile
 
         def request_profile_change(e):
             if synchronizing:
@@ -928,9 +932,11 @@ class SettingsContent:
             return _on_motion_profile_change(e)
 
         async def _on_motion_profile_change(e):
+            nonlocal followed
             async with self._motion_profile_lock:
                 profile = e.value
                 previous = preview_motion_profile(ui_state.active_robot)
+                confirmed = False
                 try:
                     confirmed = await select_motion_profile(self.client, profile)
                 except Exception as exc:
@@ -945,6 +951,9 @@ class SettingsContent:
                     sync_profile()
                     if preview_motion_profile(ui_state.active_robot) != previous:
                         ui_state.editor_panel.replan_all()
+                elif not confirmed:
+                    # The status stream settles it even if it never changes.
+                    followed = None
 
         def sync_profile() -> None:
             nonlocal synchronizing
@@ -958,8 +967,16 @@ class SettingsContent:
                 synchronizing = False
 
         def sync_reported_profile() -> None:
-            if not self._motion_profile_lock.locked():
-                sync_profile()
+            nonlocal followed
+            reported = robot_state.motion_profile
+            if (
+                self._motion_profile_lock.locked()
+                or reported == followed
+                or not self._page.has_socket_connection
+            ):
+                return
+            followed = reported
+            sync_profile()
 
         motion_profile_options = {}
         for p in ui_state.active_robot.motion_profiles:
