@@ -35,9 +35,19 @@ from waldo_commander.services.control_lease import (
     require_browser_control,
 )
 from waldo_commander.services.motion_guard import motion_guard
+from waldo_commander.services.motion_profile import (
+    preview_motion_profile,
+    select_motion_profile,
+    store_motion_profile,
+)
 from waldo_commander.services.motion_recorder import JOG_BLEND_R_MAX, jog_blend_r
 from waldo_commander.services.tcp_calibration import ToolChanged, read_applied_tcp
-from waldo_commander.state import automation_state, simulation_state, ui_state
+from waldo_commander.state import (
+    automation_state,
+    robot_state,
+    simulation_state,
+    ui_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +181,7 @@ class SettingsContent:
         self._variant_container: ui.column | None = None
         self._tcp_offset_container: ui.column | None = None
         self._tool_lock = asyncio.Lock()
+        self._motion_profile_lock = asyncio.Lock()
         self._tcp_pushing = False
         self._tcp_push_next: tuple[str, dict, OffsetInputs, Client, int] | None = None
         # Bumped by every tool change. A push carries the epoch it was
@@ -180,17 +191,13 @@ class SettingsContent:
 
     def _load_preferences(self) -> dict:
         """Load persisted preferences from storage."""
-        valid_profiles = ui_state.active_robot.motion_profiles
-        stored_profile = ng_app.storage.general.get("motion_profile", "TOPPRA")
-        if stored_profile not in valid_profiles and valid_profiles:
-            stored_profile = valid_profiles[0]
         return {
             "com_port": ng_app.storage.general.get("com_port", ""),
             "show_route": ng_app.storage.general.get("show_route", True),
             "envelope_mode": EnvelopeMode(
                 ng_app.storage.general.get("envelope_mode", "auto")
             ),
-            "motion_profile": stored_profile,
+            "motion_profile": preview_motion_profile(ui_state.active_robot),
             "jog_blend_r": jog_blend_r(),
             "translation_frame": ng_app.storage.general.get("translation_frame", "WRF"),
             "jog_invert_x": bool(ng_app.storage.general.get("jog_invert_x", False)),
@@ -913,26 +920,80 @@ class SettingsContent:
             camera_service.start(cam_value)
 
     def _build_motion_profile(self, prefs: dict) -> None:
+        synchronizing = False
+        # The select follows changes in the reported profile, not its value:
+        # the status frames between a confirmed change and the first one that
+        # carries it still report the old profile.
+        followed = robot_state.motion_profile
+
+        def request_profile_change(e):
+            if synchronizing:
+                return None
+            return _on_motion_profile_change(e)
+
         async def _on_motion_profile_change(e):
-            profile = e.value
-            try:
-                await self.client.select_profile(profile)
-            except Exception as exc:
-                logger.warning("select_profile(%s) failed: %s", profile, exc)
-                ui.notify(f"Profile change failed: {exc}", color="negative")
+            nonlocal followed
+            async with self._motion_profile_lock:
+                profile = e.value
+                previous = preview_motion_profile(ui_state.active_robot)
+                confirmed = False
+                try:
+                    confirmed = await select_motion_profile(self.client, profile)
+                except Exception as exc:
+                    logger.warning("select_profile(%s) failed: %s", profile, exc)
+                    self._notify(
+                        self._page, f"Profile change failed: {exc}", "negative"
+                    )
+                else:
+                    if confirmed and robot_state.motion_profile is None:
+                        store_motion_profile(profile)
+                if robot_state.motion_profile is None:
+                    sync_profile()
+                    if preview_motion_profile(ui_state.active_robot) != previous:
+                        ui_state.editor_panel.replan_all()
+                elif not confirmed:
+                    # The status stream settles it even if it never changes.
+                    followed = None
+
+        def sync_profile() -> None:
+            nonlocal synchronizing
+            profile = preview_motion_profile(ui_state.active_robot)
+            if not self._page.has_socket_connection or profile == select.value:
                 return
-            ng_app.storage.general["motion_profile"] = profile
+            synchronizing = True
+            try:
+                select.set_value(profile)
+            finally:
+                synchronizing = False
+
+        def sync_reported_profile() -> None:
+            nonlocal followed
+            reported = robot_state.motion_profile
+            if (
+                self._motion_profile_lock.locked()
+                or reported == followed
+                or not self._page.has_socket_connection
+            ):
+                return
+            followed = reported
+            sync_profile()
 
         motion_profile_options = {}
         for p in ui_state.active_robot.motion_profiles:
             motion_profile_options[p] = p.replace("_", " ").title()
 
         with _setting_row("Motion profile", "Trajectory generation algorithm"):
-            ui.select(
-                options=motion_profile_options,
-                value=prefs["motion_profile"],
-                on_change=_on_motion_profile_change,
-            ).classes("w-32").props("dense").mark("select-motion-profile")
+            select = (
+                ui.select(
+                    options=motion_profile_options,
+                    value=prefs["motion_profile"],
+                    on_change=request_profile_change,
+                )
+                .classes("w-32")
+                .props("dense")
+                .mark("select-motion-profile")
+            )
+        ui.timer(0.3, sync_reported_profile)
 
     def _build_backend_selector(self) -> None:
         """Backend (robot driver) selection dropdown.
