@@ -499,6 +499,7 @@ export class SceneCore {
     clearTimeout(this.restoreTimer);
     this.observer.disconnect();
     this.gestures.abort("unmount");
+    this.gestures.dispose();
     window.removeEventListener("blur", this.onBlur);
     document.removeEventListener("visibilitychange", this.onVisibility);
     window.removeEventListener("pagehide", this.onPageHide);

@@ -1,11 +1,15 @@
 // Gestures the browser proposes to the app: a ring drag, a gizmo drag, a
 // joint turned while editing, a keep-out moved. Each event carries the epoch
-// the browser last heard, the gesture's drag id and a sequence number. The
-// app admits a gesture, follows its samples and ends it once.
+// the browser last heard, the gesture's drag id, a sequence number and the
+// longest the page has lately been too busy to run anything, since it cannot
+// report while it is. A software renderer blocks the page for a few hundred
+// milliseconds a frame. The app admits a gesture, follows its samples and
+// ends it once.
 //
 // Samples go out at most 30 times a second. While a gesture is open and
-// nothing else has gone out for KEEP_MS, a keep-alive does, so the app can
-// end a drag whose browser went quiet. A dialog covering the view ends it.
+// nothing else has gone out for KEEP_MS, a keep-alive does, on a timer or
+// with its pointer's next move, so the app can end a drag whose browser went
+// quiet. A dialog covering the view ends it.
 //
 // The nodes a gesture moves are held: the app's state does not land on them
 // while the drag runs, and after its release they keep what the drag showed
@@ -14,6 +18,10 @@
 
 const KEEP_MS = 100;
 const SAMPLE_MS = 1000 / 30;
+// How late a timer due every PROBE_MS runs is how long the page was busy; a
+// busy spell's length halves every BUSY_HALF_LIFE_MS after it.
+const PROBE_MS = 100;
+const BUSY_HALF_LIFE_MS = 2000;
 
 export class Gestures {
   constructor(core) {
@@ -23,6 +31,25 @@ export class Gestures {
     this.current = null;
     this.blocks = new Set(); // why no gesture may start: "context lost", "disconnect"
     this.pending = new Map(); // drag -> a released gesture still holding nodes
+    this.busyMs = 0;
+    this.probed = performance.now();
+    this.probe = setInterval(() => this.measureBusy(), PROBE_MS);
+  }
+
+  dispose() {
+    clearInterval(this.probe);
+  }
+
+  measureBusy() {
+    const now = performance.now();
+    const fade = 0.5 ** ((now - this.probed) / BUSY_HALF_LIFE_MS);
+    this.busyMs = Math.max(now - this.probed - PROBE_MS, this.busyMs * fade);
+    this.probed = now;
+  }
+
+  // As busy as lately, or busier if the probe is overdue now.
+  get busy() {
+    return Math.max(this.busyMs, performance.now() - this.probed - PROBE_MS);
   }
 
   get active() {
@@ -43,9 +70,16 @@ export class Gestures {
     this.send(g, "begin", fields);
     g.timer = setInterval(() => {
       if (this.core.covered) this.abort("dialog");
-      else if (performance.now() - g.last >= KEEP_MS) this.send(g, "keep", {});
+      else this.heard();
     }, KEEP_MS);
     return g;
+  }
+
+  // The open gesture is still there. A page too busy drawing to run its
+  // timers still hears the pointer, so a move counts as well as the timer.
+  heard() {
+    const g = this.current;
+    if (g && performance.now() - g.last >= KEEP_MS) this.send(g, "keep", {});
   }
 
   // `rec`'s properties follow the drag, not the app, until the gesture ends.
@@ -158,7 +192,7 @@ export class Gestures {
   send(g, t, fields) {
     g.seq++;
     g.last = performance.now();
-    this.core.emit("gesture", { t, kind: g.kind, epoch: this.epoch, drag: g.drag, seq: g.seq, ...fields });
+    this.core.emit("gesture", { t, kind: g.kind, epoch: this.epoch, drag: g.drag, seq: g.seq, busy_ms: Math.round(this.busy), ...fields });
   }
 
   setEpoch(epoch) {

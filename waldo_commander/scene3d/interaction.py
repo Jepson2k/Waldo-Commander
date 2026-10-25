@@ -11,7 +11,11 @@ the gesture's drag id and sequence number:
 - A gesture ends once, released or aborted; what follows its end is dropped.
 - The browser holds one gesture at a time, so a begin ends any still open.
 - A gesture the browser stops reporting on for ``LIVENESS_S`` is aborted, so a
-  lost release cannot leave the robot chasing its last target.
+  lost release cannot leave the robot chasing its last target. A browser that
+  says it has lately been too busy to run anything for longer gets three such
+  spells, up to ``LIVENESS_MAX_S``: it cannot report while busy. Before its first
+  sample a gesture has no target to chase, and a page that has just begun
+  drawing a drag stalls longest then, so it gets ``LIVENESS_MAX_S``.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypeGuard
 
 if TYPE_CHECKING:
     from .element import WcScene
@@ -29,6 +33,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 LIVENESS_S = 0.5
+LIVENESS_MAX_S = 3.0
+_BUSY_SPELLS = 3
 _WATCH_S = 0.1
 
 
@@ -38,7 +44,19 @@ class Gesture:
     drag: int
     seq: int
     seen: float
+    patience: float = LIVENESS_S
+    sampled: bool = False
     data: dict[str, Any] = field(default_factory=dict)
+
+    def heard(self, args: dict[str, Any]) -> None:
+        """The browser reported; how long it may now stay quiet follows how
+        busy it says it has lately been."""
+        self.seen = time.monotonic()
+        busy_ms = args.get("busy_ms")
+        if _number(busy_ms) and busy_ms > 0:
+            self.patience = min(
+                max(LIVENESS_S, _BUSY_SPELLS * busy_ms / 1000), LIVENESS_MAX_S
+            )
 
 
 class GestureHandler(Protocol):
@@ -60,7 +78,7 @@ class Handlers:
     end: Callable[[Gesture, dict[str, Any] | None, bool], None]
 
 
-def _number(value: Any) -> bool:
+def _number(value: Any) -> TypeGuard[int | float]:
     return (
         isinstance(value, int | float)
         and not isinstance(value, bool)
@@ -140,6 +158,7 @@ class Gestures:
                 return
             self.abort_all()
             gesture = Gesture(kind, drag, seq, time.monotonic())
+            gesture.heard(args)
             if not self.handlers[kind].admit(gesture, args):
                 self._ended.add(drag)
                 self._reject(drag)
@@ -150,8 +169,9 @@ class Gestures:
         if gesture is None or gesture.kind != kind or seq <= gesture.seq:
             return
         gesture.seq = seq
-        gesture.seen = time.monotonic()
+        gesture.heard(args)
         if phase == "move":
+            gesture.sampled = True
             self.handlers[kind].move(gesture, args)
         elif phase == "end":
             self._finish(gesture, args, aborted=bool(args.get("aborted")))
@@ -192,8 +212,14 @@ class Gestures:
         else:
             self._watch_skipped = False
             for gesture in list(self._open.values()):
-                if now - gesture.seen > LIVENESS_S:
-                    logger.info("a %s drag went quiet; ending it", gesture.kind)
+                allowed = gesture.patience if gesture.sampled else LIVENESS_MAX_S
+                if now - gesture.seen > allowed:
+                    logger.info(
+                        "a %s drag went quiet for %.2f s, %.2f s allowed; ending it",
+                        gesture.kind,
+                        now - gesture.seen,
+                        allowed,
+                    )
                     self._end_here(gesture)
         self._arm_watch()
 

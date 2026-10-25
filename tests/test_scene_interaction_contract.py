@@ -40,6 +40,7 @@ from tests.test_scene_jog_handles import (
     _shown_frame,
     _start_recording,
 )
+from waldo_commander.scene3d.interaction import LIVENESS_S
 from waldo_commander.services.control_lease import BROWSER, control_lease
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_recording
@@ -170,9 +171,11 @@ async def test_a_drag_gone_quiet_ends_and_a_frame_the_arm_has_left_is_refused(
 ) -> None:
     """A ring drag whose browser stops reporting ends within half a second:
     the arm stops short of its target, nothing is recorded, and a late
-    release revives nothing. A gizmo grabbed on a frame drawn where the arm
-    no longer is would aim the drag the wrong way: it is refused, and the
-    frame is placed again."""
+    release revives nothing. A browser busy for 400 ms at a time cannot
+    report more often, so its drag lasts three such spells, and a drag
+    not yet moved has nothing to chase, so it lasts longer still. A gizmo
+    grabbed on a frame drawn where the arm no longer is would aim the drag
+    the wrong way: it is refused, and the frame is placed again."""
     urdf = await _open(user)
     scene = urdf.scene
     panel = ui_state.control_panel
@@ -187,7 +190,9 @@ async def test_a_drag_gone_quiet_ends_and_a_frame_the_arm_has_left_is_refused(
         quiet = ring(user, scene, 0).move(delta=30.0)
         went_quiet = time.monotonic()
         assert await wait_until(lambda: not scene.gestures.open, 2.0)
-        assert time.monotonic() - went_quiet < 0.8
+        # The watch looks every 0.1 s and gives a check that ran late one
+        # more round.
+        assert time.monotonic() - went_quiet < LIVENESS_S + 0.4
         assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
         stopped = np.array(await panel.client.angles())
         assert stopped[0] < start[0] + 20.0, "the arm went on to the target"
@@ -196,6 +201,22 @@ async def test_a_drag_gone_quiet_ends_and_a_frame_the_arm_has_left_is_refused(
         assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
         assert np.array(await panel.client.angles()) == pytest.approx(stopped, abs=0.1)
         assert str(textarea.value).count("move_j(") == before, textarea.value
+
+        slow = Drag(user, scene, "ring").begin(joint=0, busy_ms=400)
+        slow.move(delta=-5.0, busy_ms=400)
+        went_quiet = time.monotonic()
+        await asyncio.sleep(1.0)
+        assert scene.gestures.open, "a slow browser's drag ended between its frames"
+        assert await wait_until(lambda: not scene.gestures.open, 2.0)
+        assert 1.2 <= time.monotonic() - went_quiet < 1.2 + 0.4
+        assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+        assert str(textarea.value).count("move_j(") == before, textarea.value
+
+        unmoved = Drag(user, scene, "ring").begin(joint=0)
+        await asyncio.sleep(1.0)
+        assert scene.gestures.open, "a drag that moved nothing ended as quiet"
+        unmoved.release(delta=0.0)
+        assert await wait_until(lambda: not scene.gestures.open, 2.0)
     finally:
         waldoctl.commander.settings.jog.speed = speed
         if is_any_program_recording():

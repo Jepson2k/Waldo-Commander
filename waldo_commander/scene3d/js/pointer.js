@@ -447,7 +447,10 @@ export class Pointer {
     if (drag && e.pointerId === drag.pointerId) {
       // The button came up where this page never heard it.
       if (unseen) this.abortDrag("released unseen");
-      else drag.move(e);
+      else {
+        drag.move(e);
+        this.core.gestures.heard();
+      }
     }
     if (unseen) this.lift(e);
   }
