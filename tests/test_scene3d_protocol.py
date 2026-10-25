@@ -250,11 +250,12 @@ async def test_gestures_are_admitted_once_kept_in_order_and_end_once(
         ("end", 9, False),
     ]
 
-    # A drag that goes quiet ends aborted.
+    # A drag that goes quiet once it has moved ends aborted.
     probe.log.clear()
     gesture("begin", 3, 1)
+    gesture("move", 3, 2)
     await asyncio.sleep(0.8)
-    assert probe.log == [("admit", 3, 1), ("end", 3, True)]
+    assert probe.log == [("admit", 3, 1), ("move", 3, 2), ("end", 3, True)]
 
     # A new epoch ends what is open; events from before it are stale.
     probe.log.clear()
