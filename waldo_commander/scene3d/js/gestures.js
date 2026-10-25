@@ -21,7 +21,7 @@ const SAMPLE_MS = 1000 / 30;
 // How late a timer due every PROBE_MS runs is how long the page was busy; a
 // busy spell's length halves every BUSY_HALF_LIFE_MS after it.
 const PROBE_MS = 100;
-const BUSY_HALF_LIFE_MS = 2000;
+const BUSY_HALF_LIFE_MS = 10000;
 
 export class Gestures {
   constructor(core) {

@@ -12,7 +12,7 @@ the gesture's drag id and sequence number:
 - The browser holds one gesture at a time, so a begin ends any still open.
 - A gesture the browser stops reporting on for ``LIVENESS_S`` is aborted, so a
   lost release cannot leave the robot chasing its last target. A browser that
-  says it has lately been too busy to run anything for longer gets three such
+  says it has lately been too busy to run anything for longer gets five such
   spells, up to ``LIVENESS_MAX_S``: it cannot report while busy. Before its first
   sample a gesture has no target to chase, and a page that has just begun
   drawing a drag stalls longest then, so it gets ``LIVENESS_MAX_S``.
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 LIVENESS_S = 0.5
 LIVENESS_MAX_S = 3.0
-_BUSY_SPELLS = 3
+_BUSY_SPELLS = 5
 _WATCH_S = 0.1
 
 

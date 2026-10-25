@@ -172,7 +172,7 @@ async def test_a_drag_gone_quiet_ends_and_a_frame_the_arm_has_left_is_refused(
     """A ring drag whose browser stops reporting ends within half a second:
     the arm stops short of its target, nothing is recorded, and a late
     release revives nothing. A browser busy for 400 ms at a time cannot
-    report more often, so its drag lasts three such spells, and a drag
+    report more often, so its drag lasts five such spells, and a drag
     not yet moved has nothing to chase, so it lasts longer still. A gizmo
     grabbed on a frame drawn where the arm no longer is would aim the drag
     the wrong way: it is refused, and the frame is placed again."""
@@ -208,7 +208,7 @@ async def test_a_drag_gone_quiet_ends_and_a_frame_the_arm_has_left_is_refused(
         await asyncio.sleep(1.0)
         assert scene.gestures.open, "a slow browser's drag ended between its frames"
         assert await wait_until(lambda: not scene.gestures.open, 2.0)
-        assert 1.2 <= time.monotonic() - went_quiet < 1.2 + 0.4
+        assert 2.0 <= time.monotonic() - went_quiet < 2.0 + 0.4
         assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
         assert str(textarea.value).count("move_j(") == before, textarea.value
 
