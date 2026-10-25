@@ -1980,7 +1980,7 @@ body:has(.panels-wrap.column-open) .bottom-panel {
   [class*="q-transition--"] { --q-transition-duration: 0s !important; }
   .q-btn--actionable:active { scale: none; }
   .left-panels-container .q-panel.scroll[class*="q-transition--slide"] { animation-duration: 0s !important; }
-  .joint-dial-cell, .dial-steps { transition: none; }
+  .joint-dial-cell, .dial-steps, .joint-cap { transition: none; }
 }
 """
     )

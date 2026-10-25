@@ -79,6 +79,8 @@ def set_control_mode(mode: ControlMode) -> None:
     global _control_mode
     _control_mode = mode
     app.storage.general[_MODE_STORAGE_KEY] = mode.value
+    if not mode.auto_approves_motion:
+        revoke_consent()
 
 
 def cycle_control_mode() -> ControlMode:
@@ -145,11 +147,11 @@ class ControlLease:
     def seize(self, channel: str, id: str, label: str) -> None:
         """Take control for ``(channel, id)``. Anyone may seize; the displaced
         holder finds out on its next query / actuation (always visible)."""
-        if self._holder is None or (self._holder.channel, self._holder.id) != (
-            channel,
-            id,
-        ):
+        h = self._holder
+        if h is None or (h.channel, h.id) != (channel, id):
             self.generation += 1
+            if channel == BROWSER and h is not None and h.channel == MCP:
+                revoke_consent()
         self._holder = Holder(channel, id, label, time.monotonic())
 
     def touch(self, channel: str, id: str) -> None:
@@ -170,7 +172,7 @@ class ControlLease:
         global _control_mode
         self._holder = None
         self.generation += 1
-        _consented_sessions.clear()
+        revoke_consent()
         _pending_consent.clear()
         _denied_at.clear()
         _pending_action.clear()
@@ -263,12 +265,15 @@ def require_browser_control(client_id: str | None, *, notify: bool = True) -> bo
     return True
 
 
-# --- Per-session hardware-motion consent (MCP) ----------------------------
-# The first tool that physically moves the arm in an MCP session must be
-# acknowledged once by a human in the GUI (a brief safety gate). The gate is
-# synchronous: an un-consented hardware move is refused and a prompt is armed;
-# the GUI grants consent and the client retries. Keyed by FastMCP session id.
-_consented_sessions: set[str] = set()
+# --- Hardware-motion consent (MCP) -----------------------------------------
+# The AI's first hardware move must be acknowledged once by a human in the GUI
+# (a brief safety gate). The gate is synchronous: an un-consented move is
+# refused and a prompt is armed; the GUI grants consent and the client retries.
+# The grant belongs to the MCP channel, like the lease, because session ids
+# churn on every reconnect. It lasts until the human takes control from the AI,
+# the AI releases control, or the mode leaves Autopilot. Prompts and denials
+# stay per session so the dialog names the client that asked.
+_mcp_consented = False
 _pending_consent: dict[str, str] = {}  # session_id -> human label awaiting approval
 
 # A denied prompt must not instantly re-arm (the AI's retry loop would re-open
@@ -278,8 +283,13 @@ CONSENT_DENY_COOLDOWN_SECONDS = 30.0
 _denied_at: dict[str, float] = {}  # session_id -> monotonic time of the deny
 
 
-def session_consented(session_id: str) -> bool:
-    return session_id in _consented_sessions
+def mcp_consented() -> bool:
+    return _mcp_consented
+
+
+def revoke_consent() -> None:
+    global _mcp_consented
+    _mcp_consented = False
 
 
 def arm_consent_prompt(session_id: str, label: str) -> None:
@@ -293,8 +303,9 @@ def pending_consents() -> dict[str, str]:
 
 
 def grant_consent(session_id: str) -> None:
-    _consented_sessions.add(session_id)
-    _pending_consent.pop(session_id, None)
+    global _mcp_consented
+    _mcp_consented = True
+    _pending_consent.clear()
     _denied_at.pop(session_id, None)
 
 
@@ -315,7 +326,7 @@ def recently_denied(session_id: str) -> bool:
 
 
 def reset_consent(session_id: str) -> None:
-    _consented_sessions.discard(session_id)
+    revoke_consent()
     _pending_consent.pop(session_id, None)
     _denied_at.pop(session_id, None)
     _pending_action.pop(session_id, None)

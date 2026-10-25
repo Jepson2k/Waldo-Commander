@@ -170,6 +170,10 @@ let id = null;
 for (const [oid, o] of c.objects) if (o.mesh && o.mesh.name === arguments[0]) id = oid;
 const tc = id === null ? null : c.transform_controls.get(id);
 if (!tc || !tc.object) return null;
+// Placed as the next frame will place them: the arm, the ball, and the
+// handles sized and turned for the camera.
+c.camera.updateMatrixWorld();
+c.scene.updateMatrixWorld(true);
 const ball = tc.object;
 ball.updateWorldMatrix(true, false);
 const origin = ball.position.clone().setFromMatrixPosition(ball.matrixWorld);
@@ -234,25 +238,39 @@ let id = null;
 for (const [oid, o] of c.objects) if (o.mesh && o.mesh.name === 'tcp:ball') id = oid;
 const tc = id === null ? null : c.transform_controls.get(id);
 if (!tc || !tc.object || tc.mode !== 'rotate') return null;
+// Placed as the next frame will place them: the arm, the ball, and the
+// handles sized and turned for the camera.
+c.camera.updateMatrixWorld();
+c.scene.updateMatrixWorld(true);
 const center = tc.object.getWorldPosition(tc.object.position.clone()).project(c.camera);
 const canvas = c.renderer.domElement;
 const rect = canvas.getBoundingClientRect();
 const cx = rect.left + (center.x + 1) / 2 * rect.width;
 const cy = rect.top + (1 - center.y) / 2 * rect.height;
+const wanted = arguments[0];
+const free = (px, py) => {{
+  if (document.elementFromPoint(px, py) !== canvas) return false;
+  const pointer = {{ x: (px - rect.left) / rect.width * 2 - 1, y: 1 - (py - rect.top) / rect.height * 2, button: 0 }};
+  tc.pointerHover(pointer);
+  if (tc.axis !== wanted) return false;
+  c._raycaster.setFromCamera(pointer, c.camera);
+  return !c._raycaster.intersectObjects(c.interactiveObjects, true).length;
+}};
+// The middle of the ring's band along a ray from its centre, at the whole
+// pixels a pointer lands on: the band's first pixel is an edge that half a
+// pixel of rounding falls off.
 let spot = null;
-for (let r = 20; r <= 200 && !spot; r += 4) {{
-  for (let a = 0; a < 360 && !spot; a += 5) {{
-    const t = a * Math.PI / 180;
-    const px = cx + r * Math.cos(t);
-    const py = cy + r * Math.sin(t);
-    if (document.elementFromPoint(px, py) !== canvas) continue;
-    const pointer = {{ x: (px - rect.left) / rect.width * 2 - 1, y: 1 - (py - rect.top) / rect.height * 2, button: 0 }};
-    tc.pointerHover(pointer);
-    if (tc.axis !== arguments[0]) continue;
-    c._raycaster.setFromCamera(pointer, c.camera);
-    if (c._raycaster.intersectObjects(c.interactiveObjects, true).length) continue;
-    spot = [px, py, -Math.sin(t), Math.cos(t)];
+for (let a = 0; a < 360 && !spot; a += 5) {{
+  const t = a * Math.PI / 180;
+  const at = (r) => [Math.round(cx + r * Math.cos(t)), Math.round(cy + r * Math.sin(t))];
+  let first = null, last = null;
+  for (let r = 20; r <= 200; r += 1) {{
+    if (free(...at(r))) {{
+      if (first === null) first = r;
+      last = r;
+    }} else if (first !== null) break;
   }}
+  if (first !== null && last - first >= 4) spot = [...at(Math.round((first + last) / 2)), -Math.sin(t), Math.cos(t)];
 }}
 tc.pointerHover({{ x: 2, y: 2, button: 0 }});
 return spot;
@@ -444,12 +462,31 @@ def _settled(i: int, timeout: float = 20.0) -> float:
 
 
 def _teleport_to_jog_pose() -> None:
+    """Teleport to the jog pose and return once the view has drawn it: a
+    pointer aimed at a link must find the link where it is drawn, not where
+    the arm is still on its way from."""
     assert core.loop is not None
     client = ui_state.control_panel.client
     asyncio.run_coroutine_threadsafe(
         client.teleport(JOG_SAFE_POSE_DEG), core.loop
     ).result(10)
-    _wait(lambda: abs(_joint(1) - JOG_SAFE_POSE_DEG[1]) < 0.5, 10.0, "teleport")
+    _wait(
+        lambda: all(
+            abs(_joint(i) - deg) < 0.5 for i, deg in enumerate(JOG_SAFE_POSE_DEG)
+        ),
+        10.0,
+        "teleport",
+    )
+    urdf = ui_state.urdf_scene
+    assert urdf is not None
+
+    def drawn_still() -> bool:
+        before = urdf._shown_q.copy()
+        time.sleep(0.25)
+        return bool(np.array_equal(before, urdf._shown_q))
+
+    _wait(drawn_still, 5.0, "the view to draw the pose")
+    _caught_up()
 
 
 @contextmanager
