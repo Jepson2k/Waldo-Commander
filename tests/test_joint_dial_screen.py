@@ -335,7 +335,9 @@ class TestJointDial:
                     [0.234, -0.252, 0.37, 0, 0.06, 0.13],
                 )
                 wait_for_scene_idle(screen)
-                drag_dial(screen, -50, duration=5)
+                # Far enough that the arm, at 10 %, is still on its way when
+                # the target is read, on a page that delivers a move a frame.
+                drag_dial(screen, -100, duration=5, steps=3)
                 target = urdf_to_panel(0, scene_js(screen, "return S.dial(0).q"))[1]
                 assert abs(joint_deg(0) - target) > 5
                 evidence.capture("01-target-ahead-of-robot")
@@ -349,7 +351,7 @@ class TestJointDial:
                 wait(screen).until(lambda _: abs(joint_deg(0) - target) < 0.2)
                 evidence.capture("03-release-settled")
 
-                drag_dial(screen, 65, duration=5)
+                drag_dial(screen, 100, duration=5, steps=3)
                 cancelled = urdf_to_panel(0, scene_js(screen, "return S.dial(0).q"))[1]
                 assert abs(joint_deg(0) - cancelled) > 5
                 evidence.capture("04-before-escape")

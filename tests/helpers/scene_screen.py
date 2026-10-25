@@ -408,9 +408,10 @@ def grab_ring(screen: Screen, link: str, u: int) -> tuple[dict, float]:
         time.sleep(0.2)
 
 
-def drag_dial(screen, degrees, joint=0, duration=60, at_knob=False):
-    """Drag joint ``joint``'s dial ``degrees`` from a free grip (or its knob),
-    still held."""
+def drag_dial(screen, degrees, joint=0, duration=60, at_knob=False, steps=12):
+    """Drag joint ``joint``'s dial ``degrees`` in ``steps`` pointer moves from
+    a free grip (or its knob), still held. A page delivers a move a frame, so
+    a fling that must outrun the arm takes few."""
     dial, grab = grab_ring(screen, f"link:L{joint + 1}", joint)
     if at_knob:
         grab = 0
@@ -420,11 +421,11 @@ def drag_dial(screen, degrees, joint=0, duration=60, at_knob=False):
         f"jog:dial:{joint}",
         [
             [
-                dial["r"] * math.cos(at + math.radians(degrees) * k / 12),
-                dial["r"] * math.sin(at + math.radians(degrees) * k / 12),
+                dial["r"] * math.cos(at + math.radians(degrees) * k / steps),
+                dial["r"] * math.sin(at + math.radians(degrees) * k / steps),
                 0,
             ]
-            for k in range(13)
+            for k in range(steps + 1)
         ],
     )
     actions = ActionChains(screen.selenium, duration=duration)

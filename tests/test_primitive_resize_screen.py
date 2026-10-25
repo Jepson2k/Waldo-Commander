@@ -287,7 +287,8 @@ class TestPrimitiveResize:
                     ) == pytest.approx(scale)
                     return probe(screen, "frames") > first + 30
 
-                wait(screen).until(preview_stays_still)
+                # Thirty frames are ten seconds on a software renderer.
+                wait(screen, 40.0).until(preview_stays_still)
                 ActionChains(screen.selenium).send_keys(Keys.ESCAPE).release().perform()
                 wait_for_scene_idle(screen)
                 assert scene_js(

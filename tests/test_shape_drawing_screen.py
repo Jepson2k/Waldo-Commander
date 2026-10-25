@@ -9,6 +9,7 @@ from selenium.common.exceptions import InvalidArgumentException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support import expected_conditions as EC
 
 from tests.helpers.browser_helpers import (
     click_marked,
@@ -311,8 +312,11 @@ class TestShapeDrawing:
                 wait(screen).until(
                     lambda _: probe(screen, "drawing")["phase"] == "height"
                 )
-                height = screen.selenium.find_element(
-                    By.CSS_SELECTOR, ".wc-draw-readout input"
+                # The readout is placed with the frame after the phase changes.
+                height = wait(screen).until(
+                    EC.element_to_be_clickable(
+                        (By.CSS_SELECTOR, ".wc-draw-readout input")
+                    )
                 )
                 height.send_keys(Keys.CONTROL, "a", Keys.NULL, "60")
                 evidence.capture("01-face-cylinder-height-1920")
@@ -368,8 +372,11 @@ class TestShapeDrawing:
                 wait(screen).until(
                     lambda _: probe(screen, "drawing")["phase"] == "height"
                 )
-                height = screen.selenium.find_element(
-                    By.CSS_SELECTOR, ".wc-draw-readout input"
+                # The readout is placed with the frame after the phase changes.
+                height = wait(screen).until(
+                    EC.element_to_be_clickable(
+                        (By.CSS_SELECTOR, ".wc-draw-readout input")
+                    )
                 )
                 height.send_keys(Keys.CONTROL, "a", Keys.NULL, "75")
                 evidence.capture("01-top-view-numeric-height-1366")

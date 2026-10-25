@@ -324,11 +324,17 @@ class TestPathInspection:
                 assert scene_js(screen, "return S.inspection().revision") == revision
                 _seek_timeline(screen, 0)
                 wait(screen).until(
-                    lambda _: scene_js(screen, "return S.inspection().current.row") == 0
+                    lambda _: scene_js(
+                        screen, "return S.inspection().current?.row ?? -1"
+                    )
+                    == 0
                 )
                 click_marked(screen, "editor-play-btn")
                 wait(screen).until(
-                    lambda _: scene_js(screen, "return S.inspection().current.row") > 3
+                    lambda _: scene_js(
+                        screen, "return S.inspection().current?.row ?? -1"
+                    )
+                    > 3
                 )
                 _event(screen, 7)
                 wait(screen).until(
@@ -418,7 +424,9 @@ class TestPathInspection:
                 _touch(screen, "touchStart", [(1, x, y), (2, 1500, 160)])
                 _touch(screen, "touchMove", [(1, target_x, target_y), (2, 1500, 160)])
                 wait(screen).until(
-                    lambda _: scene_js(screen, "return S.inspection().current.row")
+                    lambda _: scene_js(
+                        screen, "return S.inspection().current?.row ?? -1"
+                    )
                     >= target_row - 2
                 )
                 _touch(screen, "touchMove", [(1, target_x, target_y)])
@@ -533,7 +541,9 @@ class TestPathInspection:
                     pointer_to(screen, px, py, action)
                 action.release().perform()
                 wait(screen).until(
-                    lambda _: scene_js(screen, "return S.inspection().current.row")
+                    lambda _: scene_js(
+                        screen, "return S.inspection().current?.row ?? -1"
+                    )
                     > row
                 )
                 state = scene_js(screen, "return S.inspection()")
@@ -554,7 +564,9 @@ class TestPathInspection:
                 wait(screen).until(lambda _: _matches_record(screen))
                 _seek_timeline(screen, 1)
                 wait(screen).until(
-                    lambda _: scene_js(screen, "return S.inspection().current.row")
+                    lambda _: scene_js(
+                        screen, "return S.inspection().current?.row ?? -1"
+                    )
                     == record["rows"] - 1
                 )
                 wait(screen).until(lambda _: _matches_record(screen))
