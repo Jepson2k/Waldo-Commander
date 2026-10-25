@@ -141,6 +141,14 @@ async def test_commander_runs_on_the_par6_runtime(
                 with monkeypatch.context() as patch:
                     patch.setattr(waldoctl.commander, "client", unavailable)
                     patch.setattr(playback, "_uses_live_speed", lambda: True)
+                    # A refresh already asking would make this one return without
+                    # asking.
+                    await poll_until(
+                        lambda: playback._speed_query_pending,
+                        lambda pending: not pending,
+                        timeout_s=3.0,
+                        what="the speed refresh in flight",
+                    )
                     await playback._refresh_execution_speed()
                     assert playback._execution_speed is None
                     assert (
@@ -647,8 +655,23 @@ async def test_commander_runs_on_the_par6_runtime(
             assert await client.wait_command(index, timeout=3), (
                 "Stop must clear the previous program's native queue"
             )
+
+            def ready(state) -> bool:
+                try:
+                    state.require_ready()
+                except ValueError:
+                    return False
+                return True
+
             for _ in range(6):
-                reference = await fresh_state(client)
+                # A run's last motion settles after the run returns, and a
+                # restart needs the arm still.
+                reference = await poll_until(
+                    lambda: fresh_state(client),
+                    ready,
+                    timeout_s=10.0,
+                    what="the arm ready to restart",
+                )
                 assert await script_exec.start(
                     restart_entry="after_stop",
                     restart_reference=reference,
