@@ -273,11 +273,9 @@ class StatusFooter:
             if self._tool_chip is not None and self._tool_label is not None:
                 if tool_key and tool_key != "NONE":
                     try:
-                        name = ui_state.active_robot.tools[
-                            tool_key
-                        ].display_name.replace("_", " ")
+                        name = ui_state.active_robot.tools[tool_key].display_name
                     except KeyError:
-                        name = tool_key.replace("_", " ")
+                        name = tool_key
                     self._tool_label.text = name
                     self._tool_label._props["title"] = tool_key
                     self._tool_chip.set_visibility(True)

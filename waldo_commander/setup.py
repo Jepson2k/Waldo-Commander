@@ -26,6 +26,7 @@ from pprint import pformat
 from waldoctl.setup import SetupSnapshot, validate_name
 
 from waldo_commander.constants import default_program_dir
+from waldo_commander.services.python_source import literal_argument
 
 logger = logging.getLogger(__name__)
 
@@ -144,28 +145,9 @@ class SetupStore:
         path = self._path(name)
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
-            assignments = [
-                node
-                for node in tree.body
-                if isinstance(node, ast.Assign)
-                and any(
-                    isinstance(t, ast.Name) and t.id == "setup" for t in node.targets
-                )
-            ]
-            if len(assignments) != 1:
-                raise ValueError("Expected one literal setup assignment")
-            value = assignments[0].value
-            if not (
-                isinstance(value, ast.Call)
-                and isinstance(value.func, ast.Attribute)
-                and isinstance(value.func.value, ast.Name)
-                and value.func.value.id == "SetupSnapshot"
-                and value.func.attr == "from_dict"
-                and len(value.args) == 1
-                and not value.keywords
-            ):
-                raise ValueError("Expected SetupSnapshot.from_dict with literal data")
-            return SetupSnapshot.from_dict(ast.literal_eval(value.args[0]))
+            return SetupSnapshot.from_dict(
+                literal_argument(tree, "setup", "SetupSnapshot.from_dict")
+            )
         except (SyntaxError, TypeError, KeyError, ValueError) as error:
             raise ValueError(f"Setup {name!r} is not literal data: {error}") from error
 
@@ -190,10 +172,7 @@ class SetupStore:
 
     def revision(self, name: str) -> str | None:
         """The SHA-256 of the saved file, or None when there is none."""
-        try:
-            return hashlib.sha256(self._path(name).read_bytes()).hexdigest()
-        except FileNotFoundError:
-            return None
+        return file_revision(self._path(name))
 
     def save(self, name: str, snapshot: SetupSnapshot) -> str:
         """Write *snapshot* under *name* and return its new revision."""
@@ -286,17 +265,28 @@ def write_atomic(path: Path, data: bytes) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def file_revision(path: Path) -> str | None:
+    """The SHA-256 of the file at *path*, or None when there is none."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return None
+
+
 def load_setup(name: str, *, directory: str | Path | None = None) -> SetupSnapshot:
     return SetupStore(directory).load(name)
 
 
-def export_snapshot(snapshot: SetupSnapshot, *, variable: str = "setup") -> str:
+def export_snapshot(
+    snapshot: SetupSnapshot, *, variable: str = "setup", imports: bool = True
+) -> str:
     """Return ordinary Python containing the fixed values, without storage I/O."""
     import keyword
 
     if not variable.isidentifier() or keyword.iskeyword(variable):
         raise ValueError("Snapshot variable must be a Python identifier")
-    return f"from waldoctl.setup import SetupSnapshot\n\n{variable} = SetupSnapshot.from_dict({pformat(snapshot.to_dict(), sort_dicts=True)})\n"
+    head = "from waldoctl.setup import SetupSnapshot\n\n" if imports else ""
+    return f"{head}{variable} = SetupSnapshot.from_dict({pformat(snapshot.to_dict(), sort_dicts=True)})\n"
 
 
 def last_saved_name() -> str | None:

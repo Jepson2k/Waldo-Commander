@@ -1,25 +1,4 @@
-"""What the predicted record shows, drawn over the scene.
-
-The backend computes; we render. Nothing here re-derives physics — every
-number is a column the backend already produced, mapped onto drawables
-the scene already knows how to make, so the arm, the paths and the
-editable points keep being drawn the way they always were.
-
-Two kinds of overlay, and picking the right one decides whether this is
-fast or unusable:
-
-- **Whole-run** geometry is built once per record pair and then left
-  alone. The predicted path is one polyline over every row, coloured by
-  its following error against the commanded record; rebuilding it per
-  frame would be absurd.
-- **Per-frame** annotations come from a small pool of drawables created
-  once and thereafter only moved, rotated and hidden. They must never
-  drop and recreate their group, which is what makes an overlay stutter.
-
-The colour scale and the force scale are constants here rather than
-guesses at the call site, because a picture whose magnitudes are unstated
-lies: the legend beside the scene quotes both.
-"""
+"""Pooled contact-force and centre-of-mass annotations from prediction records."""
 
 from __future__ import annotations
 
@@ -28,18 +7,13 @@ import math
 from typing import Any
 
 import numpy as np
-from nicegui import ui
 from scipy.spatial.transform import Rotation as ScipyRotation
-from waldoctl import TickIndex, following_error
+from waldoctl import TickIndex
 
-from waldo_commander.common.theme import hex_of, linear_rgb
+from waldo_commander import scene3d as s3d
+from waldo_commander.common.theme import hex_of
 
 logger = logging.getLogger(__name__)
-
-#: Following error at which the predicted path is drawn fully off its
-#: command \[rad\]. Half a degree: below that the arm is doing what it was
-#: told, above it something is worth looking at.
-FULL_FOLLOWING_ERROR_RAD = 0.0087
 
 #: Contact arrows are drawn at this many metres per newton.
 FORCE_SCALE_M_PER_N = 0.004
@@ -48,12 +22,6 @@ FORCE_SCALE_M_PER_N = 0.004
 #: pathological scene must not create hundreds of scene objects.
 MAX_CONTACT_ARROWS = 12
 
-#: The most vertices the predicted path is drawn with. A ten-minute run
-#: records 30,000 rows, and every one would cross as a point triple AND a
-#: colour triple in a single scene command built on the event loop. The
-#: line is a few hundred pixels long; more vertices than this buy nothing.
-MAX_PREDICTED_POINTS = 2000
-
 #: Base size of a contact arrow \[m\] before the force scales it.
 _ARROW_BASE_M = 0.01
 
@@ -61,43 +29,6 @@ _ARROW_BASE_M = 0.01
 _DROP_RADIUS_M = 0.001
 
 _CONE_AXIS = np.array([0.0, 1.0, 0.0])
-
-
-def _gradient_endpoints() -> tuple[np.ndarray, np.ndarray]:
-    """The on-track and diverged ends of the colour scale."""
-    return (
-        np.array(linear_rgb("physics-on-track")),
-        np.array(linear_rgb("physics-diverged")),
-    )
-
-
-def following_error_colors(error_rad: np.ndarray) -> list[list[float]]:
-    """One RGB triple per row: green where the arm is on its command,
-    red where it is not."""
-    on_track, diverged = _gradient_endpoints()
-    t = np.clip(error_rad / FULL_FOLLOWING_ERROR_RAD, 0.0, 1.0)[:, None]
-    return (on_track * (1 - t) + diverged * t).tolist()
-
-
-def decimate(
-    tcp: np.ndarray, error_rad: np.ndarray, budget: int = MAX_PREDICTED_POINTS
-) -> tuple[np.ndarray, np.ndarray]:
-    """Thin a run to `budget` vertices, keeping both endpoints.
-
-    Positions are sampled but the error is taken as the **maximum** over
-    each collapsed span: a divergence spike lasting three rows is exactly
-    what the overlay exists to show, and sampling the error would drop it.
-    Both columns must be thinned together — the scene requires one colour
-    per point.
-    """
-    rows = len(tcp)
-    if rows <= budget:
-        return tcp, error_rad
-    edges = np.linspace(0, rows, budget, dtype=int)
-    edges[-1] = rows
-    starts = edges[:-1]
-    worst = np.array([error_rad[a:b].max() for a, b in zip(starts, edges[1:]) if b > a])
-    return tcp[starts[: len(worst)]], worst
 
 
 def _cone_rpy(direction: np.ndarray) -> tuple[float, float, float]:
@@ -123,7 +54,6 @@ class PhysicsOverlay:
     def __init__(self, scene_owner: Any) -> None:
         self._owner = scene_owner
         self._group: Any = None
-        self._predicted: Any = None
         self._com: Any = None
         self._com_drop: Any = None
         self._contacts: list[Any] = []
@@ -133,53 +63,22 @@ class PhysicsOverlay:
     def is_built(self) -> bool:
         return self._group is not None
 
-    # ---- whole-run geometry -------------------------------------------------
-
-    def render(
-        self,
-        commanded: TickIndex | None,
-        predicted: TickIndex | None,
-        *,
-        show_predicted: bool,
-    ) -> None:
-        """(Re)build the whole-run geometry for *predicted* against
-        *commanded*.
-
-        Nothing is built without a predicted record, or when it is the
-        commanded one — then there is nothing the commanded path does not
-        already show. An unchanged pair paints an identical picture and is
-        left alone; the backend's determinism contract is what makes that
-        sound, and it is the flash guard.
-        """
+    def render(self, commanded: TickIndex | None, predicted: TickIndex | None) -> None:
         if (
             commanded is None
             or predicted is None
-            or predicted.rows < 2
+            or not predicted.rows
             or predicted.digest == commanded.digest
+            or not any(name in predicted.channels for name in ("com", "contact_starts"))
         ):
             self.clear()
             return
         digest = (commanded.digest, predicted.digest)
-        if self._digest is not None and predicted.digest and self._digest == digest:
-            # Same records, so the geometry stands; only the toggle can
-            # have moved, and it is a visibility flip rather than a
-            # rebuild.
-            if self._predicted is not None:
-                self._predicted.visible(show_predicted)
+        if predicted.digest and self._digest == digest:
             return
-        self._build(commanded, predicted, show_predicted)
+        self._build(commanded, predicted)
 
-    def _build(
-        self, commanded: TickIndex, predicted: TickIndex, show_predicted: bool
-    ) -> None:
-        """Build the group, the path, and the per-frame pool.
-
-        The pool is made here rather than on first use because a scene
-        object can only be constructed inside its scene's context, and
-        per-frame code runs from the playback batch, which is not one.
-        Making them once and only ever moving them afterwards is also
-        what keeps a frame cheap.
-        """
+    def _build(self, commanded: TickIndex, predicted: TickIndex) -> None:
         scene = self._live_scene()
         if scene is None:
             return
@@ -188,30 +87,16 @@ class PhysicsOverlay:
         contact_hex = hex_of("physics-contact")
         try:
             with scene:
-                with ui.scene.group().with_name("simulation:physics") as grp:
+                with s3d.group().with_name("simulation:physics") as grp:
                     self._group = grp
-                    # One polyline over the whole run: where the TCP is
-                    # predicted to go, coloured by how far that is from the
-                    # command that produced it. Built once and shown or
-                    # hidden — a toggle must not need a rebuild.
-                    points, error = decimate(
-                        predicted.tcp, following_error(commanded, predicted)
-                    )
-                    self._predicted = ui.scene.polyline(
-                        [[float(v) for v in row[:3]] for row in points],
-                        colors=following_error_colors(error),
-                    )
-                    # color=None tells three.js to use the per-vertex colours.
-                    self._predicted.material(None, 0.95)
-                    self._predicted.visible(show_predicted)
-                    self._com = ui.scene.sphere(0.012).material(com_hex, 0.9)
+                    self._com = s3d.sphere(0.012).material(com_hex, 0.9)
                     self._com.visible(False)
                     # A drop line to the ground: a lone sphere in a
                     # perspective view gives no depth to read its height
                     # against. A thin cylinder rather than a line because
                     # a line's endpoints are fixed at creation, and this
                     # has to follow the marker every frame.
-                    self._com_drop = ui.scene.cylinder(
+                    self._com_drop = s3d.cylinder(
                         top_radius=_DROP_RADIUS_M,
                         bottom_radius=_DROP_RADIUS_M,
                         height=1.0,
@@ -219,7 +104,7 @@ class PhysicsOverlay:
                     ).material(com_hex, 0.35)
                     self._com_drop.visible(False)
                     self._contacts = [
-                        ui.scene.cylinder(
+                        s3d.cylinder(
                             top_radius=0.0,
                             bottom_radius=_ARROW_BASE_M * 0.35,
                             height=_ARROW_BASE_M,
@@ -237,7 +122,6 @@ class PhysicsOverlay:
 
     def clear(self) -> None:
         group, self._group = self._group, None
-        self._predicted = None
         self._com = None
         self._com_drop = None
         self._contacts = []
@@ -260,8 +144,8 @@ class PhysicsOverlay:
     ) -> None:
         """Move this frame's annotations to *row*.
 
-        Called from inside the scene's existing per-frame batch, and only
-        ever moves, rotates or hides drawables it already made.
+        Called once per playback frame, and only ever moves, rotates or
+        hides drawables it already made.
         """
         if ticks is None or self._group is None or ticks.rows == 0:
             return
@@ -282,7 +166,8 @@ class PhysicsOverlay:
         com = ticks.channels.get("com")
         if self._com is None:
             return
-        have = com is not None and len(com) > row
+        # A non-finite row (a plant that diverged) is shown as nothing.
+        have = com is not None and len(com) > row and bool(np.isfinite(com[row]).all())
         self._com.visible(show and have)
         if self._com_drop is not None:
             self._com_drop.visible(show and have)
@@ -303,6 +188,8 @@ class PhysicsOverlay:
         force = ticks.channels.get("contact_force")
         if starts is None or pos is None or force is None or len(starts) <= row + 1:
             return
+        if not np.isfinite(starts[row : row + 2]).all():
+            return
         lo, hi = int(starts[row]), int(starts[row + 1])
         count = min(hi - lo, len(self._contacts)) if show else 0
         for i, arrow in enumerate(self._contacts):
@@ -320,7 +207,9 @@ class PhysicsOverlay:
         contact.
         """
         magnitude = float(np.linalg.norm(force))
-        if magnitude < 1e-3:
+        if not magnitude >= 1e-3 or not np.isfinite(magnitude):
+            return False
+        if not np.isfinite(at).all():
             return False
         direction = np.asarray(force, dtype=np.float64) / magnitude
         stretch = max(0.4, magnitude * FORCE_SCALE_M_PER_N / _ARROW_BASE_M)

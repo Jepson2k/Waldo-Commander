@@ -3,20 +3,12 @@
 import asyncio
 import re
 
-import numpy as np
 import pytest
 from nicegui.elements.colors import Colors
 from nicegui.testing import User
 
 from tests.helpers.wait import wait_for_app_ready
 from waldo_commander.common.theme import hex_of
-
-
-def _srgb(linear: float) -> float:
-    """Three.js's output encoding: a linear channel as sRGB."""
-    return (
-        12.92 * linear if linear <= 0.0031308 else 1.055 * linear ** (1 / 2.4) - 0.055
-    )
 
 
 def _luminance(hex_colour: str) -> float:
@@ -30,25 +22,6 @@ def _luminance(hex_colour: str) -> float:
 def _contrast(a: str, b: str) -> float:
     hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
     return (hi + 0.05) / (lo + 0.05)
-
-
-def test_the_following_error_gradient_renders_the_legend_colours():
-    """three.js takes vertex colours as linear light and encodes them to sRGB
-    on output, so the gradient's ends must come out as the legend's swatches."""
-    from waldo_commander.services.urdf_scene.physics_overlay import (
-        FULL_FOLLOWING_ERROR_RAD,
-        following_error_colors,
-    )
-
-    on_track, diverged = following_error_colors(
-        np.array([0.0, FULL_FOLLOWING_ERROR_RAD])
-    )
-    for vertex, token in (
-        (on_track, "physics-on-track"),
-        (diverged, "physics-diverged"),
-    ):
-        shown = "#" + "".join(f"{round(_srgb(c) * 255):02x}" for c in vertex)
-        assert shown == hex_of(token), (token, shown, hex_of(token))
 
 
 @pytest.mark.integration

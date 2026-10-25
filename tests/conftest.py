@@ -8,6 +8,7 @@ import sys
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Generator
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -34,6 +35,8 @@ import parol6.config as _parol6_config
 from parol6 import Robot
 from parol6.config import HOME_ANGLES_DEG
 from selenium import webdriver as _webdriver
+
+from tests.helpers import visual_evidence
 
 # SSH X11 forwarding gotcha: when pytest is run over SSH with X forwarding
 # enabled, DISPLAY is set to "localhost:N.0" pointing at the forwarded
@@ -458,6 +461,11 @@ def class_screen(
             )
             # CodeMirror reports focused selections only in the active tab.
             class_driver.execute_cdp_cmd("Page.bringToFront", {})
+            try:
+                _clear_world()
+            except BaseException:
+                screen_instance.stop_server()
+                raise
 
             yield screen_instance
 
@@ -469,6 +477,23 @@ def class_screen(
         _session_pool.restore()
     finally:
         os.environ.pop("NICEGUI_SCREEN_TEST_PORT", None)
+
+
+def _clear_world() -> None:
+    """Empty the controller's world: it outlives the page, so objects an
+    earlier class placed would crowd this one's floor, and enough of them
+    overflow the controller's command buffer."""
+    from tests.helpers.browser_helpers import run_in_app
+
+    handle = waldoctl.commander.scene
+    if handle is None or not run_in_app(lambda: list(handle.shapes)):
+        return
+    run_in_app(lambda: setattr(handle, "shapes", []))
+    deadline = time.monotonic() + 10
+    while not run_in_app(lambda: handle.confirmed and not handle.shapes):
+        if time.monotonic() > deadline:
+            raise TimeoutError("the controller kept the previous class's objects")
+        time.sleep(0.05)
 
 
 @pytest.fixture(autouse=True)
@@ -613,6 +638,14 @@ def _check_nicegui_pin() -> None:
     )
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--evidence",
+        action="store_true",
+        help="record review screenshots and videos into .scene-evidence/",
+    )
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Register custom markers and run the screen plugin's configure hook
     (the screen fixtures are imported, not plugin-registered, so Screen.PORT /
@@ -623,10 +656,18 @@ def pytest_configure(config: pytest.Config) -> None:
     if sys.platform == "win32":
         config.option.timeout_method = "thread"
     _check_nicegui_pin()
+    visual_evidence.ENABLED = config.getoption("evidence")
     nicegui_screen_plugin.pytest_configure(config)
     config.addinivalue_line(
         "markers", "browser: marks tests that require a real browser (via Selenium)"
     )
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    """The review demos only record; they run under --evidence alone."""
+    if collection_path.name == "test_review_demos_screen.py":
+        return not config.getoption("evidence") or None
+    return None
 
 
 def pytest_collection_modifyitems(
@@ -823,6 +864,12 @@ def reset_state(request: pytest.FixtureRequest):
     _install_test_commander()
 
     reset_all_state()
+
+    # The scene enforces its world on this process's collision checker, which
+    # in-process dry runs share; a fresh process starts with an empty one.
+    import parol6.PAROL6_ROBOT as robot_model
+
+    robot_model.apply_shapes([])
 
     # The keybindings manager is a module singleton: a browser test that
     # focuses the editor leaves _editor_focused=True behind (no blur event

@@ -186,6 +186,13 @@ async def test_diagnostics_reports_only_what_the_backend_reports(
     assert _text(user, "diag-drive-temp-1") == "41"
     assert _text(user, "diag-drive-fault-1") == "overcurrent"
 
+    # A register one drive left unanswered reads as unknown, never as zero,
+    # beside the readings the others did send.
+    health.currents_ma = [float("nan")] + [12.0] * (joints - 1)
+    page.update()
+    assert _text(user, "diag-drive-current-1") == "—"
+    assert _text(user, "diag-drive-current-2") == "12"
+
     health.temperatures_c = []
     health.currents_ma = []
     health.faults = []

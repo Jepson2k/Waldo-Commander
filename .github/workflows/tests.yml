@@ -180,12 +180,15 @@ jobs:
           python -V
           pip list
 
+      # Review screenshots and videos are opt-in (--evidence); one leg
+      # records them for the uploaded review media.
       - name: Run tests
         env:
           PYTHONUNBUFFERED: '1'
           PYTHONUTF8: '1'
+          EVIDENCE: ${{ (runner.os == 'Linux' && matrix.python == '3.13') && '--evidence' || '' }}
         run: |
-          pytest -vv --tb=long --log-cli-level=DEBUG
+          pytest -vv --tb=long --log-cli-level=DEBUG $EVIDENCE
 
       - name: Preserve test report
         if: always()
@@ -194,6 +197,22 @@ jobs:
           name: junit-${{ matrix.os }}-python-${{ matrix.python }}
           path: test-results.xml
           retention-days: 7
+
+      - name: Preserve scene review media
+        if: ${{ !cancelled() && runner.os == 'Linux' && matrix.python == '3.13' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: scene-review-${{ matrix.os }}-python-${{ matrix.python }}
+          include-hidden-files: true
+          path: |
+            .scene-evidence/**/*.png
+            .scene-evidence/**/*.gif
+            .scene-evidence/**/*.mp4
+            .scene-evidence/**/manifest.json
+            !.scene-evidence/**/frames/**
+            !.scene-evidence/**/motion-frames/**
+          if-no-files-found: ignore
+          retention-days: 14
 
   # End-to-end against the Rust runtime: the whole WC stack (backend
   # discovery, Robot.start() spawn path, async client, status pipeline, UI)
@@ -412,3 +431,22 @@ jobs:
             test-results.xml
             test-results-par6-layout.xml
           retention-days: 7
+
+      - name: Capture physics comparison workflow
+        env:
+          WALDO_PAR6_E2E: '1'
+          PAR6D_BIN: ${{ github.workspace }}/par6/target/release/par6d
+        run: pytest -vv --tb=long --evidence --junitxml=test-results-comparison.xml tests/test_physics_comparison_screen.py
+
+      - name: Preserve physics comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: physics-comparison-review
+          include-hidden-files: true
+          path: |
+            test-results-comparison.xml
+            .scene-evidence/review-corrections/comparison/**
+            !.scene-evidence/**/frames/**
+            !.scene-evidence/**/motion-frames/**
+          retention-days: 14

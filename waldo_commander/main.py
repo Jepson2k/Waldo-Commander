@@ -51,6 +51,8 @@ from waldo_commander.components.io import IoPage
 from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.readout import StatusFooter
+from waldo_commander.components.scene_camera import build_camera_menu
+from waldo_commander.components.scene_panel import ScenePanel
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.waldo import Mood, Waldo
 from waldo_commander.components.settings import (
@@ -282,7 +284,6 @@ async def initialize_urdf_scene() -> None:
 
     scene_config = UrdfSceneConfig(
         tool_pose_resolver=tool_pose_resolver,
-        gizmo_scale=1.35,  # 1.0 = default STL scale
         package_map={robot.backend_package: mesh_dir},
         material=material_color,
         background_color=bg_color,
@@ -291,13 +292,15 @@ async def initialize_urdf_scene() -> None:
         # Kinematic-mapping defaults are correct for PAROL6, so none are set here.
     )
 
+    # A page taken over keeps its client alive behind the overlay; its scene
+    # must stop redrawing every plan the new page draws.
+    if ui_state.urdf_scene is not None:
+        ui_state.urdf_scene.cleanup()
     ui_state.urdf_scene = UrdfScene(urdf_path, config=scene_config)
     ui_state.urdf_scene.show(
         material=scene_config.material,
         background_color=scene_config.background_color,
     )
-    if ui_state.urdf_scene.scene:
-        _attach_scene_scripts(ui_state.urdf_scene.scene)
 
     # Align TCP and load tool mesh from the controller's active tool.
     try:
@@ -308,8 +311,9 @@ async def initialize_urdf_scene() -> None:
         logger.error("Failed to sync TCP tool pose: %s", e)
 
     if ui_state.urdf_scene.scene:
-        scene: ui.scene = ui_state.urdf_scene.scene
+        scene = ui_state.urdf_scene.scene
         scene.move_camera(**DEFAULT_CAMERA, duration=0.0)
+        build_camera_menu(scene, ui_state.urdf_scene.clearance_overlay)
 
         # World coordinate frame at origin (fixed).
         world_axes_size = 0.30
@@ -350,22 +354,6 @@ async def initialize_urdf_scene() -> None:
     # Scene wasn't ready earlier, so apply simulator appearance now.
     if waldoctl.commander.status.simulator_active:
         ui_state.urdf_scene.set_simulator_appearance(True)
-
-
-def _attach_scene_scripts(scene: ui.scene) -> None:
-    """Frame the camera on the part of the view the column and footer leave
-    clear, tell right-drags from right-clicks, and report the gizmo handle
-    under the pointer.
-
-    Registered before the page yields, so it catches the first init; a remount
-    after WebGL context loss inits again with a new camera and canvas.
-    """
-    scene.on(
-        "init",
-        lambda: ui.run_javascript(
-            f"SceneFraming.attach({scene.id}); ScenePointer.attach({scene.id})"
-        ),
-    )
 
 
 async def start_controller(com_port: str | None) -> None:
@@ -544,40 +532,40 @@ async def check_ping() -> None:
 
 def update_ui_from_status() -> None:
     """Update UI elements from robot_state (called from multicast consumer)"""
-    # Editing sync handles position/angle updates in editing mode.
-    skip_position_updates = waldoctl.commander.status.editing_mode
     # Teleport syncs backend during sim playback/scrubbing.
     skip_scene_updates = (
-        skip_position_updates or playback_coordination.sim_pose_override
+        ui_state.editing_target or playback_coordination.sim_pose_override
     )
 
+    if ui_state.urdf_scene:
+        # A Stop or change of control reaches the scene's drags at once,
+        # whatever the scene is drawing.
+        ui_state.urdf_scene.check_drag_context()
     if not skip_scene_updates:
         with global_phase_timer.phase("scene"):
             update_urdf_angles(waldoctl.commander.status.joints.angles.deg)
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.update_from_robot_state()
 
-    if not skip_position_updates:
-        # robot_state.pose is already numpy float64; pass directly to numba.
-        pose_extraction_pipeline(
-            robot_state.pose,
-            _rotation_matrix_buffer,
-            _rpy_rad_buffer,
-            _pose_result_buffer,
-        )
+    # robot_state.pose is already numpy float64; pass directly to numba.
+    pose_extraction_pipeline(
+        robot_state.pose,
+        _rotation_matrix_buffer,
+        _rpy_rad_buffer,
+        _pose_result_buffer,
+    )
 
-        _pose = waldoctl.commander.status.pose
-        _pose.x = _pose_result_buffer[0]
-        _pose.y = _pose_result_buffer[1]
-        _pose.z = _pose_result_buffer[2]
-        _pose.rx = _pose_result_buffer[3]
-        _pose.ry = _pose_result_buffer[4]
-        _pose.rz = _pose_result_buffer[5]
-        # Orientation array is kept on robot_state for rad access from FK
-        # consumers (IK solver, motion recorder). Scalars above are the
-        # public surface.
-        robot_state.orientation.set_deg(_pose_result_buffer[3:6])
-
+    _pose = waldoctl.commander.status.pose
+    _pose.x = _pose_result_buffer[0]
+    _pose.y = _pose_result_buffer[1]
+    _pose.z = _pose_result_buffer[2]
+    _pose.rx = _pose_result_buffer[3]
+    _pose.ry = _pose_result_buffer[4]
+    _pose.rz = _pose_result_buffer[5]
+    # Orientation array is kept on robot_state for rad access from FK
+    # consumers (IK solver, motion recorder). Scalars above are the
+    # public surface.
+    robot_state.orientation.set_deg(_pose_result_buffer[3:6])
     # Push IO derived fields into ``commander.status.io`` for public
     # consumers (UI panels, MCP, future plugins).
     n_in = ui_state.active_robot.digital_inputs
@@ -935,14 +923,12 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         help_menu=help_menu,
     )
 
-    # ---- Bottom rail: plugin tabs (if any) over the gear ----
-    has_bottom_plugins = any(
-        p.slot is PanelSlot.LEFT_BOTTOM_TAB for p in ui_state.plugin_panels
-    )
+    # ---- Bottom rail: the scene and plugin tabs over the gear ----
+    scene_panel = ui_state.scene_panel = ScenePanel()
     with ui.element("div").classes("side-tab-bar bottom-rail absolute bottom-0 left-0"):
         with ui.tabs(value=None).props("vertical") as bottom_tabs:
+            scene_panel.build_tab(bottom_tabs)
             _add_plugin_tabs(PanelSlot.LEFT_BOTTOM_TAB)
-        bottom_tabs.set_visibility(has_bottom_plugins)
         (
             ui.button(icon="tune", on_click=ui_state.settings_content.open)
             .props("flat dense color=wc-text")
@@ -951,12 +937,19 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             .mark("tab-settings")
         )
 
-    # ---- Bottom panels container (plugins only) ----
+    # ---- Bottom panels container ----
     with (
         ui.tab_panels(bottom_tabs, value=None)
         .props("vertical animated transition-prev=slide-up transition-next=slide-down")
         .classes("left-panels-container bottom-panels-container") as bottom_panels
     ):
+
+        def close_bottom_panels():
+            bottom_tabs.value = None
+            bottom_panels.value = None
+            ui.run_javascript("PanelResize.onTabChange('bottom', '')")
+
+        scene_panel.build(close_bottom_panels)
         _add_plugin_tab_panels(PanelSlot.LEFT_BOTTOM_TAB, commander)
 
         def handle_bottom_tab_change(e):
@@ -1018,7 +1011,7 @@ def _setup_panel_persistence(refs: dict) -> None:
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_TOP_TAB
                     }
-                    bottom_valid = {
+                    bottom_valid = {"scene"} | {
                         p.id
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_BOTTOM_TAB
@@ -1060,9 +1053,6 @@ def build_page_content() -> None:
     """Build the Move page UI."""
 
     ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
-    ui.add_head_html('<script src="/static/js/scene-framing.js" defer></script>')
-    ui.add_head_html('<script src="/static/js/scene-pointer.js" defer></script>')
-    ui.add_head_html('<script src="/static/js/scene-fx.js" defer></script>')
     ui.add_head_html('<script src="/static/js/live-chart.js" defer></script>')
 
     with ui.column().classes(
@@ -1326,6 +1316,9 @@ def _register_handlers() -> None:
             _quiet_shutdown_exception_handler
         )
         try:
+            from waldo_commander.services.fixture_meshes import sweep_unused_assets
+
+            sweep_unused_assets()
             # Pre-warm process pool workers with RTB imports (runs in background)
             backend_pkg = ui_state.active_robot.backend_package
             asyncio.create_task(warm_process_pool(backend_pkg))
@@ -1629,6 +1622,7 @@ def _maybe_clear_sim_pose_override() -> None:
     is_active = active_pb is not None and active_pb.dry_run.playback.is_active
     if (
         not is_active
+        and (playback._teleport_task is None or playback._teleport_task.done())
         and playback_coordination.last_teleport_ts > 0
         and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
     ):
@@ -1728,7 +1722,7 @@ def _cycle_start_tick(page_client: Client | None) -> None:
         and robot_state.homed
         and (st.connected or st.simulator_active)
         and io.estop == 1
-        and not st.editing_mode
+        and not ui_state.editing_target
         and waldoctl.commander.programs.active is not None
     ):
         a._cycle_last_fire = time.monotonic()
@@ -1740,8 +1734,7 @@ def _home_output_tick() -> None:
     home pose".
 
     ``status.homed`` is only the referencing flag, so the distance is
-    computed here. Editing/scrub windows hold the last state — the published
-    angles then show a preview pose, not the robot. Disabling with the
+    computed here. Simulator scrubbing holds the last output state. Disabling with the
     output still on issues one final clearing write.
     """
     a = automation_state
@@ -1751,7 +1744,7 @@ def _home_output_tick() -> None:
         return
     desired = False
     if a.home_output_enabled:
-        if st.editing_mode or playback_coordination.sim_pose_override:
+        if playback_coordination.sim_pose_override:
             return
         robot = ui_state.active_robot
         if robot.digital_outputs < 2:
@@ -1833,10 +1826,7 @@ async def _status_consumer() -> None:
                 with global_phase_timer.phase("status"):
                     st = waldoctl.commander.status
                     # Copy status data (in-place fills to avoid allocations)
-                    if (
-                        not st.editing_mode
-                        and not playback_coordination.sim_pose_override
-                    ):
+                    if not playback_coordination.sim_pose_override:
                         st.joints.angles.set_deg(status.angles)
                     robot_state.pose[:] = status.pose
                     robot_state.io[:] = status.io

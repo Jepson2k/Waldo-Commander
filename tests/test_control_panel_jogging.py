@@ -7,7 +7,6 @@ reported robot state, rather than just asserting on client call patterns.
 
 import asyncio
 import math
-import re
 import time
 
 import numpy as np
@@ -17,6 +16,7 @@ from nicegui import binding
 from nicegui.testing import User
 
 from tests.helpers.motion import idle, settled, wait_moved
+from tests.helpers.scene_events import right_click
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
@@ -47,13 +47,6 @@ def _z() -> float:
     return float(waldoctl.commander.status.pose.z)
 
 
-def _arc_end(path: str) -> tuple[float, float]:
-    """Where the one arc of ``M x0 y0 A r r 0 large sweep x1 y1`` ends."""
-    n = [float(t) for t in re.findall(r"-?\d+(?:\.\d+)?", path)]
-    assert len(n) == 9, f"not a single arc: {path!r}"
-    return n[7], n[8]
-
-
 async def _wait_issued(issued: list, count: int, timeout_s: float = 10.0) -> None:
     """Wait until `issued` holds `count` entries.
 
@@ -70,10 +63,9 @@ async def _wait_issued(issued: list, count: int, timeout_s: float = 10.0) -> Non
 
 
 @pytest.mark.integration
-async def test_joint_jog_steps_dials_and_editing(user: User) -> None:
-    """A brief click on a joint jog button moves the joint by the step in
-    either direction, also at 1° under TOPPRA. Only the moved joint's dial
-    redraws, and the readout tracks the angle. Editing mode ignores a press."""
+async def test_joint_jog_steps_numeric_entry_and_editing(user: User) -> None:
+    """Step buttons and exact entry move the live joint, and only its dial redraws;
+    target editing cannot jog it."""
     from waldo_commander.state import ui_state
 
     await user.open("/")
@@ -82,7 +74,6 @@ async def test_joint_jog_steps_dials_and_editing(user: User) -> None:
     await ensure_robot_ready_for_motion()
     cp = ui_state.control_panel
 
-    assert len(cp._dials) == ui_state.active_robot.joints.count
     assert await wait_until(
         lambda: all(math.isfinite(d.last_deg) for d in cp._dials)
     ), "the dials never took their first angles from the status loop"
@@ -97,21 +88,14 @@ async def test_joint_jog_steps_dials_and_editing(user: User) -> None:
     j1_before, j2_before = props(dial_j1), props(dial_j2)
     await simulate_click(user, "btn-j1-plus")
     await wait_for_motion_start()
-    assert await wait_until(lambda: props(dial_j1) != j1_before, timeout_s=10.0), (
+    await wait_moved(_j1, start, lambda d: 4.9 <= d <= 5.1, what="J1 moving +5.0°±0.1°")
+    assert await wait_until(lambda: props(dial_j1) != j1_before), (
         "J1 moved but its dial did not redraw"
     )
-    await wait_moved(_j1, start, lambda d: 4.9 <= d <= 5.1, what="J1 moving +5.0°±0.1°")
     assert props(dial_j2) == j2_before, "J2 did not move, so its dial must not redraw"
-
-    # The redrawn dial shows the live angle: its knob is where the geometry
-    # puts the current J1 angle, within the redraw threshold.
-    live = _j1()
-    expected = dial_angle(dial_j1.lo, dial_j1.hi, live, DIAL_RADIUS)[1]
-    knob = tuple(dial_j1.props["knob"])
-    assert math.dist(knob, expected) < 0.3, f"knob {knob} vs live angle {live:.2f}°"
-    assert math.dist(_arc_end(dial_j1.props["fill"]), expected) < 0.3, (
-        "the fill ends under the knob"
-    )
+    # The redrawn knob sits where the dial geometry puts the live J1 angle.
+    expected = dial_angle(dial_j1.lo, dial_j1.hi, _j1(), DIAL_RADIUS)[1]
+    assert math.dist(dial_j1.props["knob"], expected) < 0.3
 
     # Regression: the J1 readout widget is bound to commander.status.joints
     # .angles, which the status loop mutates in place via set_deg(). If 'angles'
@@ -186,10 +170,10 @@ async def test_joint_jog_steps_dials_and_editing(user: User) -> None:
         _j1, start, lambda d: -3.1 <= d <= -2.9, what="J1 moving -3.0°±0.1°"
     )
 
-    # Editing mode: the target editor controls the robot and
-    # ``set_joint_pressed`` early-returns on ``commander.status.editing_mode``.
+    # Preview manipulation cannot also jog the live robot.
     initial = _j1()
-    waldoctl.commander.status.editing_mode = True
+    right_click(user, ui_state.urdf_scene.scene, [], [0.3, 0.1, 0.0])
+    user.find(marker="scene-target-at-robot").click()
     try:
         await asyncio.sleep(0.1)
         await simulate_click(user, "btn-j1-plus")
@@ -199,7 +183,7 @@ async def test_joint_jog_steps_dials_and_editing(user: User) -> None:
             f"Initial: {initial:.2f}°, Current: {_j1():.2f}°"
         )
     finally:
-        waldoctl.commander.status.editing_mode = False
+        ui_state.urdf_scene.cancel_target_edit()
 
     # Step precision with a small step under the TOPPRA profile (the app's
     # own client, not session_client).

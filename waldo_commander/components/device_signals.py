@@ -185,6 +185,7 @@ class DeviceSignalEditor:
             value = self.output_value.value
             if not require_browser_control(page_id):
                 return
+            motion_guard.note_command()
             observation = await write_signal.async_call(
                 motion_guard.guarded(self.commander.client, page_id), mapping, value
             )
