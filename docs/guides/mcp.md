@@ -73,8 +73,10 @@ tracks the mode (emerald Inspect, sky Auto-edits, violet Autopilot).
 | **Auto-edits** | applied immediately (flashed so you see them) | you approve each move |
 | **Autopilot** | applied immediately | runs automatically\* |
 
-\* In simulator mode everything is automatic. On **real hardware**, the first
-move of an AI session always asks for a one-time confirmation, even in Autopilot.
+\* In simulator mode everything is automatic. On **real hardware**, the AI's
+first move asks for a one-time confirmation, even in Autopilot. It holds across
+AI reconnects until you take control, the AI releases control, you leave
+Autopilot, or Waldo Commander restarts.
 
 At any time the **Take control** button (in the connection chip, shown while
 an AI holds control) seizes control back for you and halts any motion the AI
