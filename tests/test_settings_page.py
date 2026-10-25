@@ -1,10 +1,12 @@
 """Tests for settings page functionality."""
 
 import asyncio
-from typing import Any
+import socket
+from typing import Any, cast
 
 import pytest
 from nicegui import app as ng_app
+from nicegui import ui
 from nicegui.testing import User
 
 from tests.helpers.wait import (
@@ -18,6 +20,54 @@ from waldo_commander.state import ui_state
 
 # Access storage via getattr to satisfy static type checkers (NiceGUI has no typed attr)
 app_storage: Any = getattr(ng_app, "storage")
+
+
+@pytest.mark.integration
+async def test_an_unconfirmed_motion_profile_change_follows_controller_truth(
+    user: User,
+) -> None:
+    from parol6.client.async_client import AsyncRobotClient
+    from waldo_commander.state import robot_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    content = ui_state.settings_content
+    assert content is not None
+    client = content.client
+    profile = await client.profile()
+    assert profile in ui_state.active_robot.motion_profiles
+    app_storage.general["motion_profile"] = profile
+    requested = "QUINTIC" if profile != "QUINTIC" else "TOPPRA"
+    user.find(marker="tab-settings").click()
+    await asyncio.sleep(0)
+    select = cast(
+        ui.select, next(iter(user.find(marker="select-motion-profile").elements))
+    )
+
+    # A bound, quiet port cannot be claimed by a controller during the test.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as quiet:
+        quiet.bind(("127.0.0.1", 0))
+        absent = AsyncRobotClient(
+            host="127.0.0.1", port=quiet.getsockname()[1], timeout=0.02, retries=0
+        )
+        try:
+            assert await absent.select_profile(requested) == 0
+            content.client = absent
+            select.set_value(requested)
+            if robot_state.motion_profile is None:
+                await user.should_see(
+                    "Profile change failed: Profile change was not confirmed"
+                )
+            await poll_until(
+                lambda: select.value,
+                lambda shown: shown == profile,
+                what="Settings following the unchanged controller profile",
+            )
+            assert app_storage.general["motion_profile"] == profile
+            assert select.value == profile
+        finally:
+            content.client = client
+            await absent.close()
 
 
 @pytest.mark.integration

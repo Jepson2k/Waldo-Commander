@@ -2,10 +2,14 @@
 what it draws and enables, what it never locks, and when it is not run."""
 
 import asyncio
+from collections.abc import AsyncGenerator
+from typing import cast
 
 import numpy as np
 import pytest
 import waldoctl
+from nicegui import app as ng_app
+from nicegui import ui
 from nicegui.testing import User
 
 from tests.helpers.wait import (
@@ -21,6 +25,30 @@ rbt = RobotClient()
 rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
 rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
 """
+
+
+async def _open_preview(user: User, source: str) -> waldoctl.Program:
+    from waldo_commander.components.simulation_engine import simulation
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await wait_for_urdf_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    program = waldoctl.commander.programs.active
+    textarea = ui_state.active_textarea
+    assert program is not None and textarea is not None
+    simulation._debounce_delay = 0.2
+    textarea.value = source
+    program.source = source
+    # The debounce timer needs the editor's client slot.
+    with textarea:
+        simulation.schedule_debounced_simulation(program.id)
+    assert await wait_until(lambda: program.dry_run.commanded is not None, timeout_s=30)
+    return program
 
 
 def _pair(q_rad, rows: int = 30) -> tuple[waldoctl.TickIndex, waldoctl.TickIndex]:
@@ -71,30 +99,11 @@ async def test_a_predicted_pass_never_locks_the_bar_and_draws_only_against_its_p
     from waldo_commander.services.preview_segments import segments_from_record
     from waldo_commander.state import simulation_state, ui_state
 
-    await user.open("/")
-    await wait_for_app_ready()
-    await wait_for_urdf_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
     # The backend probe is learned once per session; this test is about it.
     path_visualizer._predicted_diverges.clear()
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-    program = waldoctl.commander.programs.active
-    assert program is not None and ui_state.active_textarea is not None
-    dry_run = program.dry_run
-    simulation._debounce_delay = 0.2
     simulation._physics_delay = 0.2
-
-    textarea = ui_state.active_textarea
-    textarea.value = _SCRIPT
-    program.source = _SCRIPT
-    # The editor schedules from its change handler, inside its client's
-    # slot; the debounce timer needs that client.
-    with textarea:
-        simulation.schedule_debounced_simulation(program.id)
-
-    assert await wait_until(lambda: dry_run.commanded is not None, timeout_s=30)
+    program = await _open_preview(user, _SCRIPT)
+    dry_run = program.dry_run
     assert dry_run.predicted_current is None
     assert playback._ensure_timeline() is not None
 
@@ -166,3 +175,157 @@ async def test_a_predicted_pass_never_locks_the_bar_and_draws_only_against_its_p
         dry_run.path_segments = []
         view.paths_visible, view.predicted_visible = saved
         simulation_state.notify_changed()
+
+
+@pytest.mark.integration
+async def test_the_preview_is_timed_by_the_profile_settings_selects(
+    user: User,
+) -> None:
+    """The preview plans with the profile the controller will run the
+    program under: choosing QUINTIC in Settings plans every open program
+    again, including the background tab."""
+    from waldo_commander.components.simulation_engine import simulation
+    from waldo_commander.state import robot_state, ui_state
+
+    ng_app.storage.general["motion_profile"] = "TOPPRA"
+    script = """from parol6 import RobotClient
+rbt = RobotClient()
+rbt.move_j([40, -60, 200, 30, 20, 150], speed=0.5, accel=1.0)
+"""
+    first = await _open_preview(user, script)
+    assert await waldoctl.commander.client.select_profile("TOPPRA") == 1
+
+    assert await wait_until(
+        lambda: robot_state.motion_profile in (None, "TOPPRA"), timeout_s=5
+    )
+    user.find(marker="editor-new-tab-btn").click()
+    await asyncio.sleep(0)
+    second = waldoctl.commander.programs.active
+    textarea = ui_state.active_textarea
+    assert second is not None and second.id != first.id and textarea is not None
+    textarea.value = script
+    second.source = script
+    with textarea:
+        simulation.schedule_debounced_simulation(second.id)
+    assert await wait_until(lambda: second.dry_run.commanded is not None, timeout_s=30)
+
+    def planned_s(program: waldoctl.Program) -> float:
+        record = program.dry_run.commanded
+        assert record is not None
+        return record.duration_s
+
+    programs = (first, second)
+    assert await wait_until(
+        lambda: all(
+            p.dry_run.commanded_revision == p.dry_run.revision for p in programs
+        ),
+        timeout_s=30,
+    )
+    toppra = [planned_s(p) for p in programs]
+    user.find(marker="tab-settings").click()
+    await asyncio.sleep(0)
+    profile_select = cast(
+        ui.select, next(iter(user.find(marker="select-motion-profile").elements))
+    )
+    try:
+        profile_select.set_value("QUINTIC")
+        assert await wait_until(
+            lambda: all(
+                planned_s(p) > before + 0.3 for p, before in zip(programs, toppra)
+            ),
+            timeout_s=30,
+        ), (
+            f"both tabs must re-plan after QUINTIC was selected: "
+            f"{[planned_s(p) for p in programs]} vs TOPPRA {toppra}"
+        )
+    finally:
+        profile_select.set_value("TOPPRA")
+        assert await wait_until(
+            lambda: all(
+                abs(planned_s(p) - before) < 1e-6 for p, before in zip(programs, toppra)
+            ),
+            timeout_s=30,
+        )
+
+
+@pytest.mark.integration
+async def test_reported_profile_replans_after_a_run_and_updates_settings(
+    user: User,
+) -> None:
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.programs import is_any_program_running
+    from waldo_commander.state import robot_state, ui_state
+
+    script = """from parol6 import RobotClient
+with RobotClient() as rbt:
+    rbt.move_j([40, -60, 200, 30, 20, 150], speed=0.5, accel=1.0)
+"""
+    program = await _open_preview(user, script)
+    client = waldoctl.commander.client
+    stream = cast(AsyncGenerator, client.stream_status_shared())
+    try:
+        status = await asyncio.wait_for(anext(stream), timeout=5)
+        if getattr(status, "motion_profile", None) is None:
+            pytest.skip("Requires new parol6 status with motion_profile reporting")
+    finally:
+        await stream.aclose()
+
+    user.find(marker="tab-settings").click()
+    await asyncio.sleep(0)
+    select = cast(
+        ui.select, next(iter(user.find(marker="select-motion-profile").elements))
+    )
+
+    async def reported(profile: str) -> None:
+        assert await wait_until(
+            lambda: robot_state.motion_profile == profile
+            and select.value == profile
+            and ng_app.storage.general.get("motion_profile") == profile,
+            timeout_s=5,
+        )
+
+    try:
+        assert await client.select_profile("TOPPRA") == 1
+        await reported("TOPPRA")
+        assert await wait_until(
+            lambda: program.dry_run.commanded_revision == program.dry_run.revision,
+            timeout_s=30,
+        )
+        baseline = program.dry_run.commanded
+        assert baseline is not None
+        user.find(marker="settings-close").click()
+        user.find(marker="editor-new-tab-btn").click()
+        await asyncio.sleep(0)
+        textarea = ui_state.active_textarea
+        assert textarea is not None
+        textarea.value = (
+            "from parol6 import RobotClient\n"
+            "with RobotClient() as rbt:\n"
+            "    rbt.delay(0.1)\n"
+            "    rbt.delay(0.1)\n"
+        )
+        await asyncio.sleep(0)
+        assert await script_exec.start(paused=True)
+        assert await client.select_profile("QUINTIC") == 1
+        await reported("QUINTIC")
+        assert is_any_program_running()
+        assert program.dry_run.commanded is baseline
+
+        await script_exec.stop()
+        assert await wait_until(
+            lambda: program.dry_run.commanded is not None
+            and program.dry_run.commanded.duration_s > baseline.duration_s + 0.3,
+            timeout_s=30,
+        ), "The controller profile changed during the run but its preview stayed stale"
+
+        assert await client.reset_state() == 1
+        await reported("TOPPRA")
+        assert await wait_until(
+            lambda: program.dry_run.commanded is not None
+            and abs(program.dry_run.commanded.duration_s - baseline.duration_s) < 1e-6,
+            timeout_s=30,
+        ), "reset_state must restore the preview's TOPPRA timing"
+    finally:
+        if is_any_program_running():
+            await script_exec.stop()
+        await client.select_profile("TOPPRA")

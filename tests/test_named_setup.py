@@ -439,3 +439,96 @@ async def test_setup_save_replans_programs_that_load_it(
     output = [entry.text for entry in program.log.entries]
     assert script_exec.last_exit_code == 0, output
     assert "bench poses: 1" in output
+
+
+@pytest.mark.integration
+async def test_overlapping_setup_saves_keep_all_previews_current_even_when_paused(
+    user: User, tmp_path, monkeypatch
+) -> None:
+    from waldoctl.setup import Parameter
+
+    from tests.helpers.wait import wait_until
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.components.simulation_engine import simulation
+
+    monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path / "setups"))
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    store = SetupStore()
+
+    def snapshot(joint: float) -> SetupSnapshot:
+        return SetupSnapshot(parameters={"joint": Parameter(joint, "deg")})
+
+    store.save("bench", snapshot(75))
+    store.save("other", snapshot(0))
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    programs = []
+    for uses_other in (False, True):
+        if programs:
+            user.find(marker="editor-new-tab-btn").click()
+            await asyncio.sleep(0)
+        program = waldoctl.commander.programs.active
+        textarea = ui_state.active_textarea
+        assert program is not None and textarea is not None
+        extra = 'other = load_setup("other")\n' if uses_other else ""
+        offset = ' + other.parameters["joint"].value' if uses_other else ""
+        textarea.value = (
+            "from parol6 import RobotClient\n"
+            "from waldo_commander.setup import load_setup\n"
+            'setup = load_setup("bench")\n'
+            f"{extra}"
+            "with RobotClient() as rbt:\n"
+            f'    rbt.move_j([setup.parameters["joint"].value{offset}, '
+            "-85, 135, 10, 45, 170], speed=0.5)\n"
+        )
+        program.source = textarea.value
+        # The debounce timer needs the editor's client slot.
+        with textarea:
+            simulation.schedule_debounced_simulation(program.id)
+        assert await wait_until(
+            lambda p=program: p.dry_run.commanded is not None
+            and p.dry_run.commanded_revision == p.dry_run.revision,
+            timeout_s=30,
+        )
+        programs.append(program)
+
+    async def ends_at(*joints: float) -> None:
+        assert await wait_until(
+            lambda: all(
+                p.dry_run.commanded is not None
+                and p.dry_run.commanded_revision == p.dry_run.revision
+                and np.degrees(p.dry_run.commanded.joints_rad[-1, 0])
+                == pytest.approx(joint, abs=0.1)
+                for p, joint in zip(programs, joints)
+            ),
+            timeout_s=30,
+        ), "A setup save left an open program's plan stale"
+
+    await ends_at(75, 75)
+    user.find(marker="editor-new-tab-btn").click()
+    await asyncio.sleep(0)
+    textarea = ui_state.active_textarea
+    assert textarea is not None
+    textarea.value = (
+        "from parol6 import RobotClient\n"
+        "with RobotClient() as rbt:\n"
+        "    rbt.delay(0.1)\n"
+        "    rbt.delay(0.1)\n"
+    )
+    await asyncio.sleep(0)
+    # The second save covers fewer tabs before the first sweep can finish.
+    store.save("bench", snapshot(70))
+    store.save("other", snapshot(5))
+    await ends_at(70, 75)
+
+    try:
+        assert await script_exec.start(paused=True)
+        store.save("bench", snapshot(65))
+        await ends_at(65, 70)
+        assert is_any_program_running()
+    finally:
+        if is_any_program_running():
+            await script_exec.stop()
