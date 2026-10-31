@@ -15,6 +15,7 @@ from waldoctl.skills import MissingCapability, SkillError, report_progress, skil
 from waldoctl.status import ActionState, StatusBuffer
 from waldoctl.tools import GripperTool, ToolType
 
+from waldo_commander.services.supervised_restart import AT_REST_DEG_S, STILL_WINDOW_NS
 from waldo_commander.skills._motion import completed, validate_motion
 
 
@@ -43,13 +44,27 @@ def _near(actual, expected, tolerance: float, label: str) -> None:
         )
 
 
-async def _fresh(stream: AsyncIterator[StatusBuffer], timeout: float) -> StatusBuffer:
+async def _fresh(
+    stream: AsyncIterator[StatusBuffer], timeout: float
+) -> tuple[StatusBuffer, list[float]]:
+    """A newer status, and the joint speeds in deg/s since one at least
+    ``STILL_WINDOW_NS`` before it in the same session."""
     async with asyncio.timeout(timeout):
-        baseline = await anext(stream)
+        status = await anext(stream)
+        session, seq, since = status.session_id, status.seq, status.mono_time_ns
+        angles = [float(v) for v in status.angles]
         while True:
             status = await anext(stream)
-            if status.session_id != baseline.session_id or status.seq > baseline.seq:
-                return status
+            if status.session_id != session or status.mono_time_ns < since:
+                session, seq, since = status.session_id, status.seq, status.mono_time_ns
+                angles = [float(v) for v in status.angles]
+                continue
+            elapsed_ns = status.mono_time_ns - since
+            if status.seq > seq and elapsed_ns >= STILL_WINDOW_NS:
+                return status, [
+                    (float(a) - b) * 1e9 / elapsed_ns
+                    for a, b in zip(status.angles, angles, strict=True)
+                ]
 
 
 async def _stop_motion(rbt: RobotClient) -> bool:
@@ -200,7 +215,7 @@ async def replay_demonstration(
                 raise ConnectionError("The controller queue could not be read")
             if queued:
                 raise SkillError("Clear queued commands before replay")
-            status = await _fresh(stream, observation_timeout)
+            status, speeds = await _fresh(stream, observation_timeout)
             session_id = status.session_id
             if not session_id or (
                 session_id != recording.session_id and not reconciled_session
@@ -212,11 +227,11 @@ async def replay_demonstration(
                 raise SkillError("Select the recorded tool before replay")
             healthy(status)
             if status.action_state != ActionState.IDLE or any(
-                not math.isfinite(v) or abs(v) > 0.02 for v in status.speeds
+                not math.isfinite(v) or abs(v) > AT_REST_DEG_S for v in speeds
             ):
                 raise SkillError(
                     f"Stop existing motion before replay (command={status.executing_index}, "
-                    f"state={status.action_state}, speeds={status.speeds.tolist()})"
+                    f"state={status.action_state}, speeds={[round(v, 3) for v in speeds]})"
                 )
             _near(status.angles, first.joints_deg, 0.5, "Start joint position")
         if preview:
