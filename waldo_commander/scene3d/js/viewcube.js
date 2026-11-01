@@ -20,7 +20,7 @@ const BAND = 0.26;
 const ROUND = 0.06;
 const ROUND_STEPS = 3;
 // The drawing's half-width in sides: the cube and its axes past the corner.
-const EXTENT = 0.86;
+const EXTENT = 1.1;
 const TEXTURE = 256;
 // The width of the line drawn round each face, in texels.
 const EDGE = 3;
@@ -36,10 +36,11 @@ const SHADE = 0.62;
 // How close to straight up or down an orbit may look.
 const POLE = 1e-6;
 // The axes run along the edges from the left front bottom corner, just
-// outside the cube, and past it a little.
+// outside the cube, and well past it: that corner is the far one in the
+// usual view, so only what passes the cube shows.
 const AXIS_OFFSET = 0.035;
-const AXIS_END = 0.56;
-const AXIS_RADIUS = 0.022;
+const AXIS_END = 0.8;
+const AXIS_RADIUS = 0.03;
 
 // Each face: the direction it is seen from, and its right and up as its
 // label reads.
