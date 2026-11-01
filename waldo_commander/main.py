@@ -427,6 +427,11 @@ async def stop_controller() -> None:
 # while in flight) and cleared only if it fails, so check_ping keeps retrying
 # until the first success and never flips the user back afterwards.
 _hw_auto_switched: bool = False
+# When each tab was last told to reload to claim the free slot. A slow page
+# told again at once loads twice, and the first load, which never connects,
+# would hold the slot.
+_reloading: dict[str, float] = {}
+_RELOAD_RETRY_S = 10.0
 
 
 async def _switch_to_hardware() -> None:
@@ -455,10 +460,13 @@ async def check_ping() -> None:
     # owning client context, so ui.context.client.id is this tab's id.
     this_id = ui.context.client.id
     active_id = ui_state.active_client_id
-    if active_id is None:
+    if active_id is None or active_id not in Client.instances:
         # No tab holds the slot — claim it by reloading. The reloaded
         # client lands fresh in index_page and atomically sets the slot.
-        ui.navigate.reload()
+        now = time.monotonic()
+        if now - _reloading.get(this_id, -math.inf) > _RELOAD_RETRY_S:
+            _reloading[this_id] = now
+            ui.navigate.reload()
         return
     if active_id != this_id:
         # Some other tab holds the slot. Make sure we're showing the
@@ -1539,6 +1547,7 @@ async def index_page():
                 editor_panel.cleanup()
 
     this_client.on_disconnect(_on_disconnect)
+    this_client.on_delete(lambda: _reloading.pop(this_client.id, None))
 
     if not is_active:
         # Shadow tab: render the takeover overlay only. Do NOT call
