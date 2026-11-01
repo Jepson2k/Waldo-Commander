@@ -60,8 +60,8 @@ def _action(
 
 def test_segment_fingerprint_changes_exactly_when_the_drawing_would():
     """The scene diff redraws a segment when its fingerprint changes: any
-    drawn property or a neighbour's validity changes it, the line number
-    does not, and a segment without points still has one."""
+    drawn property or a neighbour's validity changes it, its line number and
+    position do not, and a segment without points still has one."""
     base = _segment_fingerprint([_seg()], 0, 3)
     assert _segment_fingerprint([_seg()], 0, 3) == base
     for name, changed, redraws in (
@@ -82,7 +82,16 @@ def test_segment_fingerprint_changes_exactly_when_the_drawing_would():
     ) != _segment_fingerprint([valid, _seg(is_valid=False, points=neighbour)], 0, 3)
 
     empty = _segment_fingerprint([_seg(points=[])], 0, 3)
-    assert empty[0] == () and empty[1] == ()
+    assert empty[:2] == (0, 0)
+
+    # A line inserted above shifts a segment's index and line, not its drawing.
+    run = [_seg(points=[[i, 0, 0], [i + 1, 0, 0]], line_number=i + 1) for i in range(5)]
+    inserted = [
+        run[0],
+        _seg(points=[[9, 0, 0], [9, 1, 0]], line_number=2),
+        *(_seg(points=s.points, line_number=s.line_number + 1) for s in run[1:]),
+    ]
+    assert _segment_fingerprint(inserted, 5, 3) == _segment_fingerprint(run, 4, 3)
 
 
 def test_tool_action_fingerprint_changes_with_what_the_jaws_draw():

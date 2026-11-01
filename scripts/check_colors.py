@@ -19,8 +19,12 @@ ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "waldo_commander"
 SUFFIXES = {".py", ".js", ".svg", ".css", ".vue"}
 ALLOWED = {PACKAGE / "common" / "theme.py"}
-# Pictograms load as <img>, where the page's tokens can't reach.
-ALLOWED_DIRS = {PACKAGE / "static" / "icons" / "skills"}
+# Pictograms load as <img>, where the page's tokens can't reach; vendored
+# third-party code stays as released.
+ALLOWED_DIRS = {
+    PACKAGE / "static" / "icons" / "skills",
+    PACKAGE / "scene3d" / "vendor",
+}
 
 QUASAR_HUES = (
     "red|pink|purple|deep-purple|indigo|blue|light-blue|cyan|teal|green|light-green|"

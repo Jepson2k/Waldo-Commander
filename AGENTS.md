@@ -49,6 +49,12 @@ HEADED=1 pytest tests/test_specific.py
 pytest tests/test_editor_integration.py -v
 ```
 
+Review screenshots and videos are opt-in: `pytest --evidence` makes the
+`VisualEvidence` captures in the scene screen tests write to
+`.scene-evidence/`. Without the flag they record nothing, and steps that exist
+only to take a screenshot are skipped. Use it when preparing visual review
+material, not for ordinary runs.
+
 ### Test Environment Configuration
 
 The following are **already configured in `conftest.py`** - do not set them manually:

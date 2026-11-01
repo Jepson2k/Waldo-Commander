@@ -1,7 +1,7 @@
 """Path renderer.
 
 Standalone class held by ``UrdfScene`` via composition. Stateless — all
-methods rely on the caller having an active ``ui.scene`` context (i.e.
+methods rely on the caller having an active 3D scene context (i.e.
 ``with urdf_scene.scene:`` block surrounding the call).
 """
 
@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from scipy.spatial.transform import Rotation as ScipyRotation
-from nicegui import ui
 
-from waldo_commander.common.theme import hex_of
+from waldo_commander import scene3d as s3d
+from waldo_commander.common.theme import _srgb_eotf, hex_of
 
 if TYPE_CHECKING:
     from waldo_commander.state import PathSegment, ToolAction
@@ -24,10 +24,11 @@ _PI_ROTATION_RPY = [math.pi, 0.0, 0.0]
 _ZERO_ROTATION_RPY = [0.0, 0.0, 0.0]
 
 
-def _hex_to_rgb(hex_color: str) -> list[float]:
-    """Convert '#RRGGBB' to [r, g, b] floats in 0-1 range."""
+def _hex_to_linear_rgb(hex_color: str) -> list[float]:
+    """'#RRGGBB' as linear-light [r, g, b] in 0–1: three.js takes vertex
+    colours as linear, where a material's hex is sRGB."""
     h = hex_color.lstrip("#")
-    return [int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    return [_srgb_eotf(int(h[i : i + 2], 16) / 255.0) for i in (0, 2, 4)]
 
 
 def _extract_tcp_rotation(tcp_pose: list[float]) -> ScipyRotation | None:
@@ -35,6 +36,26 @@ def _extract_tcp_rotation(tcp_pose: list[float]) -> ScipyRotation | None:
     if len(tcp_pose) < 6:
         return None
     return ScipyRotation.from_euler("XYZ", [tcp_pose[3], tcp_pose[4], tcp_pose[5]])
+
+
+def create_waypoint_marker(shape: str, size: float, color: str) -> Any:
+    """Create a waypoint marker: diamond (lathe bicone), square (box), or sphere."""
+    if shape == "diamond":
+        # Bicone: a diamond profile revolved around the Y axis.
+        r = size
+        h = size * 1.5
+        obj = s3d.lathe([[0, -h], [r, 0], [0, h]], segments=8)
+        obj.material(color)
+        return obj
+    elif shape == "square":
+        side = size * 2
+        box = s3d.box(side, side, side)
+        box.material(color)
+        return box
+    else:
+        sphere = s3d.sphere(size)
+        sphere.material(color)
+        return sphere
 
 
 class PathRenderer:
@@ -85,10 +106,10 @@ class PathRenderer:
             # vertex reuses the last pair's color.
             vertex_colors = []
             for i, hex_c in enumerate(point_pair_colors):
-                vertex_colors.append(_hex_to_rgb(hex_c))
-            vertex_colors.append(_hex_to_rgb(point_pair_colors[-1]))
+                vertex_colors.append(_hex_to_linear_rgb(hex_c))
+            vertex_colors.append(_hex_to_linear_rgb(point_pair_colors[-1]))
 
-        line = ui.scene.polyline(
+        line = s3d.polyline(
             pts_list,
             colors=vertex_colors,
             dashed=is_dashed,
@@ -152,7 +173,7 @@ class PathRenderer:
             rot = ScipyRotation.from_rotvec(angle * axis)
             rpy = rot.as_euler("xyz", degrees=False).tolist()
 
-        cone = ui.scene.cylinder(
+        cone = s3d.cylinder(
             top_radius=0.0,
             bottom_radius=scale,
             height=scale * 2,
@@ -191,7 +212,7 @@ class PathRenderer:
         shaft_end = o + d * (length - head_length)
         head_pos = o + d * (length - head_length * 0.5)
 
-        line = ui.scene.line(o.tolist(), shaft_end.tolist())
+        line = s3d.line(o.tolist(), shaft_end.tolist())
         line.material(color, opacity)
 
         cone = self._create_direction_cone(

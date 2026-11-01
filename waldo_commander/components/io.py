@@ -7,6 +7,7 @@ from waldoctl import RobotClient
 
 from waldo_commander.services.control_lease import require_browser_control
 from waldo_commander.services.motion_recorder import motion_recorder
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.state import ui_state
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ class IoPage:
         if not require_browser_control(ui_state.active_client_id):
             return
         try:
+            motion_guard.note_command()
             await self.client.write_io(index, state)
             motion_recorder.record_action("io", port=index, state=state)
             logger.info("OUTPUT%s -> %s", index + 1, "HIGH" if state else "LOW")

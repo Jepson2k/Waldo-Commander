@@ -73,6 +73,7 @@ class MotionGuard:
         self.stop_generation = 0
         self._reservation: Reservation | None = None
         self._listeners: list[Callable[[int, str], None]] = []
+        self._command_listeners: list[Callable[[], None]] = []
 
     @property
     def owner(self) -> str | None:
@@ -98,6 +99,24 @@ class MotionGuard:
         def remove() -> None:
             with contextlib.suppress(ValueError):
                 self._listeners.remove(listener)
+
+        return remove
+
+    def note_command(self) -> None:
+        """Tell every command listener that a command is about to take the arm."""
+        for listener in list(self._command_listeners):
+            try:
+                listener()
+            except Exception:
+                logger.exception("Command listener failed")
+
+    def add_command_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Call ``listener()`` before each command that takes the arm; returns its remover."""
+        self._command_listeners.append(listener)
+
+        def remove() -> None:
+            with contextlib.suppress(ValueError):
+                self._command_listeners.remove(listener)
 
         return remove
 

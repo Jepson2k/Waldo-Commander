@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg">
+  <symbol id="perspective" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M3 9.5h10v10H3z"/>
+    <path d="M12 4h7v7"/>
+    <path d="M3 9.5L12 4M13 9.5L19 4M13 19.5L19 11"/>
+  </symbol>
+  <symbol id="orthographic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M3 9h11v11H3z"/>
+    <path d="M9.5 3.5h11v11"/>
+    <path d="M3 9l6.5-5.5M14 9l6.5-5.5M14 20l6.5-5.5"/>
+  </symbol>
+</svg>

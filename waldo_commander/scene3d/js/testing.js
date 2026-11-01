@@ -1,0 +1,470 @@
+// What browser tests may see of the view: objects by name, where points
+// land on screen, what a press at a pixel would grab, the handles shown,
+// the camera, and the frame count. Tests reach the view through this
+// surface only.
+
+import * as THREE from "three";
+import { GIZMO } from "./handles.js";
+import { cachedStls } from "./kinds.js";
+import { FACES } from "./viewcube.js";
+
+export function surface(core) {
+  const { canvas } = core;
+  const observedMaterials = new Set();
+  const materialDisposed = ({target}) => {
+    observedMaterials.delete(target);
+    target.removeEventListener("dispose", materialDisposed);
+  };
+  const rect = () => canvas.getBoundingClientRect();
+  const pixel = (v) => core.pointer.screen(v);
+  // A node, or an object the view itself drew (the gizmo, a ring, a label).
+  const byName = (name) => {
+    const rec = core.nodes.byName(name);
+    if (rec) return rec.obj;
+    return core.scene.getObjectByName(name) || null;
+  };
+  const nodeId = (name) => {
+    const rec = core.nodes.byName(name);
+    return rec ? rec.id : null;
+  };
+  const gizmoFor = (name) => {
+    const target = byName(name);
+    if (!target) return null;
+    return core.gizmos.all().find((tc) => tc.object === target) || null;
+  };
+  const names = (o) => {
+    const out = [];
+    for (; o; o = o.parent) if (o.name) out.push(o.name);
+    return out;
+  };
+
+  const S = {
+    root: core.root,
+    canvas,
+    get scene() {
+      return core.scene;
+    },
+    get camera() {
+      return core.camera;
+    },
+    get controls() {
+      return core.controls;
+    },
+    get renderer() {
+      return core.renderer;
+    },
+    get resets() {
+      return core.resets;
+    },
+    byName,
+    frames: () => core.frameCount,
+    clearanceLines: () => [...core.clearances.items.values()].map(item => ({
+      obstacle: item.data.obstacle,
+      label: item.label.element.textContent,
+      endpoints: [0, 3].map(offset => Array.from(item.geometry.attributes.position.array.slice(offset, offset + 3))),
+      color: '#' + item.line.material.color.getHexString(),
+      id: item.line.uuid,
+    })),
+    sweptVolume() {
+      const sweep = core.inspection.sweep, data = core.inspection.data;
+      if (!sweep.root || !data) return null;
+      const record = data.records[0];
+      return {
+        block: sweep.block, command: record.blocks[sweep.block].command, sampleCount: sweep.samples.length,
+        samples: sweep.samples.map(({row, colliding, object}) => ({
+          sourceRow: record.source[row], colliding,
+          joints: data.joints.map((id, i) => {
+            const rec = core.nodes.get(id), joint = object.getObjectByName(sweep.ghost.clones.get(id).name);
+            if (rec.prismatic) return joint.position.dot(rec.axis);
+            const q = joint.quaternion, angle = 2 * Math.atan2(rec.axis.x*q.x + rec.axis.y*q.y + rec.axis.z*q.z, q.w);
+            return angle + 2 * Math.PI * Math.round((record.q[row*record.dof+i] - angle) / (2*Math.PI));
+          }),
+        })),
+      };
+    },
+    cachedStls,
+    renderResources() {
+      // Scene traversal alone misses materials detached without disposal.
+      core.scene.traverse(o => {
+        if (o.material) for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+          if (observedMaterials.has(m)) continue;
+          observedMaterials.add(m);
+          m.addEventListener("dispose", materialDisposed);
+        }
+      });
+      return { geometries: core.renderer.info.memory.geometries, materials: observedMaterials.size };
+    },
+    inspection() {
+      const inspect = core.inspection, hit = inspect.current;
+      return {revision:inspect.data?.revision, pinned:inspect.pinned, dragging:inspect.dragging,
+        current:hit, hovered:inspect.hovered,
+        comparison:{state:inspect.comparison.data?"ready":"unavailable",visibility:inspect.comparison.visibility},
+        time:hit ? (inspect.data.records[hit.record].blocks[hit.block]?.instant ? inspect.data.records[hit.record].blocks[hit.block].at : inspect.data.records[hit.record].source[hit.row]*inspect.data.records[hit.record].dt) : null,
+        records:inspect.data?.records.map((r)=>({label:r.label,rows:r.rows,dt:r.dt,blocks:r.blocks}))};
+    },
+    pathPixels(record, command) {
+      const inspect=core.inspection;
+      inspect.project();
+      const data=inspect.data?.records[record], points=inspect.projected?.[record];
+      const block=data?.blocks.find((b)=>b.command===command);
+      if (!block || !points) return null;
+      return Array.from({length:block.end-block.start},(_,i)=>{
+        const row=block.start+i; return [points[row*3],points[row*3+1],row];
+      });
+    },
+    pathGrab(record, command, fraction=0.1) {
+      if (!core.inspection.available || core.gestures.active) return null;
+      const points = S.pathPixels(record, command);
+      if (!points?.length) return null;
+      const target = points[0][2] + (points.length - 1) * fraction;
+      const candidates = points.slice(1, -1).sort((a,b) => Math.abs(a[2]-target) - Math.abs(b[2]-target));
+      for (const [x,y,row] of candidates) {
+        const picked = S.pick(x,y);
+        if (picked.covered || picked.handles.length || picked.names.length) continue;
+        const hit = core.inspection.pick(x,y)[0];
+        if (hit?.record !== record || core.inspection.data.records[record].blocks[hit.block].command !== command) continue;
+        return [x,y,row];
+      }
+      return null;
+    },
+    requestRender: () => core.requestRender(),
+    // One whole frame drawn now, so its pixels can be read before the page shows it.
+    drawFrame: () => core.draw(),
+    idle: () => core.nodes.idle(),
+    project(name, points) {
+      const o = byName(name);
+      if (!o) return null;
+      o.updateWorldMatrix(true, false);
+      const v = new THREE.Vector3();
+      return points.map(([x, y, z]) => pixel(v.set(x, y, z).applyMatrix4(o.matrixWorld).project(core.camera)));
+    },
+    pixelOf(name) {
+      const o = byName(name);
+      if (!o) return null;
+      const [px, py] = pixel(o.getWorldPosition(new THREE.Vector3()).project(core.camera));
+      return document.elementFromPoint(px, py) === canvas ? [px, py] : null;
+    },
+    drawing() {
+      const d=core.drawingTool;
+      return {active:d.active,phase:d.phase,width:d.width,depth:d.depth,height:d.height};
+    },
+    drawingPlane(points) {
+      const d=core.drawingTool;
+      if(!d.active)return null;
+      return points.map(([u,v])=>pixel(new THREE.Vector3(u,v,0).applyQuaternion(d.rotation).add(d.origin).project(core.camera)));
+    },
+    drawingHeight() {
+      const d=core.drawingTool;
+      if(!d.handle.visible)return null;
+      const a=pixel(d.handle.position.clone().project(core.camera));
+      const b=pixel(d.handle.position.clone().addScaledVector(d.normal,.05).project(core.camera));
+      const dx=b[0]-a[0],dy=b[1]-a[1],length=Math.hypot(dx,dy);
+      return length>2 && document.elementFromPoint(...a)===canvas ? [...a,dx/length,dy/length] : null;
+    },
+    resizeHandle(axis=null) {
+      const resize=core.resizeHandles;
+      if(!resize.group.visible)return null;
+      const rec=core.nodes.get(resize.spec.node);
+      const center=rec.obj.getWorldPosition(new THREE.Vector3()).project(core.camera);
+      const c=pixel(center);
+      for(const handle of resize.handles) {
+        if(!handle.visible || axis!==null && handle.userData.axis!==axis)continue;
+        const p=pixel(handle.position.clone().project(core.camera));
+        if(document.elementFromPoint(...p)!==canvas || resize.hit(...p)!==handle)continue;
+        const dx=p[0]-c[0],dy=p[1]-c[1],length=Math.hypot(dx,dy);
+        if(length>10)return [...p,dx/length,dy/length,handle.userData.axis,handle.userData.sign];
+      }
+      return null;
+    },
+    // What a press at (px, py) would grab: whether something covers the
+    // canvas there, the names from the first object the pointer acts on up
+    // to the root, and every gizmo handle under it.
+    pick(px, py) {
+      const covered = document.elementFromPoint(px, py) !== canvas;
+      const hit = core.pointer.hit(px, py);
+      const handles = core.pointer.handlesAt(px, py).map(({ tc, axis, mode }) => ({ name: tc.object.name, axis, mode }));
+      return { covered, names: hit ? names(hit.object) : [], handles };
+    },
+    ground(px, py) {
+      const ray = core.pointer.aim(px, py).ray;
+      const k = -ray.origin.z / ray.direction.z;
+      return [ray.origin.x + k * ray.direction.x, ray.origin.y + k * ray.direction.y];
+    },
+    handles() {
+      const shown = [];
+      if (core.pointer.ring) shown.push(`ring:${core.pointer.ring.u}`);
+      if (core.gizmos.gizmoShown) shown.push(GIZMO);
+      return shown;
+    },
+    // The steps a drag snaps to at the camera's distance now.
+    snap() {
+      const spec = core.pointer.ring?.spec || Object.values(core.ix.rings || {})[0];
+      return {
+        joint_deg: spec ? core.pointer.jointStep(spec) : 1,
+        cart_mm: core.gizmos.precision.incrementAt(core.gizmos.frame.position, "translate") * 1000,
+      };
+    },
+    gizmo(name, mark) {
+      const tc = gizmoFor(name);
+      if (!tc) return null;
+      if (mark) tc.wcProbe = true;
+      return { mode: tc.mode, translationSnap: tc.translationSnap, rotationSnap: tc.rotationSnap, probe: !!tc.wcProbe,
+        frame:core.ix.alignment?.name, rotationAxes:Object.entries(tc.roots.rotate).filter(([,root])=>root.visible).map(([axis])=>axis),
+        rotationDirections:Object.fromEntries(Object.entries(tc.roots.rotate).filter(([,root])=>root.visible).map(([axis,root])=>[axis,new THREE.Vector3().setFromMatrixColumn(root.matrixWorld,2).normalize().toArray()])) };
+    },
+    dial(u) {
+      const ring = core.pointer.ring;
+      return ring && ring.u === u ? { q: ring.q, step:ring.stepDeg, r: ring.spec.radius, lo: ring.spec.lo, hi: ring.spec.hi } : null;
+    },
+    label(name) {
+      const o = byName(name);
+      return o && o.element ? o.element.textContent : null;
+    },
+    glowing(name) {
+      const g = core.pointer.glowing;
+      return !!(g && g.rec.name === name && g.group.parent && g.group.children.length);
+    },
+    framing() {
+      const cam = core.camera;
+      const view = cam.view;
+      return {
+        view: view
+          ? { enabled: view.enabled, fullWidth: view.fullWidth, fullHeight: view.fullHeight, offsetY: view.offsetY }
+          : null,
+        aspect: cam.aspect,
+        inset: { ...core.layoutInset },
+      };
+    },
+    cameraPose: () => [...core.camera.position.toArray(), ...core.controls.target.toArray()],
+    setCameraPose([px, py, pz, tx, ty, tz]) {
+      core.camera.position.set(px, py, pz);
+      core.controls.target.set(tx, ty, tz);
+      core.controls.update();
+    },
+    zoom(distance) {
+      const t = core.controls.target;
+      core.camera.position.sub(t).setLength(distance).add(t);
+      core.controls.update();
+    },
+    viewDirection: () => core.camera.position.clone().sub(core.controls.target).normalize().toArray(),
+    fx: {
+      alarm(names, color) {
+        core.fx.run("alarm", [names.map(nodeId).filter((id) => id !== null), color]);
+      },
+    },
+  };
+
+  // Probes: a pixel where a press grabs what is asked for and nothing else.
+
+  S.hoverPixel = (name) => {
+    const target = byName(name);
+    if (!target) return null;
+    target.updateWorldMatrix(true, true);
+    const v = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    let best = null;
+    target.traverse((m) => {
+      if (best || !m.isMesh || !m.geometry || !m.geometry.attributes.position) return;
+      m.geometry.computeBoundingSphere();
+      center.copy(m.geometry.boundingSphere.center).applyMatrix4(m.matrixWorld);
+      const pos = m.geometry.attributes.position;
+      const stride = Math.max(1, Math.floor(pos.count / 400));
+      for (let i = 0; i < pos.count && !best; i += stride) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld).lerp(center, 0.25).project(core.camera);
+        if (Math.abs(v.x) > 0.95 || Math.abs(v.y) > 0.95) continue;
+        const [px, py] = pixel(v);
+        const hit = S.pick(px, py);
+        if (!hit.covered && !hit.handles.length && hit.names.includes(name)) best = [px, py];
+      }
+    });
+    return best;
+  };
+
+  S.emptySpot = () => {
+    const r = rect();
+    for (let fy = 0.3; fy <= 0.7; fy += 0.1) {
+      for (let fx = 0.2; fx <= 0.8; fx += 0.1) {
+        const px = r.left + fx * r.width;
+        const py = r.top + fy * r.height;
+        const hit = S.pick(px, py);
+        if (!hit.covered && !hit.names.length && !hit.handles.length) return [px, py];
+      }
+    }
+    return null;
+  };
+
+  S.floorSpot = () => {
+    const p = new THREE.Vector3();
+    for (let rad = 0.25; rad <= 0.45; rad += 0.05) {
+      for (let a = 0; a < 360; a += 15) {
+        const t = (a * Math.PI) / 180;
+        const [fx, fy] = pixel(p.set(rad * Math.cos(t), rad * Math.sin(t), 0).project(core.camera));
+        const px = Math.round(fx);
+        const py = Math.round(fy);
+        const hit = S.pick(px, py);
+        if (hit.covered || hit.names.length || hit.handles.length) continue;
+        // The menu answers whatever a right-click there hits, keep-outs included.
+        if (core.pointer.contextAt(px, py).hits.length) continue;
+        return [px, py, ...S.ground(px, py)];
+      }
+    }
+    return null;
+  };
+
+  // The middle of the stretch of the named object's `letter` arrow that
+  // sticks out past every object, and the arrow's direction on screen.
+  S.arrowTip = (name, letter = "X") => {
+    const tc = gizmoFor(name);
+    if (!tc || !tc.object) return null;
+    const obj = tc.object;
+    obj.updateWorldMatrix(true, false);
+    const origin = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
+    const axis = new THREE.Vector3(letter === "X" ? 1 : 0, letter === "Y" ? 1 : 0, letter === "Z" ? 1 : 0);
+    axis.applyQuaternion(tc.frameQuaternion(new THREE.Quaternion(),"translate"));
+    const toPixel = (d) => {
+      const v = origin.clone().addScaledVector(axis, d).project(core.camera);
+      return [v.x, v.y, ...pixel(v)];
+    };
+    const outside = [];
+    for (let d = 0.002; d < 0.5; d += 0.002) {
+      const [x, y, px, py] = toPixel(d);
+      if (Math.abs(x) > 0.95 || Math.abs(y) > 0.95) continue;
+      const hit = S.pick(px, py);
+      if (hit.covered) continue;
+      if (hit.handles.length !== 1 || hit.handles[0].name !== name || hit.handles[0].axis !== letter || hit.handles[0].mode!=="translate") continue;
+      outside.push(d);
+    }
+    if (!outside.length) return null;
+    const d = outside[Math.floor(outside.length / 2)];
+    const [, , px, py] = toPixel(d);
+    const [, , qx, qy] = toPixel(d + 0.01);
+    const n = Math.hypot(qx - px, qy - py);
+    return [px, py, (qx - px) / n, (qy - py) / n];
+  };
+
+  // A pixel on the rotate gizmo's ring about `axis`, past the tool, and the
+  // ring's direction on screen there.
+  S.ringSpot = (axis, name = "tcp:ball") => {
+    const tc = gizmoFor(name);
+    if (!tc?.object) return null;
+    const [cx, cy] = pixel(tc.object.getWorldPosition(new THREE.Vector3()).project(core.camera));
+    // Presses near the centre on screen start no turn, so look past that.
+    for (let rad = 40; rad <= 200; rad += 4) {
+      for (let a = 0; a < 360; a += 5) {
+        const t = (a * Math.PI) / 180;
+        const px = Math.round(cx + rad * Math.cos(t));
+        const py = Math.round(cy + rad * Math.sin(t));
+        // Reject empty handle pixels before raycasting the detailed robot meshes.
+        if (!core.pointer.handlesAt(px, py).some(h => h.tc === tc && h.axis === axis && h.mode==="rotate")) continue;
+        if (document.elementFromPoint(px, py) !== canvas) continue;
+        return [px, py, -Math.sin(t), Math.cos(t)];
+      }
+    }
+    return null;
+  };
+
+  S.planeSpot = (axis, name = "tcp:ball") => {
+    const tc=gizmoFor(name);if(!tc?.object)return null;
+    tc.update();
+    const plane=tc.groups.translate.children.find(o=>o.name===axis);if(!plane)return null;
+    const point=plane.getWorldPosition(new THREE.Vector3()),[x,y]=pixel(point.clone().project(core.camera));
+    if(document.elementFromPoint(x,y)!==canvas || !core.pointer.handlesAt(x,y).some(h=>h.tc===tc&&h.axis===axis&&h.mode==="translate"))return null;
+    const direction=new THREE.Vector3(..."XYZ".split("").map(a=>axis.includes(a)?1:0)).normalize().applyQuaternion(tc.helper.quaternion);
+    const [qx,qy]=pixel(point.clone().addScaledVector(direction,.01).project(core.camera)),length=Math.hypot(qx-x,qy-y);
+    return [x,y,(qx-x)/length,(qy-y)/length];
+  };
+
+  // Pixels where something covers the canvas, each with the angle (radians)
+  // at which a pointer there lies in the plane of joint u's shown ring.
+  S.coveredSpots = (u) => {
+    const ring = core.pointer.ring;
+    if (!ring || ring.u !== u) return null;
+    const out = [];
+    for (let y = 8; y < innerHeight - 4; y += 24) {
+      for (let x = 8; x < innerWidth - 4; x += 24) {
+        if (document.elementFromPoint(x, y) === canvas) continue;
+        const at = ring.at(core.pointer, x, y);
+        if (at && Math.hypot(at[0], at[1]) > ring.spec.radius) out.push([x, y, Math.atan2(at[1], at[0])]);
+      }
+    }
+    return out;
+  };
+
+  // The first angle from joint u's knob, in degrees, where a press grabs its
+  // ring; or, with `why`, what stops each angle from being a grip.
+  S.ringGrab = (u, why) => {
+    const dial = S.dial(u);
+    const ring = byName(`jog:dial:${u}`);
+    if (!dial || !ring) return why ? "no dial" : null;
+    ring.updateWorldMatrix(true, true);
+    const v = new THREE.Vector3();
+    const seen = {};
+    for (let a = 0; a < 360; a += 10) {
+      const t = dial.q + (a * Math.PI) / 180;
+      const [px, py] = pixel(v.set(dial.r * Math.cos(t), dial.r * Math.sin(t), 0).applyMatrix4(ring.matrixWorld).project(core.camera));
+      const hit = S.pick(px, py);
+      const grabs = !hit.covered && !hit.handles.length && hit.names.includes(`jog:dial:${u}`);
+      if (!why && grabs) return a;
+      if (why) {
+        const el = document.elementFromPoint(px, py);
+        const k = hit.covered
+          ? "under " + (el ? String(el.className || el.tagName).slice(0, 40) : "nothing")
+          : "hits " + (hit.names[0] || (hit.handles[0] && hit.handles[0].name) || "nothing");
+        seen[k] = (seen[k] || 0) + 1;
+      }
+    }
+    if (!why) return null;
+    seen.dialog = !!document.querySelector(".q-dialog");
+    return seen;
+  };
+
+  // The camera's elevation above its target, in degrees, at `count` even
+  // steps through the turn the view action starts toward `direction`, which
+  // ends it there. Null when the view jumps there instead.
+  S.turnElevations = (direction, count = 32) => {
+    core.navigation.action("view", direction);
+    const move = core.cameraMove.move;
+    if (!move) return null;
+    const out = [];
+    for (let i = 0; i <= count; i++) {
+      core.cameraMove.step(move.start + (move.ms * i) / count);
+      const o = core.camera.position.clone().sub(core.controls.target);
+      out.push((Math.atan2(o.z, Math.hypot(o.x, o.y)) * 180) / Math.PI);
+    }
+    return out;
+  };
+
+  // A pixel where a press on the view cube picks `direction` (a face, edge
+  // or corner, as -1, 0 and 1 along each axis), and that direction made
+  // unit. With no direction, the face turned most toward the viewer that
+  // the camera does not already look from.
+  S.cubeSpot = (direction = null) => {
+    const cube = core.cube;
+    if (!cube.at) return null;
+    const view = new THREE.Vector3(...S.viewDirection());
+    const wanted = direction
+      ? [direction]
+      : FACES.map((f) => f.n)
+          .filter((n) => view.dot(new THREE.Vector3(...n)) < 0.99)
+          .sort((a, b) => view.dot(new THREE.Vector3(...b)) - view.dot(new THREE.Vector3(...a)));
+    const r = cube.box.getBoundingClientRect();
+    for (const d of wanted) {
+      const picks = (x, y) => {
+        if (document.elementFromPoint(r.left + x, r.top + y) !== cube.box) return false;
+        const region = cube.regionAt(x, y);
+        return !!region && region.every((v, i) => v === d[i]);
+      };
+      const found = [];
+      for (let y = 1; y < r.height; y += 2) for (let x = 1; x < r.width; x += 2) if (picks(x, y)) found.push([x, y]);
+      if (!found.length) continue;
+      // The middle of the pixels found, or the found pixel nearest it.
+      const mx = found.reduce((a, [x]) => a + x, 0) / found.length;
+      const my = found.reduce((a, [, y]) => a + y, 0) / found.length;
+      const [x, y] = picks(mx, my) ? [mx, my] : found.reduce((best, p) => (Math.hypot(p[0] - mx, p[1] - my) < Math.hypot(best[0] - mx, best[1] - my) ? p : best));
+      return [r.left + x, r.top + y, new THREE.Vector3(...d).normalize().toArray()];
+    }
+    return null;
+  };
+
+  return S;
+}

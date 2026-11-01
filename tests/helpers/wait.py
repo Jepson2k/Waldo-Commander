@@ -783,123 +783,25 @@ def screen_wait_for_codemirror_ready(screen: "Screen", timeout_s: float = 10.0) 
 
 
 def screen_wait_for_scene_ready(screen: "Screen", timeout_s: float = 30.0) -> None:
-    """Wait for Three.js 3D scene to be fully initialized.
+    """Wait until the 3D scene has mounted and drawn every object it was sent.
 
-    Dismisses any startup dialogs (tutorial/safety), then checks that canvas exists
-    and data-initializing attribute is removed, indicating scene has finished loading.
+    Dismisses any startup dialogs (tutorial/safety) first.
 
     Args:
         timeout_s: Maximum time to wait (default 30s for CI environments with SwiftShader)
     """
     from tests.helpers.browser_helpers import dismiss_dialogs
+    from tests.helpers.scene_surface import SCENE_ROOT, wait_for_scene_idle
 
-    # Dismiss any startup dialogs first (may appear with screen fixture)
     dismiss_dialogs(screen)
 
-    js = """(() => {
-        const canvas = document.querySelector('canvas');
-        if (!canvas) return false;
-        const sceneEl = canvas.closest('[data-initializing]');
-        // Once initialized, data-initializing is removed
-        return sceneEl === null && canvas.parentElement;
-    })()"""
+    js = f"""(() => {{
+        const root = document.querySelector('{SCENE_ROOT}[data-ready]');
+        return !!root && !root.closest('[data-initializing]');
+    }})()"""
     if not screen_wait_for_condition(screen, js, timeout_s, label="3D scene ready"):
         raise AssertionError(f"3D scene not ready after {timeout_s}s")
-
-
-def screen_get_scene_object(screen: "Screen", name: str) -> dict | None:
-    """Find a Three.js object by name in the scene.
-
-    Args:
-        screen: Selenium screen fixture
-        name: Name of the object to find (e.g., "tcp:ball")
-
-    Returns:
-        Dict with object info (name, type, visible, position), or None if not found
-    """
-    result = screen.selenium.execute_script(
-        """
-        const name = arguments[0];
-        const sceneDiv = document.querySelector('.nicegui-scene');
-        if (!sceneDiv) return null;
-
-        const sceneId = sceneDiv.id;
-        const scene = window['scene_' + sceneId];
-        if (!scene) return null;
-
-        let found = null;
-        scene.traverse(function(obj) {
-            if (obj.name === name) {
-                found = {
-                    name: obj.name,
-                    type: obj.type,
-                    visible: obj.visible,
-                    position: obj.position ? {
-                        x: obj.position.x,
-                        y: obj.position.y,
-                        z: obj.position.z
-                    } : null
-                };
-            }
-        });
-        return found;
-    """,
-        name,
-    )
-    return result
-
-
-def screen_list_scene_objects(screen: "Screen") -> list[dict]:
-    """List all named objects in the Three.js scene for debugging.
-
-    Args:
-        screen: Selenium screen fixture
-
-    Returns:
-        List of dicts with object name, type, and visibility
-    """
-    result = screen.selenium.execute_script(
-        """
-        const sceneDiv = document.querySelector('.nicegui-scene');
-        if (!sceneDiv) return [];
-
-        const sceneId = sceneDiv.id;
-        const scene = window['scene_' + sceneId];
-        if (!scene) return [];
-
-        const objects = [];
-        scene.traverse(function(obj) {
-            if (obj.name) {
-                objects.push({
-                    name: obj.name,
-                    type: obj.type,
-                    visible: obj.visible
-                });
-            }
-        });
-        return objects;
-    """
-    )
-    return result or []
-
-
-def screen_wait_for_tcp_ball(screen: "Screen", timeout_s: float = 20.0) -> dict | None:
-    """Wait for TCP ball to exist in the Three.js scene.
-
-    Args:
-        screen: Selenium screen fixture
-        timeout_s: Maximum time to wait (default 20s for CI environments)
-
-    Returns:
-        TCP ball object info, or None if timeout
-    """
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        tcp_ball = screen_get_scene_object(screen, "tcp:ball")
-        if tcp_ball is not None:
-            return tcp_ball
-        time.sleep(0.1)
-    return None
+    wait_for_scene_idle(screen)
 
 
 def screen_wait_for_button_icon(

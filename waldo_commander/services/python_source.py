@@ -2,7 +2,7 @@
 
 import ast
 import textwrap
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 
 def insert_prelude(source: str, prelude: str) -> tuple[str, int, int]:
@@ -60,6 +60,28 @@ def _bound_names(node: ast.stmt) -> set[str]:
     if isinstance(node, ast.Assign):
         return {target.id for target in node.targets if isinstance(target, ast.Name)}
     return set()
+
+
+def literal_argument(tree: ast.Module, variable: str, call: str) -> Any:
+    """The literal sole argument of the one ``variable = call(...)`` at the top
+    of *tree*; ValueError for anything else."""
+    assignments = [
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == variable for t in node.targets)
+    ]
+    if len(assignments) != 1:
+        raise ValueError(f"Expected one literal {variable} assignment")
+    value = assignments[0]
+    if not (
+        isinstance(value, ast.Call)
+        and ast.unparse(value.func) == call
+        and len(value.args) == 1
+        and not value.keywords
+    ):
+        raise ValueError(f"Expected {call} with literal data")
+    return ast.literal_eval(value.args[0])
 
 
 def missing_statements(source: str, statements: list[str]) -> list[str]:
@@ -157,6 +179,8 @@ def _assignments(node: ast.AST) -> set[str]:
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
         else set()
     )
+    if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
+        names.add(node.name)
     for child in ast.iter_child_nodes(node):
         names.update(_assignments(child))
     return names

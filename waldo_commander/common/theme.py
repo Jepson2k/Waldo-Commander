@@ -76,11 +76,20 @@ FIXED_COLOR: dict[str, str] = {
     "scene-tool-edit": "#3d6b65",
     "scene-tool-moving-edit": "#4d7e77",
     "scene-collision": "#b00020",
-    "scene-shape": "#6d8ea0",
-    "scene-shape-draft": "#9db8c8",
-    "scene-shape-install": "#55606a",
+    # Keep-outs read as "stay out": red, lighter while the backend has not
+    # confirmed them, darker where the robot config fixes them. Shapes that
+    # do not collide (things the arm will handle) stay neutral.
+    "scene-shape": "#c2574d",
+    "scene-shape-draft": "#de8f86",
+    "scene-shape-install": "#7c4844",
     "scene-shape-proposed": "#8a7bb5",
+    "scene-object": "#6d8ea0",
     "scene-hover": "#ffffff",
+    "scene-light-sky": "#ffffff",
+    "scene-light-ground": "#1b2430",
+    "scene-light-key": "#ffffff",
+    "scene-light-fill": "#d6e4ff",
+    "scene-light-rim": "#ffffff",
     "axis-x": "#d94c3f",
     "axis-y": "#2faf7a",
     "axis-z": "#4a63e0",
@@ -130,7 +139,11 @@ SIZE: dict[str, str] = {
     "size-footer": "28px",
 }
 EFFECT: dict[str, str] = {"glass-blur": "36px", "glass-saturate": "150%"}
-OPACITY: dict[str, str] = {"opacity-locked": "0.15"}
+OPACITY: dict[str, str] = {
+    "opacity-locked": "0.15",
+    "opacity-fixture-fill": "0.06",
+    "opacity-fixture-edge": "0.75",
+}
 Z_INDEX: dict[str, str] = {
     "z-loading": "10",
     "z-cards": "20",
@@ -314,8 +327,6 @@ def _derive(p: Palette) -> dict[str, str]:
         "path-timing-warning": _shift(p.yellow, L=0.85),
         "path-checkpoint": p.muted,
         "path-tool-action": FIXED_COLOR["scene-tool"],
-        "physics-on-track": _shift(p.green, L=0.8),
-        "physics-diverged": _shift(p.red, L=0.65),
         "physics-contact": _shift(p.red, L=0.7),
         "physics-com": _shift(p.text, L=0.92),
         "chart-1": p.blue,
@@ -413,6 +424,7 @@ class SceneColors:
     SHAPE_DRAFT_HEX = FIXED_COLOR["scene-shape-draft"]
     SHAPE_INSTALL_HEX = FIXED_COLOR["scene-shape-install"]
     SHAPE_PROPOSED_HEX = FIXED_COLOR["scene-shape-proposed"]
+    OBJECT_HEX = FIXED_COLOR["scene-object"]
 
     TOOL_BODY_HEX = FIXED_COLOR["scene-tool"]
     TOOL_BODY_SIM_HEX = TOOL_BODY_HEX
@@ -635,6 +647,15 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
         "controlPanel": ".overlay-br",
         "bottomCovers": [".status-footer", ".bottom-panel"],
         "columnCovers": [".bottom-panels-container"],
+        # Chrome the scene keeps its floating cards clear of.
+        "obstacles": [
+            ".side-tab-bar",
+            ".overlay-panel",
+            ".top-panels-container .overlay-card",
+            ".bottom-panels-container .overlay-card",
+            ".bottom-panel",
+            ".status-footer",
+        ],
     },
     "constraints": {
         "viewportMarginX": 80,
@@ -660,6 +681,14 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
             "cameraWidth": 660,
             "cameraHeight": 675,
             "group": "top",
+        },
+        "scene": {
+            "selector": ".bottom-panels-container .scene-panel",
+            "minWidth": 320,
+            "minHeight": 160,
+            "defaultWidth": 320,
+            "group": "bottom",
+            "fit": True,
         },
     },
 }
@@ -1173,7 +1202,9 @@ body:has(.q-dialog__backdrop) .status-footer .btn-take-control { pointer-events:
 
 .top-panels-container { top: var(--wc-space-3); }
 
-.bottom-panels-container { bottom: var(--wc-footer-clearance); }
+/* Over the footer's Log or Diagnostics panel when that is open, which
+   would otherwise cover it from the same corner. */
+.bottom-panels-container { bottom: max(var(--wc-footer-clearance), calc(var(--wc-bottom-cover, 0px) + var(--wc-space-3))); }
 
 .resizable-panel { overflow: hidden !important; }
 
@@ -1182,7 +1213,7 @@ body:has(.q-dialog__backdrop) .status-footer .btn-take-control { pointer-events:
    it (min-height: 0, overflow: auto) scrolls at the cap. */
 .left-panels-container > .q-panel > .resizable-panel { max-height: calc(100vh - 24px); }
 .bottom-panels-container > .q-panel > .resizable-panel {
-  max-height: calc(100vh - var(--wc-space-3) - var(--wc-footer-clearance));
+  max-height: calc(100vh - var(--wc-space-3) - max(var(--wc-footer-clearance), calc(var(--wc-bottom-cover, 0px) + var(--wc-space-3))));
 }
 
 /* The program column: full height between the top margin and whatever covers
@@ -1394,6 +1425,14 @@ body:has(.q-dialog__backdrop) .status-footer .btn-take-control { pointer-events:
 
 /* Persistent highlight on the line the running program is executing */
 .cm-line.cm-highlighted {
+  background-color: var(--wc-editor-exec-line);
+}
+
+.cm-line.cm-inspected {
+  box-shadow: inset 3px 0 var(--wc-action);
+  background-color: color-mix(in srgb, var(--wc-action) 15%, transparent);
+}
+.cm-line.cm-inspected.cm-highlighted {
   background-color: var(--wc-editor-exec-line);
 }
 

@@ -19,15 +19,14 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, NamedTuple, Sequence
+from collections.abc import Coroutine
+from typing import Any, Mapping, NamedTuple, Sequence, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 import numpy as np
 import waldoctl
-from nicegui import app, ui
-from nicegui.elements.scene.scene_object3d import Object3D
-from nicegui.events import GenericEventArguments, SceneIntersectionPlane
+from nicegui import app, background_tasks, ui
 from scipy.spatial.transform import Rotation
 from waldoctl import LinearMotion, MeshRole, PartMotion, RotaryMotion
 from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, TOOL_PREFIX, pose_matrix
@@ -39,27 +38,31 @@ from waldo_commander.common.theme import (
     hex_of,
 )
 from waldo_commander.constants import WAYPOINT_SIZE_LARGE, WAYPOINT_SIZE_SMALL
+from waldo_commander.services.control_lease import control_lease
+from waldo_commander.services.fixture_meshes import MESH_PREFIX
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.programs import active_cursor_line
 from waldo_commander.services.timeline import ObjectSample
+from waldo_commander import scene3d as s3d
+from waldo_commander.scene3d import Node, WcScene
+from waldo_commander.scene3d.interaction import Handlers
 from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
-from waldo_commander.services.urdf_scene.scene_batch import batch_scene
-from waldo_commander.services.urdf_scene.scene_fx import SceneFx
 from waldo_commander.state import robot_state, simulation_state, ui_state
 
+from .clearance_overlay import ClearanceOverlay
 from .config import DRAFT_PREFIX, RobotAppearanceMode, ToolPose, UrdfSceneConfig
 from .editing_mixin import EditingMixin
+from .object_editing_mixin import ObjectEditingMixin
 from .envelope_renderer import EnvelopeRenderer
 from .jog_handles_mixin import JogHandlesMixin
-from .objects import Floor, Stl, StudioLights
 from .loader import (
     get_transl_and_rpy,
     load_urdf,
     normalize_axis,
     resolve_meshes_dir,
-    rot_joint,
-    transl_joint,
 )
-from .path_renderer import PathRenderer
+from .path_renderer import PathRenderer, create_waypoint_marker
+from waldo_commander.services.trajectory_inspection import TrajectoryInspection
 from .tcp_controls_mixin import TCPControlsMixin
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
@@ -81,6 +84,7 @@ _Y_UP_KINDS = ("cylinder", "capsule", "cone")
 # three.js cylinders/cones extend along +Y; coal's primitives are Z-aligned.
 # Rx(+90°) maps +Y -> +Z so the drawn shape matches the enforced volume.
 _Y_TO_Z_UP = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
+_Y_TO_Z_UP_ROTATION = Rotation.from_matrix(_Y_TO_Z_UP)
 
 
 def _is_ground(shape) -> bool:
@@ -88,8 +92,8 @@ def _is_ground(shape) -> bool:
 
     A solid counts when its top face is at or below the robot's base and
     it spans the origin — a floor slab does, a table beside the robot does
-    not, and the placeholder disc has to stay for the table so it is not
-    left floating in nothing.
+    not. Ground is enforced but drawn as the placeholder disc, not as a
+    slab reaching past the view.
     """
     x, y, z = (float(v) for v in shape.pose[:3])
     params = shape.params() if callable(shape.params) else shape.params
@@ -116,6 +120,23 @@ def _object_render_pose(
     if kind in _Y_UP_KINDS:
         R = R @ _Y_TO_Z_UP
     return (float(pose7[0]), float(pose7[1]), float(pose7[2])), R.tolist()
+
+
+def object_render_poses(kind: str, poses: np.ndarray) -> np.ndarray:
+    """A tracked object's ``(rows, 7)`` ``[x, y, z, qw, qx, qy, qz]`` poses
+    as the scene draws them: the Y-up correction applied where it holds, a
+    non-finite row left as it is."""
+    out = np.array(poses, dtype=np.float64, copy=True)
+    if kind not in _Y_UP_KINDS or not len(out):
+        return out
+    rows = np.isfinite(out).all(axis=1)
+    if rows.any():
+        turned = cast(
+            Rotation,
+            Rotation.from_quat(out[rows][:, [4, 5, 6, 3]]) * _Y_TO_Z_UP_ROTATION,
+        )
+        out[rows, 3:7] = turned.as_quat()[:, [3, 0, 1, 2]]
+    return out
 
 
 def _shape_render_pose(s) -> tuple[tuple[float, float, float], list[list[float]]]:
@@ -200,11 +221,12 @@ def _segment_fingerprint(
     seg_index: int,
     blend_range: int,
 ) -> tuple:
-    """Compute a rendering fingerprint for a path segment.
+    """What a path segment draws, which is how a redraw finds it again
+    wherever it now sits in the program.
 
     Includes neighbor validity within blend range so gradient colors
-    update correctly when a nearby segment changes validity.
-    ``line_number`` is excluded -- it doesn't affect visual output.
+    update correctly when a nearby segment changes validity. The segment's
+    position and ``line_number`` are excluded: neither changes what it draws.
     """
     seg = segments[seg_index]
     pts = seg.points
@@ -216,8 +238,7 @@ def _segment_fingerprint(
         neighbor_valid.append(before >= 0 and before < n and segments[before].is_valid)
         neighbor_valid.append(after >= 0 and after < n and segments[after].is_valid)
     return (
-        tuple(pts[0]) if pts else (),
-        tuple(pts[-1]) if pts else (),
+        hash(np.asarray(pts, dtype=np.float64).tobytes()) if pts else 0,
         len(pts),
         seg.color,
         seg.is_dashed,
@@ -238,27 +259,8 @@ def _tool_action_fingerprint(action) -> tuple:
     )
 
 
-def _create_waypoint_marker(shape: str, size: float, color: str) -> Any:
-    """Create a waypoint marker: diamond (lathe bicone), square (box), or sphere."""
-    if shape == "diamond":
-        # Bicone: a diamond profile revolved around the Y axis.
-        r = size
-        h = size * 1.5
-        obj = ui.scene.lathe([[0, -h], [r, 0], [0, h]], segments=8)
-        obj.material(color)
-        return obj
-    elif shape == "square":
-        side = size * 2
-        box = ui.scene.box(side, side, side)
-        box.material(color)
-        return box
-    else:
-        sphere = ui.scene.sphere(size)
-        sphere.material(color)
-        return sphere
-
-
 class UrdfScene(
+    ObjectEditingMixin,
     EditingMixin,
     TCPControlsMixin,
     JogHandlesMixin,
@@ -314,7 +316,6 @@ class UrdfScene(
         # does not turn with the joint: the joint's ring is drawn in it.
         self.joint_frame_groups: dict[str, Any] = {}
         self.joint_pos_limits: dict[str, dict[str, float | None]] = {}
-        self.joint_trafos: dict = {}
         self.scene: Any | None = None
         # Pre-populate normalized joint axes from URDF so they're available before scene build.
         self.joint_axes: dict[str, np.ndarray] = {}
@@ -350,10 +351,11 @@ class UrdfScene(
         self._rendered_tool_actions: list[RenderedItem | None] = []
         self._rendered_waypoints: list[RenderedItem | None] = []
         self._highlighted_line: int = 0
-        self.fx = SceneFx()
+        self._reveal_segments: list[list[Node]] = []
+        self._reveal_markers: list[Node] = []
         self._rendered_playback_step: int = -1
 
-        self._robot_meshes: list[ui.scene.stl] = []
+        self._robot_meshes: list[Node] = []
 
         # Tool mesh state
         self._tool_meshes_group: Any | None = None
@@ -381,7 +383,9 @@ class UrdfScene(
         # geometry (arm links, tool meshes, user shapes) can be tinted red.
         self._link_to_meshes: dict[str, list[Any]] = {}
         self._shape_objects: dict[str, Any] = {}
-        self._floor: Object3D | None = None
+        self._floor: Node | None = None
+        #: Installation shapes that are the ground: drawn as the floor disc.
+        self._install_ground: set[str] = set()
         self._drawn: dict[str, _Drawn] = {}
         self._shapes_group: Any | None = None
         self._colliding_meshes: set[Any] = set()  # objects currently tinted red
@@ -396,22 +400,21 @@ class UrdfScene(
         # Editing mode state
         n = len(self.joint_names)
         self._editing_angles: list[float] = [0.0] * n  # Joint angles during editing
-        self._pre_edit_angles: list[float] = [
-            0.0
-        ] * n  # Saved angles to restore on exit
-        self._editing_target_type: str = "cartesian"  # "cartesian" or "joint"
-        self._joint_ring_touched: bool = False  # True if user rotated any joint ring
 
         self._scene_wrapper: Any | None = None  # hosts positioned overlays
+        self._drag_context: tuple | None = None
 
         self._init_editing_state()
         self._init_shape_editing()
+        self._init_object_editing()
         self._init_tcp_controls_state()
         self._init_jog_handles_state()
         self._init_envelope_state()
         # The value each joint group was last drawn at; NaN until drawn.
         self._shown_q = np.full(len(self.joint_names), np.nan)
         self.path_renderer = PathRenderer()
+        self.inspection = TrajectoryInspection(self)
+        self.clearance_overlay = ClearanceOverlay(self)
 
         # Event-driven updates on simulation state changes.
         simulation_state.add_change_listener(self._update_simulation_view)
@@ -419,9 +422,10 @@ class UrdfScene(
     def cleanup(self) -> None:
         """Remove listeners registered by this scene."""
         simulation_state.remove_change_listener(self._update_simulation_view)
+        self.clearance_overlay.dispose()
 
     def show(self, scale_stls: float = 1.0, material=None, background_color=None):
-        """Plot a nicegui 3D scene from loaded URDF.
+        """Plot a 3D scene from the loaded URDF.
 
         Args:
             scale_stls: Scale factor for all STL files (e.g., 1e-1 if designed in mm)
@@ -431,50 +435,33 @@ class UrdfScene(
         self._stl_scale = float(scale_stls)
         if background_color is None:
             background_color = self.config.background_color
+        reach = self._chain_reach()
         # Wrapper hosts the context menu and edit bar overlays.
         self._scene_wrapper = ui.element("div").classes("relative w-full h-full")
         with self._scene_wrapper:
-            self.context_menu = ui.context_menu()
-            # Clear on hide so it doesn't auto-show with stale content.
-            self.context_menu.on("hide", lambda: self.context_menu.clear())
-            reach = self._chain_reach()
-            with (
-                ui.scene(
-                    grid=False,
-                    raycaster_threshold=0.005,
-                    background_color=background_color,
-                    # White ~0.2-opacity halo at 1.5x footprint, matching the
-                    # original feature-branch hoverable() visuals.
-                    hover_color=hex_of("scene-hover"),
-                    hover_opacity=0.2,
-                    hover_scale=1.5,
-                    # A frame takes ~170 ms where WebGL is software-rendered;
-                    # drawing an unchanged scene 20 times a second pins the page.
-                    render_on_demand=True,
-                    on_click=self._handle_scene_click,
-                    click_events=["contextmenu"],
-                    # Where a right-click meets the floor: where "… Here" places.
-                    intersection_planes=[SceneIntersectionPlane(name="ground")],
+            # The scene opens the menu once it is filled for the click.
+            self.context_menu = ui.context_menu().props("no-parent-event")
+            self.scene = (
+                WcScene(
+                    background=background_color,
+                    reach=reach,
+                    glow={
+                        "color": hex_of("scene-hover"),
+                        "opacity": 0.3,
+                        "scale": 1.04,
+                    },
+                    view_cube=True,
                 )
-                # ui.scene sizes its canvas once, shortly after mount, from
-                # whatever height this element resolves to at that instant, and
-                # never observes it again. So the height has to be definite in
-                # the first payload: an arbitrary Tailwind value would still be
-                # queued for a browser-side JIT build by then, and a later style
-                # patch would land after the measurement.
                 .classes("w-full h-full")
                 .style("margin: 0; display: block;")
-                .on_transform_end(self._handle_transform_event) as self.scene
-            ):
-                # The floor stands in until a backend describes where its
-                # installation floor is. The lights replace the fork's flat
-                # defaults, which _configure_renderer removes at init.
-                self._floor = Floor(
+            )
+            with self.scene:
+                # The floor disc stands for the ground, whether or not the
+                # installation declares it.
+                self._floor = self.scene.floor(
                     reach, 12, 6, self.config.ground_color, self.config.grid_color
                 )
-                StudioLights(reach * 1.6)
-                self.scene.on("init", self._configure_renderer)
-
+                self.scene.lights(reach * 1.6)
                 self._plot_stls(
                     self.urdf_model.base_link, scale=self._stl_scale, material=material
                 )
@@ -488,167 +475,178 @@ class UrdfScene(
                         scale_stls=self._stl_scale,
                         material=material,
                     )
-                # Fresh groups, drawn at none of the values drawn before.
+                # Fresh joints, drawn at none of the values drawn before.
                 self._shown_q.fill(np.nan)
 
-                with ui.scene.group().with_name("simulation:root") as sim_grp:
+                with s3d.group().with_name("simulation:root") as sim_grp:
                     self.simulation_group = sim_grp
-                    with ui.scene.group().with_name("simulation:paths") as path_grp:
+                    with s3d.group().with_name("simulation:paths") as path_grp:
                         self.path_group = path_grp
-                    with ui.scene.group().with_name(
-                        "simulation:targets"
-                    ) as targets_grp:
+                    with s3d.group().with_name("simulation:targets") as targets_grp:
                         self.targets_group = targets_grp
-                    with ui.scene.group().with_name(
+                    with s3d.group().with_name(
                         "simulation:skill-preview"
                     ) as skill_preview_grp:
                         self.skill_preview_group = skill_preview_grp
 
-            # Orientation inset (axes gizmo).
-            try:
-                if self.scene:
-                    self.scene.set_axes_inset(
-                        enabled=True,
-                        anchor="bottom-left",
-                        margin_x=48,
-                        margin_y=-12,
-                    )
-                    self.scene.set_axes_labels(enabled=True)
-            except Exception as e:
-                logger.debug("set_axes_inset configuration failed: %s", e)
-
             # Escape cancels a target edit or a keep-out move.
             ui.keyboard(on_key=self._handle_keyboard)
 
-            # on_transform_start gives properly typed SceneTransformEventArguments.
-            self.scene.on_transform_start(self._handle_transform_start)
-            # Continuous events drive live ghost robot updates.
-            self.scene.on_transform(self._handle_transform_continuous)
-            self._register_hover_sources()
-            ui.on("wc_right_press", self._on_right_press)
-            ui.on("wc_right_release", self._on_right_release)
+        self.scene.define_joints([self.joint_groups[n] for n in self.joint_names])
+        self.clearance_overlay.mount()
+        self.scene.on_context(self._on_context)
+        self.scene.on("select", self._on_object_selection)
+        self.scene.on("target_tap", self._on_target_tap)
+        self.scene.on("camera", self._on_isolation_view)
+        self.scene.on("inspect", lambda e: self.inspection.handle(e.args))
+        self.scene.on("init", self.inspection.remount)
+        self.scene.client.on_disconnect(self.inspection.clear)
+        self.scene.client.on_disconnect(self.cancel_target_edit)
+        self.scene.client.on_disconnect(lambda: self._cancel_shape_drawing())
+        self.scene.on("draw_cancel", self._cancel_shape_drawing)
+        self.scene.gestures.authorized = self._has_control
+        self._register_gestures()
+        self._push_interaction()
+        # A closed page's scene would otherwise keep listening, and be redrawn
+        # on every program change, for as long as the app runs.
+        self.scene.client.on_delete(self.cleanup)
 
-    def _handle_transform_continuous(self, e) -> None:
-        """Handle continuous transform events for TCP ball and joint controls.
+    def _notify(self, message: str, *, warning: bool = False) -> None:
+        """Tell this view's page, whichever element's handler is asking."""
+        with self.scene.client:
+            ui.notify(message, type="warning" if warning else None)
 
-        This handler receives transform events during drag (not just at end)
-        and is used for TCP ball movement (jogging or IK) and joint ring rotation.
-        Does NOT handle pose targets - those use on_transform_end only.
+    def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
+        """Run *work* for this view's page, with its failures logged."""
+
+        async def run() -> None:
+            with self.scene.client:
+                await work
+
+        background_tasks.create(run(), name="scene edit")
+
+    def _has_control(self) -> bool:
+        """Whether this scene's page is the one with control of the robot.
+
+        A Stop, a switch between simulator and robot, or a change of who
+        holds control since the last check starts a new epoch first, so a
+        gesture begun before it cannot start motion after it.
         """
-        object_name = getattr(e, "object_name", "") or ""
+        if not (
+            self.scene is not None
+            and ui_state.urdf_scene is self
+            and ui_state.active_client_id == self.scene.client.id
+        ):
+            return False
+        self.check_drag_context()
+        return True
 
-        # Unified TCP ball: behavior depends on appearance mode (jogging vs IK).
-        if object_name == "tcp:ball":
-            self._handle_tcp_transform_for_jog(e)
+    @staticmethod
+    def _drag_context_now() -> tuple:
+        return (
+            motion_guard.stop_generation,
+            waldoctl.commander.status.simulator_active,
+            control_lease.generation,
+            ui_state.active_client_id or "",
+        )
+
+    def check_drag_context(self) -> None:
+        """Start a new epoch if a Stop, a simulator switch or a change of
+        control has happened since the last check, and end authoring that
+        the program, world, tool or run state has moved out from under."""
+        if (
+            self._edit_active
+            or self._teaching is not None
+            or self._shape_move_active is not None
+            or self._drawing is not None
+            or self._object_dialogs
+        ):
+            self.check_edit_context()
+            self.check_object_context()
+            self.check_drawing_context()
+        # Undo must not offer to overwrite what changed elsewhere.
+        if self.object_history.expected is not None and self.object_history.validate():
+            self._refresh_object_inspector()
+        context = self._drag_context_now()
+        if context != self._drag_context and self.scene is not None:
+            if self._drag_context is not None:
+                self.scene.gestures.bump()
+            self._drag_context = context
+
+    def _admitted(self) -> None:
+        """A drag was just admitted: taking control for it is no change of
+        control that should end it."""
+        self._drag_context = self._drag_context_now()
+
+    def _register_gestures(self) -> None:
+        handlers = self.scene.gestures.handlers
+        handlers["ring"] = Handlers(
+            self._ring_admit, self._ring_move, self._ring_finish
+        )
+        handlers["tcp"] = Handlers(self._tcp_admit, self._tcp_move, self._tcp_finish)
+        handlers["shape"] = Handlers(
+            self._shape_admit, lambda _g, _a: None, self._shape_finish
+        )
+        handlers["draw"] = Handlers(
+            self._draw_admit, lambda _g, _a: None, self._draw_finish
+        )
+
+    def _push_interaction(self) -> None:
+        """Send the browser what its pointer handling works from."""
+        if self.scene is None or self.scene.is_deleted:
             return
+        alignment = self._gizmo_alignment_state()
+        previous_alignment = self.scene.interaction.get("alignment")
+        if previous_alignment is not None and previous_alignment != alignment:
+            self.scene.gestures.bump()
+        self.scene.set_interaction(
+            sources=self._hover_sources(),
+            rings=self._ring_specs(),
+            rules=self._handle_rules(),
+            edit=self._edit_state(),
+            alignment=alignment,
+            shapeMove=self._shape_move_state(),
+            shapeDraw=self._shape_draw_state(),
+            entities=self._object_entities(),
+            menu=self.context_menu.id if self.context_menu else None,
+            colors={
+                "action": hex_of("action"),
+                "ball": SceneColors.EDIT_GRAY_HEX,
+                "active": SceneColors.TCP_ACTIVE_HEX,
+                "miss": SceneColors.COLLISION_HEX,
+                "axisX": hex_of("axis-x"),
+                "axisY": hex_of("axis-y"),
+                "axisZ": hex_of("axis-z"),
+            },
+        )
 
-        if object_name.startswith("edit_joint_group:"):
-            self._on_joint_group_transform(e)
-            return
-
-    def _handle_transform_start(self, e) -> None:
-        """Handle TransformControls transform_start events to manage orbit and mutex."""
-        object_name = getattr(e, "object_name", "") or ""
-        if object_name == "tcp:ball" and (
-            self._tcp_ball is None or e.object_id != self._tcp_ball.id
+    def _on_context(self, args: dict[str, Any]) -> None:
+        """A right-click: fill the menu for what it found, then open it there."""
+        hits = [h for h in args.get("hits", []) if isinstance(h, str)]
+        raw = args.get("ground")
+        ground = (
+            (float(raw[0]), float(raw[1]), float(raw[2]))
+            if isinstance(raw, list)
+            and len(raw) == 3
+            and all(isinstance(v, int | float) and math.isfinite(v) for v in raw)
+            else None
+        )
+        gen, cx, cy = args.get("gen"), args.get("cx"), args.get("cy")
+        if not isinstance(gen, int) or not all(
+            isinstance(v, int | float) and math.isfinite(v) for v in (cx, cy)
         ):
             return
-        if object_name == "tcp:ball":
-            # Disable orbit controls for the duration of the TCP drag.
-            if self.scene:
-                self.scene.set_orbit_enabled(False)
-            self._tcp_ball_dragging = True
-            self._begin_gizmo_marks(e)
-            if self._appearance_mode == RobotAppearanceMode.EDITING:
-                # Suspend joint controls during TCP ball manipulation in editing mode.
-                if not self._joint_controls_suspended:
-                    self._disable_joint_transform_controls()
-                    self._joint_controls_suspended = True
-            else:
-                # Jogging mode: capture starting rotation (used by translate-only
-                # cartesian streaming to keep rotation fixed) and notify the consumer
-                # of a drag start. Must happen here, not on the first on_transform
-                # event — on_transform_start already set _tcp_ball_dragging, so the
-                # legacy "first event" detection inside _handle_tcp_transform_for_jog
-                # never triggers.
-                self._tcp_drag_start_rot_deg = tuple(robot_state.orientation.deg)
-                cb = self._tcp_cartesian_move_start_callback
-                if cb is not None:
-                    try:
-                        cb()
-                    except Exception as err:
-                        logger.error("TCP cartesian move start callback error: %s", err)
+        self._resolve_draw_surface(args)
+        self._populate_context_menu(hits, ground, args.get("path"))
+        if self.scene is not None:
+            self.scene.open_menu(gen, cx, cy)
 
-    def _handle_transform_event(self, e) -> None:
-        """Settle the end of a gizmo drag on the TCP ball or a keep-out."""
-        object_name = getattr(e, "object_name", "") or ""
-        event_type = getattr(e, "type", "")
-        if object_name == "tcp:ball" and (
-            self._tcp_ball is None or e.object_id != self._tcp_ball.id
-        ):
-            return
-
-        # Unified TCP ball: on transform_end re-enable orbit and joint controls.
-        if object_name == "tcp:ball":
-            if event_type == "transform_end":
-                self._tcp_ball_dragging = False
-                self._tcp_drag_start_rot_deg = None
-                self._end_gizmo_marks(e)
-                if self.scene:
-                    self.scene.set_orbit_enabled(True)
-                if self._joint_controls_suspended:
-                    self._enable_joint_transform_controls()
-                    self._joint_controls_suspended = False
-                # Editing mode: snap ball to FK in case IK failed and it was
-                # dragged to an unreachable spot.
-                if self._appearance_mode == RobotAppearanceMode.EDITING:
-                    self._snap_tcp_to_fk()
-                else:
-                    cb = getattr(self, "_tcp_cartesian_move_end_callback", None)
-                    if callable(cb):
-                        try:
-                            cb()
-                        except Exception as err:
-                            logger.error(
-                                "TCP cartesian move end callback error: %s", err
-                            )
-                self._spring_tcp_ball()
-                self._settle_hover()
-            return
-
-        if object_name.startswith("shape:"):
-            self._on_shape_transform(e)
-
-    def _handle_scene_click(self, e) -> None:
-        """Keep a right-click's hits for the menu it may open."""
-        if getattr(e, "click_type", "") == "contextmenu":
-            self._pending_context_menu_event = e
-            self._settle_right_click()
-
-    def _on_right_press(self, _e: GenericEventArguments) -> None:
-        self._pending_context_menu_event = None
-        self._right_release_moved = None
-        # A menu left open would otherwise reopen here with its old items.
-        if self.context_menu:
-            self.context_menu.clear()
-
-    def _on_right_release(self, e: GenericEventArguments) -> None:
-        self._right_release_moved = float(e.args["moved"])
-        self._settle_right_click()
-
-    def _settle_right_click(self) -> None:
-        """Fill the menu for a right-click, and leave it empty, so hidden, for a
-        right-drag. Browsers send the contextmenu event on press or on release,
-        so the menu waits for both."""
-        event, moved = self._pending_context_menu_event, self._right_release_moved
-        if event is None or moved is None:
-            return
-        self._pending_context_menu_event = None
-        self._right_release_moved = None
-        if moved <= self._right_click_drag_threshold:
-            self._populate_context_menu(event)
-        elif self.context_menu:
-            self.context_menu.close()
+    def _flush_reveals(self) -> None:
+        """Draw in the paths and pop in the markers this update created."""
+        segments, markers = self._reveal_segments, self._reveal_markers
+        self._reveal_segments, self._reveal_markers = [], []
+        if self.scene is not None and (segments or markers):
+            self.scene.fx.reveal(segments, markers)
 
     def _update_simulation_view(self) -> None:
         """Update simulation visualization (paths, etc.) based on state."""
@@ -675,27 +673,18 @@ class UrdfScene(
             raise
 
     def _do_update_simulation_view(self) -> None:
-        """Internal implementation of simulation view update.
-
-        All scene mutations during one reconciliation cycle (segment rendering,
-        tool-action markers, waypoint/target reconcile, playback opacity) get
-        batched into a single WS frame via :func:`batch_scene`. A single path
-        redraw with N segments × ~10 cones each can otherwise issue 100+
-        separate WS messages — without batching the browser may render a
-        partial scene mid-update (some markers reorganized, others still in
-        old positions).
-        """
+        """Internal implementation of simulation view update."""
         if not self.scene:
             return
-        with batch_scene(self.scene):
-            # The view settings change on this channel too (the gizmo's Hidden
-            # among them, e.g. from MCP).
-            self.refresh_handles()
-            self._do_update_simulation_view_body()
-        self.fx.flush(self.scene)
+        # The view settings change on this channel too (the gizmo's Hidden
+        # among them, e.g. from MCP).
+        self.refresh_handles()
+        self._do_update_simulation_view_body()
+        self.inspection.update()
+        self._flush_reveals()
 
     def _do_update_simulation_view_body(self) -> None:
-        """Body of the simulation view update (run inside a batch_scene)."""
+        """Body of the simulation view update."""
         if not waldoctl.commander.settings.view.paths_visible:
             if self.path_group is not None:
                 self.path_group.visible(False)
@@ -710,15 +699,10 @@ class UrdfScene(
             self.targets_group.visible(True)
 
         active = waldoctl.commander.programs.active
-        view = waldoctl.commander.settings.view
-        # The predicted path, where a pass produced one that differs from
-        # the commanded path. Its own group, so a rebuild never disturbs
-        # the commanded-path diff below, and keyed on both records'
-        # digests so an identical pair is left alone.
+        # Per-frame physics annotations share the record used by path inspection.
         self.physics_overlay.render(
             active.dry_run.commanded if active is not None else None,
             active.dry_run.predicted_current if active is not None else None,
-            show_predicted=view.predicted_visible,
         )
         if active is not None:
             all_segments = active.dry_run.path_segments
@@ -751,8 +735,10 @@ class UrdfScene(
             )
 
         # --- Per-segment diff rendering ---
-        first_cmd_idx = -1  # first non-travel segment
-        last_cmd_idx = -1  # last non-travel segment
+        # The first and last drawn segments: travel and point-less markers
+        # (a trailing select_tool) carry no start or end square.
+        first_cmd_idx = -1
+        last_cmd_idx = -1
 
         if new_count == 0 and old_count > 0:
             if TRACE_ENABLED:
@@ -760,176 +746,106 @@ class UrdfScene(
             self._clear_path_state()
         elif new_count > 0 and self.path_group and self.scene:
             blend_range = int(self._BLEND_RANGE)
-            rebuild_line_map = False
-
-            # Diff existing slots while tracking first/last non-travel segment.
-            limit = min(new_count, old_count)
-            for i in range(limit):
-                segment = all_segments[i]
+            # Drawn segments are found again by what they draw, not where they
+            # sit, so a line added or removed redraws only what it changed.
+            pool: dict[tuple, list[RenderedSegment]] = {}
+            for rs in self._rendered_segments:
+                if rs is not None and rs.fingerprint:
+                    pool.setdefault(rs.fingerprint, []).append(rs)
+            rendered: list[RenderedSegment | None] = []
+            for i, segment in enumerate(all_segments):
                 if segment.is_travel:
-                    fp: tuple = ()
-                else:
-                    fp = _segment_fingerprint(all_segments, i, blend_range)
+                    rendered.append(
+                        RenderedSegment(
+                            objects=[],
+                            colors=[],
+                            uses_vc=False,
+                            fingerprint=(),
+                            line_number=segment.line_number,
+                        )
+                    )
+                    continue
+                if segment.points:
                     if first_cmd_idx == -1:
                         first_cmd_idx = i
                     last_cmd_idx = i
-
-                old_rs = self._rendered_segments[i]
-                old_fp = old_rs.fingerprint if old_rs is not None else None
-                old_ln = old_rs.line_number if old_rs is not None else -1
-
-                if fp == old_fp:
-                    # Same visuals — only the source line may have shifted.
-                    if segment.line_number != old_ln and old_rs is not None:
-                        self._rendered_segments[i] = old_rs._replace(
-                            line_number=segment.line_number,
-                        )
-                        rebuild_line_map = True
-                    continue
-
-                # Fingerprint differs — delete old objects, render new.
-                if old_rs is not None:
-                    for obj in old_rs.objects:
-                        self._safe_delete(obj)
-                if segment.is_travel:
-                    self._rendered_segments[i] = RenderedSegment(
-                        objects=[],
-                        colors=[],
-                        uses_vc=False,
-                        fingerprint=(),
-                        line_number=segment.line_number,
-                    )
+                fp = _segment_fingerprint(all_segments, i, blend_range)
+                kept = pool.get(fp)
+                if kept:
+                    rs = kept.pop(0)
+                    if rs.line_number != segment.line_number:
+                        rs = rs._replace(line_number=segment.line_number)
+                    rendered.append(rs)
                 else:
-                    self._rendered_segments[i] = self._render_and_record_segment(
-                        all_segments,
-                        i,
-                        fp,
-                        segment.line_number,
+                    rendered.append(
+                        self._render_and_record_segment(
+                            all_segments, i, fp, segment.line_number
+                        )
                     )
-                rebuild_line_map = True
-                if TRACE_ENABLED:
-                    rs = self._rendered_segments[i]
-                    logger.trace(
-                        "SCENE: Re-rendered segment %d -> %d objects",
-                        i,
-                        len(rs.objects) if rs else 0,
-                    )
-
-            # Append new slots.
-            if new_count > old_count:
-                for i in range(old_count, new_count):
-                    segment = all_segments[i]
-                    if segment.is_travel:
-                        self._rendered_segments.append(
-                            RenderedSegment(
-                                objects=[],
-                                colors=[],
-                                uses_vc=False,
-                                fingerprint=(),
-                                line_number=segment.line_number,
-                            )
-                        )
-                    else:
-                        fp = _segment_fingerprint(all_segments, i, blend_range)
-                        self._rendered_segments.append(
-                            self._render_and_record_segment(
-                                all_segments,
-                                i,
-                                fp,
-                                segment.line_number,
-                            )
-                        )
-                        if first_cmd_idx == -1:
-                            first_cmd_idx = i
-                        last_cmd_idx = i
-                    if TRACE_ENABLED:
-                        rs = self._rendered_segments[-1]
-                        logger.trace(
-                            "SCENE: Appended segment %d -> %d objects",
-                            i,
-                            len(rs.objects) if rs else 0,
-                        )
-                rebuild_line_map = True
-
-            # Remove trailing slots.
-            if new_count < old_count:
-                for i in range(new_count, old_count):
-                    old_rs = self._rendered_segments[i]
-                    if old_rs is not None:
-                        for obj in old_rs.objects:
-                            self._safe_delete(obj)
-                del self._rendered_segments[new_count:]
-                rebuild_line_map = True
-                if TRACE_ENABLED:
-                    logger.trace(
-                        "SCENE: Removed trailing segments %d-%d",
-                        new_count,
-                        old_count - 1,
-                    )
-
-            if rebuild_line_map:
-                self._rebuild_line_to_segments()
-
-        # --- Per-item tool action diff rendering ---
-        new_ta_count = len(tool_actions)
-        old_ta_count = len(self._rendered_tool_actions)
-        if new_ta_count > 0 or old_ta_count > 0:
-            ta_limit = min(new_ta_count, old_ta_count)
-            for i in range(ta_limit):
-                action = tool_actions[i]
-                fp = _tool_action_fingerprint(action)
-                old_ri = self._rendered_tool_actions[i]
-                old_fp = old_ri.fingerprint if old_ri is not None else None
-                if fp == old_fp:
-                    if (
-                        old_ri is not None
-                        and action.segment_index != old_ri.segment_index
-                    ):
-                        self._rendered_tool_actions[i] = old_ri._replace(
-                            segment_index=action.segment_index,
-                        )
-                    continue
-                # Fingerprint differs — delete old, render new.
-                if old_ri is not None:
-                    for obj in old_ri.objects:
+            for unused in pool.values():
+                for rs in unused:
+                    for obj in rs.objects:
                         self._safe_delete(obj)
-                if self.path_group and self.scene:
+            old = self._rendered_segments
+            moved = len(old) != len(rendered) or any(
+                a is None
+                or b is None
+                or a.objects is not b.objects
+                or a.line_number != b.line_number
+                for a, b in zip(old, rendered, strict=False)
+            )
+            self._rendered_segments = rendered
+            if moved:
+                self._rebuild_line_to_segments()
+                self._repaint_playback_opacity()
+            if TRACE_ENABLED:
+                logger.trace(
+                    "SCENE: %d segments, %d drawn anew",
+                    new_count,
+                    sum(1 for rs in rendered if rs is not None and rs.objects)
+                    - sum(len(v) for v in pool.values()),
+                )
+
+        # --- Per-item tool action diff rendering, matched like segments ---
+        if tool_actions or self._rendered_tool_actions:
+            ta_pool: dict[tuple, list[RenderedItem]] = {}
+            for ri in self._rendered_tool_actions:
+                if ri is not None:
+                    ta_pool.setdefault(ri.fingerprint, []).append(ri)
+            drawn_actions: list[RenderedItem | None] = []
+            for action in tool_actions:
+                fp = _tool_action_fingerprint(action)
+                kept_items = ta_pool.get(fp)
+                if kept_items:
+                    ri = kept_items.pop(0)
+                    if ri.segment_index != action.segment_index:
+                        ri = ri._replace(segment_index=action.segment_index)
+                    drawn_actions.append(ri)
+                elif self.path_group and self.scene:
                     with self.scene:
                         with self.path_group:
                             objs = self.path_renderer.render_tool_action(action)
-                    self._rendered_tool_actions[i] = RenderedItem(
-                        objects=objs,
-                        fingerprint=fp,
-                        segment_index=action.segment_index,
+                    drawn_actions.append(
+                        RenderedItem(
+                            objects=objs,
+                            fingerprint=fp,
+                            segment_index=action.segment_index,
+                        )
                     )
                 else:
-                    self._rendered_tool_actions[i] = None
-            # Append new.
-            if new_ta_count > old_ta_count:
-                for i in range(old_ta_count, new_ta_count):
-                    action = tool_actions[i]
-                    fp = _tool_action_fingerprint(action)
-                    if self.path_group and self.scene:
-                        with self.scene:
-                            with self.path_group:
-                                objs = self.path_renderer.render_tool_action(action)
-                        self._rendered_tool_actions.append(
-                            RenderedItem(
-                                objects=objs,
-                                fingerprint=fp,
-                                segment_index=action.segment_index,
-                            )
-                        )
-                    else:
-                        self._rendered_tool_actions.append(None)
-            # Remove trailing.
-            if new_ta_count < old_ta_count:
-                for i in range(new_ta_count, old_ta_count):
-                    old_ri = self._rendered_tool_actions[i]
-                    if old_ri is not None:
-                        for obj in old_ri.objects:
-                            self._safe_delete(obj)
-                del self._rendered_tool_actions[new_ta_count:]
+                    drawn_actions.append(None)
+            for unused_items in ta_pool.values():
+                for ri in unused_items:
+                    for obj in ri.objects:
+                        self._safe_delete(obj)
+            if any(
+                a is None or b is None or a.objects is not b.objects
+                for a, b in zip(
+                    self._rendered_tool_actions, drawn_actions, strict=False
+                )
+            ) or len(self._rendered_tool_actions) != len(drawn_actions):
+                self._repaint_playback_opacity()
+            self._rendered_tool_actions = drawn_actions
 
         if waldoctl.commander.settings.view.paths_visible and self._rendered_segments:
             self.update_cursor_line_highlight()
@@ -966,7 +882,7 @@ class UrdfScene(
                     segment,
                     pp_colors,
                 )
-        self.fx.queue_segment(objs)
+        self._reveal_segments.append(objs)
         return RenderedSegment(
             objects=objs,
             colors=obj_colors,
@@ -1045,69 +961,43 @@ class UrdfScene(
             fp_w = (tuple(last_pos), "square", last_color)
             new_waypoints.append((fp_w, "square", last_color, last_pos, last_seg_idx))
 
-        new_wp_count = len(new_waypoints)
-        old_wp_count = len(self._rendered_waypoints)
-        wp_limit = min(new_wp_count, old_wp_count)
-
-        for i in range(wp_limit):
-            fp_w, shape, color, pos, seg_idx = new_waypoints[i]
-            old_ri = self._rendered_waypoints[i]
-            old_fp = old_ri.fingerprint if old_ri is not None else None
-            if fp_w == old_fp:
-                continue
-            # Fingerprint differs — delete old, render new.
-            if old_ri is not None:
-                for obj in old_ri.objects:
-                    self._safe_delete(obj)
-            if self.path_group and self.scene:
+        # Matched by what they show, like the segments.
+        wp_pool: dict[tuple, list[RenderedItem]] = {}
+        for ri in self._rendered_waypoints:
+            if ri is not None:
+                wp_pool.setdefault(ri.fingerprint, []).append(ri)
+        drawn_waypoints: list[RenderedItem | None] = []
+        for fp_w, shape, color, pos, seg_idx in new_waypoints:
+            kept_wp = wp_pool.get(fp_w)
+            if kept_wp:
+                ri = kept_wp.pop(0)
+                if ri.segment_index != seg_idx:
+                    ri = ri._replace(segment_index=seg_idx)
+                drawn_waypoints.append(ri)
+            elif self.path_group and self.scene:
                 with self.scene:
                     with self.path_group:
-                        mk = _create_waypoint_marker(shape, WAYPOINT_SIZE_SMALL, color)
+                        mk = create_waypoint_marker(shape, WAYPOINT_SIZE_SMALL, color)
                         mk.move(pos[0], pos[1], pos[2])
-                self.fx.queue_marker(mk)
-                self._rendered_waypoints[i] = RenderedItem(
-                    objects=[mk],
-                    fingerprint=fp_w,
-                    segment_index=seg_idx,
+                self._reveal_markers.append(mk)
+                drawn_waypoints.append(
+                    RenderedItem(objects=[mk], fingerprint=fp_w, segment_index=seg_idx)
                 )
+                self._repaint_playback_opacity()
             else:
-                self._rendered_waypoints[i] = None
-
-        # Append new waypoints.
-        if new_wp_count > old_wp_count:
-            for i in range(old_wp_count, new_wp_count):
-                fp_w, shape, color, pos, seg_idx = new_waypoints[i]
-                if self.path_group and self.scene:
-                    with self.scene:
-                        with self.path_group:
-                            mk = _create_waypoint_marker(
-                                shape, WAYPOINT_SIZE_SMALL, color
-                            )
-                            mk.move(pos[0], pos[1], pos[2])
-                    self.fx.queue_marker(mk)
-                    self._rendered_waypoints.append(
-                        RenderedItem(
-                            objects=[mk],
-                            fingerprint=fp_w,
-                            segment_index=seg_idx,
-                        )
-                    )
-                else:
-                    self._rendered_waypoints.append(None)
-
-        # Remove trailing waypoints.
-        if new_wp_count < old_wp_count:
-            for i in range(new_wp_count, old_wp_count):
-                old_ri = self._rendered_waypoints[i]
-                if old_ri is not None:
-                    for obj in old_ri.objects:
-                        self._safe_delete(obj)
-            del self._rendered_waypoints[new_wp_count:]
+                drawn_waypoints.append(None)
+        for unused_wp in wp_pool.values():
+            for ri in unused_wp:
+                for obj in ri.objects:
+                    self._safe_delete(obj)
+        self._rendered_waypoints = drawn_waypoints
 
         # --- Reconcile editable targets ---
-        active_ids: set[str] = set()
+        active_ids = {t.id for t in targets}
+        # A target's id follows its line, so a line added above renames it: a
+        # drawn target that no longer has an id is taken over, not redrawn.
+        stale = [tid for tid in self._target_objects if tid not in active_ids]
         for target in targets:
-            active_ids.add(target.id)
             shape = shape_for_line(target.line_number)
             color = (
                 hex_of("path-invalid")
@@ -1119,20 +1009,37 @@ class UrdfScene(
             seg_idx = seg_indices[0] if seg_indices else -1
 
             if target.id not in self._target_objects:
+                for tid in stale:
+                    td = self._target_objects[tid]
+                    grp = td["group"]
+                    if (
+                        td.get("shape_type") == shape
+                        and td.get("color") == color
+                        and (grp.x, grp.y, grp.z) == tuple(target.pose[:3])
+                    ):
+                        stale.remove(tid)
+                        del self._target_objects[tid]
+                        grp.with_name(f"targetgroup:{target.id}")
+                        td["marker"].with_name(f"target:{target.id}")
+                        self._target_objects[target.id] = td
+                        if self._editing_target_id == tid:
+                            self._editing_target_id = target.id
+                        break
+            if target.id not in self._target_objects:
                 with self.scene:
                     with self.targets_group:
                         grp = (
-                            ui.scene.group()
+                            s3d.group()
                             .with_name(f"targetgroup:{target.id}")
                             .hover_effect("glow")
                         )
                         with grp:
-                            mk = _create_waypoint_marker(
+                            mk = create_waypoint_marker(
                                 shape, WAYPOINT_SIZE_LARGE, color
                             )
                             mk.with_name(f"target:{target.id}")
                     grp.move(target.pose[0], target.pose[1], target.pose[2])
-                self.fx.queue_marker(mk)
+                self._reveal_markers.append(mk)
                 self._target_objects[target.id] = {
                     "group": grp,
                     "marker": mk,
@@ -1149,17 +1056,17 @@ class UrdfScene(
                     with self.scene:
                         with self.targets_group:
                             grp = (
-                                ui.scene.group()
+                                s3d.group()
                                 .with_name(f"targetgroup:{target.id}")
                                 .hover_effect("glow")
                             )
                             with grp:
-                                mk = _create_waypoint_marker(
+                                mk = create_waypoint_marker(
                                     shape, WAYPOINT_SIZE_LARGE, color
                                 )
                                 mk.with_name(f"target:{target.id}")
                         grp.move(target.pose[0], target.pose[1], target.pose[2])
-                    self.fx.queue_marker(mk)
+                    self._reveal_markers.append(mk)
                     td["group"] = grp
                     td["marker"] = mk
                     td["shape_type"] = shape
@@ -1174,17 +1081,11 @@ class UrdfScene(
                 self._safe_delete(td["group"])
                 if self._editing_target_id == tid:
                     self._editing_target_id = None
+        self.adopt_edit_marker()
 
-    def _safe_delete(self, obj: Any) -> None:
-        """Safely delete a scene object, handling cases where it's already deleted."""
-        if self.scene is None:
-            return
-        try:
-            if hasattr(obj, "id") and obj.id in self.scene.objects:
-                obj.delete()
-        except (KeyError, RuntimeError):
-            # KeyError: already deleted. RuntimeError: client deleted (shutdown race).
-            pass
+    def _safe_delete(self, obj: Node) -> None:
+        """Delete a scene object; deleting one already gone does nothing."""
+        obj.delete()
 
     @property
     def initialized(self) -> bool:
@@ -1197,7 +1098,7 @@ class UrdfScene(
         return self.joint_names[-1] if self.joint_names else None
 
     @property
-    def last_actuated_group(self) -> ui.scene.group | None:
+    def last_actuated_group(self) -> Node | None:
         """Get the scene group for the last actuated joint."""
         last_joint = self.last_actuated_joint_name
         return self.joint_groups.get(last_joint) if last_joint else None
@@ -1282,6 +1183,19 @@ class UrdfScene(
             else:
                 obj.material(rs.colors[j] if j < len(rs.colors) else "")
 
+    def _on_target_tap(self, event) -> None:
+        args = event.args
+        editor = ui_state.editor_panel
+        if (
+            isinstance(args, dict)
+            and isinstance(args.get("id"), str)
+            and args["id"] in self._target_objects
+            and editor is not None
+            and ui_state.active_textarea is not None
+            and ui_state.active_textarea.client is self.scene.client
+        ):
+            editor.reveal_target(args["id"])
+
     def update_cursor_line_highlight(self) -> None:
         """Highlight path objects for the segment matching the editor cursor line."""
         cursor_line = active_cursor_line()
@@ -1316,7 +1230,7 @@ class UrdfScene(
                 if td["segment_index"] in seg_indices
             )
         if self.scene is not None and (rippling or prev_line > 0):
-            self.fx.pulse(self.scene, rippling)
+            self.scene.fx.pulse(rippling)
 
     def show_skill_preview(
         self,
@@ -1374,7 +1288,16 @@ class UrdfScene(
 
         Call when switching tabs or when path data has completely changed.
         """
+        self.inspection.clear()
         self._clear_path_state()
+
+    def _repaint_playback_opacity(self) -> None:
+        """Drawn items moved or appeared: while playback has dimmed part of
+        the path, the next opacity update repaints every item, since the
+        dimming follows each item's place in the path."""
+        active = waldoctl.commander.programs.active
+        if active is not None and active.dry_run.playback.current_step > 0:
+            self._rendered_playback_step = -1
 
     def update_playback_opacity(self) -> None:
         """Fade completed elements to 50% opacity based on the active program's
@@ -1383,11 +1306,6 @@ class UrdfScene(
         Applies opacity to ALL element types: segments, tool actions,
         non-editable waypoints, and editable targets.
         Only touches items whose opacity actually changed.
-
-        All ``obj.material(...)`` calls are batched into one WS frame via
-        :func:`batch_scene` — a segment crossing during fast playback can
-        otherwise issue up to ~11 separate frames (polyline + cones for a
-        long move), which can render half-faded if interleaved with three.js.
         """
         active = waldoctl.commander.programs.active
         step = active.dry_run.playback.current_step if active is not None else 0
@@ -1405,77 +1323,76 @@ class UrdfScene(
         if not self.scene:
             return
 
-        with batch_scene(self.scene):
-            # --- Segments: only update indices that transitioned ---
-            if n_rendered > 0:
-                if prev >= 0:
-                    lo, hi = min(prev, step), max(prev, step)
-                    for i in range(lo, min(hi, n_rendered)):
-                        rs = self._rendered_segments[i]
-                        if rs is None or not rs.objects:
-                            continue
-                        opacity = 0.5 if (step > 0 and i < step) else 1.0
-                        for j, obj in enumerate(rs.objects):
-                            if j == 0 and rs.uses_vc:
-                                obj.material(None, opacity)
-                            else:
-                                c = rs.colors[j] if j < len(rs.colors) else ""
-                                obj.material(c, opacity)
-                else:
-                    # First update — apply all segments.
-                    for i in range(n_rendered):
-                        rs = self._rendered_segments[i]
-                        if rs is None or not rs.objects:
-                            continue
-                        opacity = 0.5 if (step > 0 and i < step) else 1.0
-                        for j, obj in enumerate(rs.objects):
-                            if j == 0 and rs.uses_vc:
-                                obj.material(None, opacity)
-                            else:
-                                c = rs.colors[j] if j < len(rs.colors) else ""
-                                obj.material(c, opacity)
-
-            # --- Tool actions, waypoints, targets: only update items that transitioned ---
-            # An item at segment_index=s changed opacity iff it crossed the step boundary.
+        # --- Segments: only update indices that transitioned ---
+        if n_rendered > 0:
             if prev >= 0:
                 lo, hi = min(prev, step), max(prev, step)
+                for i in range(lo, min(hi, n_rendered)):
+                    rs = self._rendered_segments[i]
+                    if rs is None or not rs.objects:
+                        continue
+                    opacity = 0.5 if (step > 0 and i < step) else 1.0
+                    for j, obj in enumerate(rs.objects):
+                        if j == 0 and rs.uses_vc:
+                            obj.material(None, opacity)
+                        else:
+                            c = rs.colors[j] if j < len(rs.colors) else ""
+                            obj.material(c, opacity)
             else:
-                lo, hi = 0, n_rendered  # first update — touch all items
+                # First update — apply all segments.
+                for i in range(n_rendered):
+                    rs = self._rendered_segments[i]
+                    if rs is None or not rs.objects:
+                        continue
+                    opacity = 0.5 if (step > 0 and i < step) else 1.0
+                    for j, obj in enumerate(rs.objects):
+                        if j == 0 and rs.uses_vc:
+                            obj.material(None, opacity)
+                        else:
+                            c = rs.colors[j] if j < len(rs.colors) else ""
+                            obj.material(c, opacity)
 
-            tool_hex = hex_of("path-tool-action")
-            for ri in self._rendered_tool_actions:
-                if ri is None or not ri.objects or ri.segment_index < 0:
-                    continue
-                if prev >= 0 and not (lo <= ri.segment_index < hi):
-                    continue
-                opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
-                for obj in ri.objects:
-                    obj.material(tool_hex, opacity)
+        # --- Tool actions, waypoints, targets: only update items that transitioned ---
+        # An item at segment_index=s changed opacity iff it crossed the step boundary.
+        if prev >= 0:
+            lo, hi = min(prev, step), max(prev, step)
+        else:
+            lo, hi = 0, n_rendered  # first update — touch all items
 
-            for ri in self._rendered_waypoints:
-                if ri is None or not ri.objects or ri.segment_index < 0:
-                    continue
-                if prev >= 0 and not (lo <= ri.segment_index < hi):
-                    continue
-                opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
-                color = ri.fingerprint[2] if len(ri.fingerprint) > 2 else ""
-                for obj in ri.objects:
-                    obj.material(color, opacity)
+        tool_hex = hex_of("path-tool-action")
+        for ri in self._rendered_tool_actions:
+            if ri is None or not ri.objects or ri.segment_index < 0:
+                continue
+            if prev >= 0 and not (lo <= ri.segment_index < hi):
+                continue
+            opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
+            for obj in ri.objects:
+                obj.material(tool_hex, opacity)
 
-            for td in self._target_objects.values():
-                seg_idx = td.get("segment_index", -1)
-                if seg_idx < 0:
-                    continue
-                if prev >= 0 and not (lo <= seg_idx < hi):
-                    continue
-                opacity = 0.5 if (step > 0 and seg_idx < step) else 1.0
-                color = td.get("color", "")
-                marker = td.get("marker")
-                if marker is not None:
-                    try:
-                        marker.material(color, opacity)
-                    except (RuntimeError, KeyError):
-                        pass
+        for ri in self._rendered_waypoints:
+            if ri is None or not ri.objects or ri.segment_index < 0:
+                continue
+            if prev >= 0 and not (lo <= ri.segment_index < hi):
+                continue
+            opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
+            color = ri.fingerprint[2] if len(ri.fingerprint) > 2 else ""
+            for obj in ri.objects:
+                obj.material(color, opacity)
+
+        for td in self._target_objects.values():
+            seg_idx = td.get("segment_index", -1)
+            if seg_idx < 0:
+                continue
+            if prev >= 0 and not (lo <= seg_idx < hi):
+                continue
+            opacity = 0.5 if (step > 0 and seg_idx < step) else 1.0
+            color = td.get("color", "")
+            marker = td.get("marker")
+            if marker is not None:
+                try:
+                    marker.material(color, opacity)
+                except (RuntimeError, KeyError):
+                    pass
 
     # --------- Public API ---------
 
@@ -1485,7 +1402,8 @@ class UrdfScene(
         Called directly from the status update loop in main.py for reliable
         updates without context issues.
         """
-        self._update_jog_ball_from_robot_state()
+        if self._appearance_mode != RobotAppearanceMode.EDITING:
+            self._push_tcp_pose()
         self._update_envelope_from_robot_state()
         self.update_tool_animation()
         self._update_collision_highlight()
@@ -1518,6 +1436,8 @@ class UrdfScene(
         collision meshes with no 1:1 visual counterpart, so a tool collision
         tints the whole attached tool.
         """
+        if name in self._install_ground and self._floor is not None:
+            return (self._floor,)
         if name.startswith((SHAPE_PREFIX, INSTALL_PREFIX, DRAFT_PREFIX)):
             obj = self._shape_objects.get(name)
             return (obj,) if obj is not None else ()
@@ -1530,7 +1450,7 @@ class UrdfScene(
 
         Red overrides the appearance-mode tint and is restored to the saved
         (mode) color when it clears. A signature short-circuits the unchanged
-        50 Hz case; only newly (un)colliding meshes are touched, batched.
+        50 Hz case; only newly (un)colliding meshes are touched.
         """
         if not self.scene:
             return
@@ -1546,16 +1466,15 @@ class UrdfScene(
             return
         to_add = target - self._colliding_meshes
         to_remove = self._colliding_meshes - target
-        with batch_scene(self.scene):
-            for m in to_add:
-                self._collision_saved.setdefault(id(m), (m.color, m.opacity))
-                m.material(SceneColors.COLLISION_HEX, m.opacity)
-            for m in to_remove:
-                saved = self._collision_saved.pop(id(m), None)
-                if saved is not None:
-                    m.material(saved[0], saved[1])
+        for m in to_add:
+            self._collision_saved.setdefault(id(m), (m.color, m.opacity))
+            m.material(SceneColors.COLLISION_HEX, m.opacity)
+        for m in to_remove:
+            saved = self._collision_saved.pop(id(m), None)
+            if saved is not None:
+                m.material(saved[0], saved[1])
         if to_add:
-            SceneFx.alarm(self.scene, to_add, SceneColors.COLLISION_HEX)
+            self.scene.fx.alarm(list(to_add), SceneColors.COLLISION_HEX)
         self._colliding_meshes = target
 
     def _make_shape_object(self, s):
@@ -1566,12 +1485,13 @@ class UrdfScene(
             return sc.box(s.x, s.y, s.z)
         if k == "sphere":
             return sc.sphere(s.radius)
+        # Round enough that a cylinder's outline reads as round up close.
         if k == "cylinder":
-            return sc.cylinder(s.radius, s.radius, s.length)
+            return sc.cylinder(s.radius, s.radius, s.length, radial_segments=48)
         if k == "capsule":
-            return sc.capsule(s.radius, s.length)
+            return sc.capsule(s.radius, s.length, cap_segments=8, radial_segments=48)
         if k == "cone":
-            return sc.cylinder(0.0, s.radius, s.length)
+            return sc.cylinder(0.0, s.radius, s.length, radial_segments=48)
         if k == "ellipsoid":
             # Degenerate radii render as a hair-thin ellipsoid instead of
             # dividing by zero (the checker accepts them; keep parity).
@@ -1596,14 +1516,16 @@ class UrdfScene(
         that changes nothing, and the group is created once, so a dragged
         object survives the readback that confirms its new pose.
 
-        ``shapes`` is the program layer — pale slate while ``draft`` (not yet
-        confirmed by backend readback), slate once confirmed. ``installation``
-        shapes come from the backend's robot config and render in their own
-        muted color; they are never draft — the floor is one of them, an
-        ordinary static fixture the config declares. The placeholder ground
-        disc hides once the installation actually describes ground.
+        ``shapes`` is the program layer — pale red while ``draft`` (not yet
+        confirmed by backend readback), red once confirmed. ``installation``
+        shapes come from the backend's robot config and render in a darker
+        red; they are never draft — the floor is one of them, an
+        ordinary static fixture the config declares. Installation ground is
+        not drawn: the floor disc stands for it, and a collision with it
+        lights the disc.
         ``installation_draft`` shapes are proposals for the robot config,
-        drawn in their own colour since nothing enforces them yet.
+        drawn in their own colour since nothing enforces them yet. A shape
+        that does not collide is no keep-out and is drawn neutral.
         """
         if not self.scene:
             return
@@ -1620,101 +1542,111 @@ class UrdfScene(
                     if s.attachment is not None
                     and s.attachment.epoch != attachment_epoch
                     else color
+                    if s.collision
+                    else SceneColors.OBJECT_HEX
                 )
                 desired[f"{prefix}{s.name}"] = (s, shape_color, SHAPE_OPACITY)
         changed = False
-        with batch_scene(self.scene):
-            # The floor is a placeholder for a backend that describes no
-            # ground. A declared floor replaces it — but an installation
-            # of a table and nothing else does not, and hiding the floor
-            # for that leaves the table floating in the void.
-            show_floor = not any(_is_ground(s) for s in installation)
-            if self._floor is not None and self._floor.visible_ != show_floor:
-                self._floor.visible(show_floor)
-            with self.scene:
-                for key in [k for k in self._shape_objects if k not in desired]:
-                    self._forget_shape_object(key)
-                    changed = True
-                if self._shapes_group is None:
-                    self._shapes_group = self.scene.group().with_name("shapes")
-                with self._shapes_group:
-                    for key, (s, color, opacity) in desired.items():
-                        geometry = (s.kind, tuple(s.params()), s.attachment is not None)
-                        pose = tuple(s.pose)
-                        obj = self._shape_objects.get(key)
-                        last = self._drawn.get(key)
-                        if obj is not None and last and last.geometry != geometry:
-                            self._forget_shape_object(key)
-                            obj = None
-                        if obj is None:
-                            parent = (
-                                self.last_actuated_group
-                                if s.attachment is not None
-                                else self._shapes_group
+        with self.scene:
+            for key in [
+                k
+                for k in self._shape_objects
+                if k not in desired and not k.startswith(MESH_PREFIX)
+            ]:
+                self._forget_shape_object(key)
+                changed = True
+            if self._shapes_group is None:
+                self._shapes_group = self.scene.group().with_name("shapes")
+            with self._shapes_group:
+                for key, (s, color, opacity) in desired.items():
+                    geometry = (s.kind, tuple(s.params()), s.attachment is not None)
+                    pose = tuple(s.pose)
+                    obj = self._shape_objects.get(key)
+                    last = self._drawn.get(key)
+                    if obj is not None and last and last.geometry != geometry:
+                        self._forget_shape_object(key)
+                        obj = None
+                    if obj is None:
+                        parent = (
+                            self.last_actuated_group
+                            if s.attachment is not None
+                            else self._shapes_group
+                        )
+                        if parent is None:
+                            # A readback can be adopted before the URDF's
+                            # joint groups exist (a reconnect racing the
+                            # model load). Draw the held shape in the world
+                            # group for now rather than abandoning the rest
+                            # of the render: the next render, with the
+                            # flange group in place, reparents it.
+                            logger.warning(
+                                "No flange group yet for held shape %s; drawing "
+                                "it in the world group until the model loads",
+                                s.name,
                             )
-                            if parent is None:
-                                # A readback can be adopted before the URDF's
-                                # joint groups exist (a reconnect racing the
-                                # model load). Draw the held shape in the world
-                                # group for now rather than abandoning the rest
-                                # of the render: the next render, with the
-                                # flange group in place, reparents it.
-                                logger.warning(
-                                    "No flange group yet for held shape %s; drawing "
-                                    "it in the world group until the model loads",
-                                    s.name,
-                                )
-                                parent = self._shapes_group
-                            if parent is None:
-                                raise ValueError(
-                                    "No shape group is available to draw into"
-                                )
-                            with parent:
-                                obj = self._make_shape_object(s)
-                            if obj is None:
-                                continue
-                            obj.with_name(key)
-                            self._shape_objects[key] = obj
-                            # One redrawn for new geometry, or grasped or
-                            # released, was on screen already.
-                            if last is None:
-                                self.fx.queue_marker(obj)
-                            last = None
-                            changed = True
-                        moved = last is None or last.pose != pose
-                        declared = (
-                            _shape_render_pose(s) if moved else last.declared_pose
-                        )
-                        if moved:
-                            obj.move(*declared[0]).rotate_R(declared[1])
-                            changed = True
-                        # Moving to the declared pose ends any playback
-                        # override, and the guess styling ends with it.
-                        held = bool(last and last.overridden and not moved)
-                        drawn = _Drawn(
-                            geometry=geometry,
-                            pose=pose,
-                            color=color,
-                            opacity=opacity,
-                            declared_pose=declared,
-                            placed_pose=last.placed_pose if held else None,
-                            overridden=held,
-                            guess=bool(last and last.guess and held),
-                        )
-                        repaint = last is None or (
-                            last.color,
-                            last.opacity,
-                            last.guess,
-                        ) != (
-                            drawn.color,
-                            drawn.opacity,
-                            drawn.guess,
-                        )
-                        self._drawn[key] = drawn
-                        if repaint:
-                            self._paint_shape(obj, key)
-                            changed = True
-        self.fx.flush(self.scene)
+                            parent = self._shapes_group
+                        if parent is None:
+                            raise ValueError("No shape group is available to draw into")
+                        with parent:
+                            obj = self._make_shape_object(s)
+                        if obj is None:
+                            continue
+                        obj.with_name(key)
+                        if not (key.startswith(INSTALL_PREFIX) and _is_ground(s)):
+                            obj.hover_effect("glow")
+                        self._shape_objects[key] = obj
+                        # One redrawn for new geometry, or grasped or
+                        # released, was on screen already.
+                        if last is None:
+                            self._reveal_markers.append(obj)
+                        last = None
+                        changed = True
+                    moved = last is None or last.pose != pose
+                    declared = _shape_render_pose(s) if moved else last.declared_pose
+                    if moved:
+                        obj.move(*declared[0]).rotate_R(declared[1])
+                        changed = True
+                    # Moving to the declared pose ends any playback
+                    # override, and the guess styling ends with it.
+                    held = bool(last and last.overridden and not moved)
+                    drawn = _Drawn(
+                        geometry=geometry,
+                        pose=pose,
+                        color=color,
+                        opacity=opacity,
+                        declared_pose=declared,
+                        placed_pose=last.placed_pose if held else None,
+                        overridden=held,
+                        guess=bool(last and last.guess and held),
+                    )
+                    repaint = last is None or (
+                        last.color,
+                        last.opacity,
+                        last.guess,
+                    ) != (
+                        drawn.color,
+                        drawn.opacity,
+                        drawn.guess,
+                    )
+                    self._drawn[key] = drawn
+                    if repaint:
+                        self._paint_shape(obj, key)
+                        changed = True
+        self._render_fixture_meshes()
+        self._flush_reveals()
+        self._install_ground = {
+            f"{INSTALL_PREFIX}{shape.name}"
+            for shape in installation
+            if _is_ground(shape)
+        }
+        for key in self._install_ground:
+            if node := self._shape_objects.get(key):
+                node.visible(False)
+        for name in self._hidden_objects:
+            if node := self._shape_objects.get(name):
+                node.visible(False)
+        self._push_interaction()
+        self._refresh_object_inspector()
         if not changed:
             return
         # The world changed — force the highlight to recompute next tick.
@@ -1734,44 +1666,52 @@ class UrdfScene(
 
     def set_object_poses(self, poses: Mapping[str, ObjectSample] | None) -> None:
         """Put world objects where the preview says they are at a playback
-        instant — a pose-only move of the drawn program shapes, one batched
-        frame, never a re-render — or restore their declared poses with
+        instant — a pose-only move of the drawn program shapes, never a
+        re-render — or restore their declared poses with
         None. An object whose track is a guess rather than physics is drawn
         at half opacity while overridden.
         """
         if not self.scene:
             return
-        with batch_scene(self.scene):
-            active = {self._object_entry(name)[0] for name in poses or {}}
-            for key, drawn in self._drawn.items():
-                if not drawn.overridden or key in active:
-                    continue
-                was_guess = drawn.guess
-                drawn.overridden, drawn.guess, drawn.placed_pose = False, False, None
-                obj = self._shape_objects.get(key)
-                if obj is None:
-                    continue
-                obj.move(*drawn.declared_pose[0]).rotate_R(drawn.declared_pose[1])
-                if was_guess:
-                    self._paint_shape(obj, key)
-            if poses is None:
-                return
-            for name, sample in poses.items():
-                key, drawn = self._object_entry(name)
-                obj = self._shape_objects.get(key) if drawn is not None else None
-                if obj is None or drawn is None:
-                    continue
-                placed = _object_render_pose(drawn.geometry[0], sample.pose)
-                # A parked object samples to the same pose every frame, and a
-                # move that changes nothing is still two websocket calls.
-                if placed != drawn.placed_pose:
-                    obj.move(*placed[0]).rotate_R(placed[1])
-                    drawn.placed_pose = placed
-                drawn.overridden = True
-                guess = not sample.physics
-                if drawn.guess != guess:
-                    drawn.guess = guess
-                    self._paint_shape(obj, key)
+        active = {self._object_entry(name)[0] for name in poses or {}}
+        for key, drawn in self._drawn.items():
+            if not drawn.overridden or key in active:
+                continue
+            was_guess = drawn.guess
+            drawn.overridden, drawn.guess, drawn.placed_pose = False, False, None
+            obj = self._shape_objects.get(key)
+            if obj is None:
+                continue
+            obj.move(*drawn.declared_pose[0]).rotate_R(drawn.declared_pose[1])
+            if was_guess:
+                self._paint_shape(obj, key)
+        if poses is None:
+            return
+        for name, sample in poses.items():
+            key, drawn = self._object_entry(name)
+            obj = self._shape_objects.get(key) if drawn is not None else None
+            if obj is None or drawn is None:
+                continue
+            placed = _object_render_pose(drawn.geometry[0], sample.pose)
+            # A parked object samples to the same pose every frame, and a
+            # move that changes nothing is still two websocket calls.
+            if placed != drawn.placed_pose:
+                obj.move(*placed[0]).rotate_R(placed[1])
+                drawn.placed_pose = placed
+            drawn.overridden = True
+            guess = not sample.physics
+            if drawn.guess != guess:
+                drawn.guess = guess
+                self._paint_shape(obj, key)
+
+    @staticmethod
+    def tool_parts(tool_key: str, variant_key: str | None) -> tuple[Any, Any]:
+        """The meshes and motions of a tool, or of its variant when named."""
+        spec = ui_state.active_robot.tools[tool_key]
+        variant = next((v for v in spec.variants if v.key == variant_key), None)
+        if variant is not None:
+            return variant.meshes, variant.motions
+        return spec.meshes, spec.motions
 
     def _object_entry(self, name: str) -> tuple[str, _Drawn | None]:
         """A tracked object's render key and record. A world object may be
@@ -1816,12 +1756,23 @@ class UrdfScene(
             joint_name: Name of the joint to move
             val: Joint value (radians for revolute, meters for prismatic)
         """
-        self._draw_joint(self.joint_names.index(joint_name), joint_name, val)
+        values = np.where(np.isnan(self._shown_q), 0.0, self._shown_q)
+        values[self.joint_names.index(joint_name)] = val
+        self._draw_joints(values)
 
-    def _draw_joint(self, index: int, joint_name: str, q: float) -> None:
-        t, r = self.joint_trafos[joint_name](q)
-        self.joint_groups[joint_name].move(*t).rotate(*r)
-        self._shown_q[index] = q
+    def _draw_joints(self, values: Sequence[float], *, exact: bool = False) -> None:
+        """Draw every joint whose value changed by more than the redraw step,
+        or, *exact*, by anything at all."""
+        n = len(self.joint_names)
+        step = 0.0 if exact else _JOINT_REDRAW_EPS
+        changed = False
+        for i in range(min(n, len(values))):
+            # A joint not drawn yet (NaN) compares as changed.
+            if not abs(values[i] - self._shown_q[i]) <= step:
+                self._shown_q[i] = values[i]
+                changed = True
+        if changed and self.scene is not None:
+            self.scene.set_joint_values(self._shown_q.tolist())
 
     def set_axis_values(self, val: list | np.ndarray) -> None:
         """Set all axes values by passing an array or list.
@@ -1832,38 +1783,20 @@ class UrdfScene(
         Note:
             This method is guarded - it will not update the robot during editing mode
             to prevent live updates from overwriting user manipulations.
-
-            Joint transforms are flushed as a single WS frame via
-            :func:`batch_scene` so three.js can't render a frame with only
-            a subset of the 12 joint updates applied (which manifests as
-            visible wrist "shake" at high update rates).
         """
         # Don't fight the user's manipulations while editing.
         if self._appearance_mode == RobotAppearanceMode.EDITING:
             return
         if not self.scene:
             return
-
         n = min(len(val), len(self._joint_q))
         self._joint_q[:n] = val[:n]
-        with batch_scene(self.scene):
-            for i, (joint_name, q) in enumerate(zip(self.joint_names, val)):
-                if abs(q - self._shown_q[i]) < _JOINT_REDRAW_EPS:
-                    continue
-                self._draw_joint(i, joint_name, q)
-            self._follow_dial()
+        self._draw_joints(val)
 
     def _apply_joint_angles(self, angles_rad: list[float]) -> None:
-        """Apply joint angles to the main robot joint groups.
-
-        Internal method used by both live updates and editing mode.
-
-        Args:
-            angles_rad: Joint angles in radians, ordered by self.joint_names
-        """
-        for i, (joint_name, q) in enumerate(zip(self.joint_names, angles_rad)):
-            if joint_name in self.joint_groups and joint_name in self.joint_trafos:
-                self._draw_joint(i, joint_name, q)
+        """Draw the arm at *angles_rad* (ordered by ``joint_names``) exactly:
+        an edit's pose is not status noise to smooth over."""
+        self._draw_joints(angles_rad, exact=True)
 
     def set_editing_angles(self, angles: list[float]) -> None:
         """Set joint angles for editing mode (radians).
@@ -1879,7 +1812,8 @@ class UrdfScene(
 
         if self._appearance_mode == RobotAppearanceMode.EDITING:
             self._apply_joint_angles(self._editing_angles)
-            self._update_tcp_ball_position()
+            self._refresh_editing_pose()
+            self._push_tcp_pose()
             # The status loop skips scene updates in EDITING, so the collision
             # highlight is driven from here (per scrub/pose change).
             self._update_collision_highlight()
@@ -1915,6 +1849,9 @@ class UrdfScene(
         self.update_tcp_pose_from_tool(tool_key, variant_key=variant_key)
         self.swap_tool_mesh(tool_key, variant_key=variant_key)
         self.invalidate_fk_cache()
+        self.clearance_overlay.tool_revision += 1
+        # The scene panel's list names the tool on the arm.
+        self._refresh_object_inspector()
 
     def apply_tool_everywhere(
         self, tool_key: str, variant_key: str | None = None
@@ -1926,7 +1863,7 @@ class UrdfScene(
         """
         ui_state.active_robot.set_active_tool(tool_key, variant_key=variant_key)
         self.apply_tool(tool_key, variant_key=variant_key)
-        self.refresh_tcp_ball()
+        self.refresh_tcp_pose()
 
     def update_tcp_pose_from_tool(
         self,
@@ -2003,21 +1940,10 @@ class UrdfScene(
         self._editing_collision_q = None
 
         try:
-            tool_spec = ui_state.active_robot.tools[tool_key]
+            meshes, motions = self.tool_parts(tool_key, variant_key)
         except (KeyError, AttributeError):
             logger.debug("No tool spec for '%s'; tool meshes cleared", tool_key)
             return
-
-        meshes = getattr(tool_spec, "meshes", ())
-        motions = getattr(tool_spec, "motions", ())
-
-        # Override with variant meshes/motions if specified.
-        if variant_key:
-            for v in getattr(tool_spec, "variants", ()):
-                if v.key == variant_key:
-                    meshes = v.meshes
-                    motions = v.motions
-                    break
 
         if not meshes:
             return
@@ -2039,7 +1965,7 @@ class UrdfScene(
                     role = mesh_spec.role
 
                     url = self._stl_to_url(filename)
-                    obj = Stl(url).scale(self._stl_scale).move(*origin).rotate(*rpy)
+                    obj = s3d.stl(url).scale(self._stl_scale).move(*origin).rotate(*rpy)
                     is_moving = role in motion_roles
                     color = moving_color if is_moving else body_color
                     if color is not None:
@@ -2055,7 +1981,7 @@ class UrdfScene(
                         self._tool_motion_rotations.setdefault(role, []).append(
                             (float(rpy[0]), float(rpy[1]), float(rpy[2]))
                         )
-        SceneFx.flash(self.scene, self._tool_meshes)
+        self.scene.fx.flash(self._tool_meshes)
 
     def update_tool_animation(self) -> None:
         """Animate tool meshes based on ``ToolSpec.motions`` descriptors.
@@ -2067,69 +1993,60 @@ class UrdfScene(
         Also applies activated color: moving-part meshes get the "moving" color
         only when ``tool_status.engaged`` is True.  Binary tools without motions
         apply activated color to all tool meshes.
-
-        Mesh mutations (move/rotate/material across all moving meshes) are
-        batched into one WS frame via :func:`batch_scene` so symmetric jaws
-        can't render with one side updated and the other stale.
         """
         if not self.scene:
             return
 
-        with batch_scene(self.scene):
-            # Engaged color applies to all tools, not just those with motions.
-            engaged = robot_state.tool_status.engaged
-            if (
-                engaged != self._last_tool_engaged
-                and self._appearance_mode != RobotAppearanceMode.EDITING
-            ):
-                self._last_tool_engaged = engaged
-                self._apply_tool_engaged_color(engaged)
+        # Engaged color applies to all tools, not just those with motions.
+        engaged = robot_state.tool_status.engaged
+        if (
+            engaged != self._last_tool_engaged
+            and self._appearance_mode != RobotAppearanceMode.EDITING
+        ):
+            self._last_tool_engaged = engaged
+            self._apply_tool_engaged_color(engaged)
 
-            if not self._tool_motions:
-                return
+        if not self._tool_motions:
+            return
 
-            positions = robot_state.tool_status.positions
-            if positions == self._tool_motion_last:
-                return
-            self._tool_motion_last = positions
+        positions = robot_state.tool_status.positions
+        if positions == self._tool_motion_last:
+            return
+        self._tool_motion_last = positions
 
-            for idx, motion in enumerate(self._tool_motions):
-                meshes = self._tool_motion_meshes.get(motion.role)
-                if not meshes:
-                    continue
+        for idx, motion in enumerate(self._tool_motions):
+            meshes = self._tool_motion_meshes.get(motion.role)
+            if not meshes:
+                continue
 
-                frac = positions[idx] if idx < len(positions) else 0.0
-                frac = max(0.0, min(1.0, frac))
+            frac = positions[idx] if idx < len(positions) else 0.0
+            frac = max(0.0, min(1.0, frac))
 
-                origins = self._tool_motion_origins.get(motion.role, [])
+            origins = self._tool_motion_origins.get(motion.role, [])
 
-                if isinstance(motion, LinearMotion):
-                    travel = motion.travel_m * -frac
-                    ax = motion.axis
-                    for i, mesh in enumerate(meshes):
-                        sign = (
-                            (1.0 if i % 2 == 0 else -1.0) if motion.symmetric else 1.0
-                        )
-                        ox, oy, oz = origins[i] if i < len(origins) else (0.0, 0.0, 0.0)
-                        mesh.move(
-                            ox + ax[0] * travel * sign,
-                            oy + ax[1] * travel * sign,
-                            oz + ax[2] * travel * sign,
-                        )
-                elif isinstance(motion, RotaryMotion):
-                    angle = motion.travel_rad * frac
-                    ax = motion.axis
-                    rots = self._tool_motion_rotations.get(motion.role, [])
-                    for i, mesh in enumerate(meshes):
-                        sign = (
-                            (1.0 if i % 2 == 0 else -1.0) if motion.symmetric else 1.0
-                        )
-                        r0x, r0y, r0z = rots[i] if i < len(rots) else (0.0, 0.0, 0.0)
-                        mesh.rotate(
-                            r0x + ax[0] * angle * sign,
-                            r0y + ax[1] * angle * sign,
-                            r0z + ax[2] * angle * sign,
-                        )
+            if isinstance(motion, LinearMotion):
+                travel = motion.travel_m * -frac
+                ax = motion.axis
+                for i, mesh in enumerate(meshes):
+                    sign = (1.0 if i % 2 == 0 else -1.0) if motion.symmetric else 1.0
+                    ox, oy, oz = origins[i] if i < len(origins) else (0.0, 0.0, 0.0)
+                    mesh.move(
+                        ox + ax[0] * travel * sign,
+                        oy + ax[1] * travel * sign,
+                        oz + ax[2] * travel * sign,
+                    )
+            elif isinstance(motion, RotaryMotion):
+                angle = motion.travel_rad * frac
+                ax = motion.axis
+                rots = self._tool_motion_rotations.get(motion.role, [])
+                for i, mesh in enumerate(meshes):
+                    sign = (1.0 if i % 2 == 0 else -1.0) if motion.symmetric else 1.0
+                    r0x, r0y, r0z = rots[i] if i < len(rots) else (0.0, 0.0, 0.0)
+                    mesh.rotate(
+                        r0x + ax[0] * angle * sign,
+                        r0y + ax[1] * angle * sign,
+                        r0z + ax[2] * angle * sign,
+                    )
 
     def _apply_tool_engaged_color(self, engaged: bool) -> None:
         """Apply activated color to tool meshes based on engaged state."""
@@ -2186,7 +2103,8 @@ class UrdfScene(
         # Shapes keep their own base color, but must be repainted with the
         # arm/tool so a colliding one isn't re-snapshotted with red as its base.
         for key, obj in self._shape_objects.items():
-            self._paint_shape(obj, key, tinted=False)
+            if not key.startswith(MESH_PREFIX):
+                self._paint_shape(obj, key, tinted=False)
 
         logger.debug("Robot appearance mode set to %s", mode.value)
         # The repaint above clobbered any red collision tint; drop the
@@ -2243,44 +2161,31 @@ class UrdfScene(
         self, urdf, joint, scale_stls: float = 1, material=None
     ):
         """Recursively add joint and child link to scene."""
-        t, r = get_transl_and_rpy(joint.origin)
+        origin = np.asarray(joint.origin, dtype=float)
         # Static transform from parent link to this joint frame.
-        with ui.scene.group().move(*t).rotate(*r) as joint_frame:
-            # Inner group carries the dynamic joint value (q).
-            with ui.scene.group() as joint_trafo:
-                if joint.joint_type != "fixed":
-                    self.joint_groups[joint.name] = joint_trafo
-                    self.joint_frame_groups[joint.name] = joint_frame
-
-                    if joint.joint_type == "prismatic":
-                        self.joint_trafos[joint.name] = lambda q, axis=joint.axis: (
-                            transl_joint(axis, q)
-                        )
-                        self.joint_pos_limits[joint.name] = {
-                            "min": joint.limit.lower,
-                            "max": joint.limit.upper,
-                        }
-                    elif joint.joint_type in ("revolute", "continuous"):
-                        self.joint_trafos[joint.name] = lambda q, axis=joint.axis: (
-                            rot_joint(axis, q)
-                        )
-                        if joint.joint_type == "continuous":
-                            self.joint_pos_limits[joint.name] = {
-                                "min": None,
-                                "max": None,
-                            }
-                        else:
-                            self.joint_pos_limits[joint.name] = {
-                                "min": joint.limit.lower,
-                                "max": joint.limit.upper,
-                            }
-                    else:
-                        raise NotImplementedError(
-                            f"Unsupported joint type '{joint.joint_type}' for joint "
-                            f"'{joint.name}'. Supported types: 'fixed', 'prismatic', "
-                            f"'revolute', 'continuous'."
-                        )
-
+        with (
+            s3d.group().move(*origin[:3, 3]).rotate_R(origin[:3, :3].tolist())
+        ) as joint_frame:
+            if joint.joint_type == "fixed":
+                joint_trafo = s3d.group()
+            elif joint.joint_type in ("revolute", "continuous", "prismatic"):
+                kind = "prismatic" if joint.joint_type == "prismatic" else "revolute"
+                # Turned (or slid) about its axis by the joint value.
+                joint_trafo = joint_frame.scene.joint(normalize_axis(joint.axis), kind)
+                self.joint_groups[joint.name] = joint_trafo
+                self.joint_frame_groups[joint.name] = joint_frame
+                continuous = joint.joint_type == "continuous"
+                self.joint_pos_limits[joint.name] = {
+                    "min": None if continuous else joint.limit.lower,
+                    "max": None if continuous else joint.limit.upper,
+                }
+            else:
+                raise NotImplementedError(
+                    f"Unsupported joint type '{joint.joint_type}' for joint "
+                    f"'{joint.name}'. Supported types: 'fixed', 'prismatic', "
+                    f"'revolute', 'continuous'."
+                )
+            with joint_trafo:
                 child_link = next(
                     (link for link in urdf.links if link.name == joint.child), None
                 )
@@ -2299,12 +2204,12 @@ class UrdfScene(
                     else:
                         # End link reached: place a TCP anchor
                         with joint_trafo:
-                            anchor = ui.scene.group().with_name("tcp:anchor")
+                            anchor = s3d.group().with_name("tcp:anchor")
                             self.tcp_anchor = anchor
                             with anchor:
-                                tool_grp = ui.scene.group().with_name("tool:meshes")
+                                tool_grp = s3d.group().with_name("tool:meshes")
                                 self._tool_meshes_group = tool_grp
-                                offset = ui.scene.group().with_name("tcp:offset")
+                                offset = s3d.group().with_name("tcp:offset")
                                 self.tcp_offset = offset
                         # Optional: small axes at TCP
                         if self.config.draw_tcp_axes:
@@ -2316,19 +2221,19 @@ class UrdfScene(
             geometry = visual.geometry
             rotation = np.eye(3)
             if geometry.mesh is not None:
-                obj = Stl(self._stl_to_url(geometry.mesh.filename))
+                obj = s3d.stl(self._stl_to_url(geometry.mesh.filename))
                 mesh_scale = geometry.mesh.scale
                 if mesh_scale is not None:
                     obj.scale(*(float(v) * scale for v in mesh_scale))
                 else:
                     obj.scale(scale)
             elif geometry.sphere is not None:
-                obj = ui.scene.sphere(geometry.sphere.radius).scale(scale)
+                obj = s3d.sphere(geometry.sphere.radius).scale(scale)
             elif geometry.box is not None:
-                obj = ui.scene.box(*geometry.box.size).scale(scale)
+                obj = s3d.box(*geometry.box.size).scale(scale)
             elif geometry.cylinder is not None:
                 cylinder = geometry.cylinder
-                obj = ui.scene.cylinder(
+                obj = s3d.cylinder(
                     cylinder.radius,
                     cylinder.radius,
                     cylinder.length,
@@ -2363,54 +2268,6 @@ class UrdfScene(
             return best
 
         return walk(self.urdf_model.base_link.name)
-
-    def _configure_renderer(self) -> None:
-        """Swap the fork's flat default lights for ours, cast shadows and fog the distance.
-
-        No tone mapping, so unlit token colours render as their hex. The fog
-        starts past the floor's edge wherever the camera is, and the shadow
-        map redraws only when a shadow caster moves, appears or hides.
-        Runs on every scene init, so a remount after WebGL context loss gets it again.
-        """
-        if self.scene is None:
-            return
-        bg = self.config.background_color
-        reach = self._chain_reach()
-        ui.run_javascript(
-            f"""
-            import("nicegui-scene").then(({{ THREE }}) => {{
-              const view = getElement({self.scene.id});
-              view.scene.children.filter((o) => o.isLight).forEach((o) => view.scene.remove(o));
-              view.renderer.toneMapping = THREE.NoToneMapping;
-              const shadows = view.renderer.shadowMap;
-              shadows.enabled = true;
-              shadows.type = THREE.PCFShadowMap;
-              shadows.autoUpdate = false;
-              shadows.needsUpdate = true;
-              const fog = new THREE.Fog("{bg}", 0, 1);
-              view.scene.fog = fog;
-              let casters = 0;
-              let lastCasters = NaN;
-              const sumCaster = (o) => {{
-                if (!o.castShadow) return;
-                casters += o.id;
-                const e = o.matrixWorld.elements;
-                for (let i = 0; i < 16; i++) casters += e[i] * (i + 1);
-              }};
-              view.scene.onBeforeRender = (renderer, scene, camera) => {{
-                fog.near = camera.position.length() + {reach * 1.5:.3f};
-                fog.far = fog.near + {reach * 3:.3f};
-                casters = 0;
-                scene.traverseVisible(sumCaster);
-                if (casters !== lastCasters) {{
-                  lastCasters = casters;
-                  shadows.needsUpdate = true;
-                }}
-              }};
-              view.resize();
-            }});
-            """
-        )
 
     def _stl_to_url(self, stl_path: str) -> str:
         """Convert an STL path from the URDF to its static URL, preferring a _simplified variant.

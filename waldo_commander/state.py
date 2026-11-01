@@ -295,10 +295,13 @@ class PlaybackCoordination:
     """True while scrubbing/playing — suppresses status-loop URDF updates."""
     last_teleport_ts: float = 0.0
     """Monotonic time of last teleport send; used by status loop to delay handback."""
+    preview_tool_selection: tuple[str, str] | None = None
+    """Recorded tool shown by the simulator, distinct from authored tool settings."""
 
     def reset(self) -> None:
         self.sim_pose_override = False
         self.last_teleport_ts = 0.0
+        self.preview_tool_selection = None
 
 
 class _RequiredField:
@@ -328,6 +331,10 @@ class UiState:
     urdf_scene: "UrdfScene | None" = None
     urdf_joint_names: list[str] | None = None
 
+    @property
+    def editing_target(self) -> bool:
+        return self.urdf_scene is not None and self.urdf_scene.editing_target
+
     # Tab currently allowed to control the robot. None during the brief
     # window between a takeover click and the reloaded client reconnecting.
     # See main.index_page / main.check_ping for the lifecycle.
@@ -348,6 +355,7 @@ class UiState:
     diagnostics_page: Any = None
     settings_content: Any = None
     bottom_panel: Any = None
+    scene_panel: Any = None
     # Kept so the editor addresses its tab directly instead of hunting the
     # DOM for a matching icon glyph.
     _program_tab: Any = None

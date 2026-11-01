@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
 import pytest
 from fastmcp import Client
+from nicegui import core
 from fastmcp.exceptions import ToolError
 from nicegui.testing import User
 
@@ -186,6 +188,28 @@ async def test_mcp_and_browser_trade_control(user: User) -> None:
                 await client.call_tool("execution.stop_active")
     finally:
         control_lease.reset()
+
+
+@pytest.mark.integration
+async def test_a_waiting_tab_takes_a_session_whose_tab_is_gone(user: User) -> None:
+    """A page that never connects, such as one a second reload cut short, is
+    dropped without a disconnect. The tab waiting behind it then takes the
+    session instead of showing "Session active in another tab" for good."""
+    await user.open("/")
+    await wait_for_app_ready()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(core.app), base_url="http://test"
+    ) as http:
+        waiting = User(http)
+        await waiting.open("/")
+        await waiting.should_see("Session active in another tab")
+        vanished = user.client
+        assert ui_state.active_client_id == vanished.id
+        vanished.delete()
+        assert await wait_until(
+            lambda: ui_state.active_client_id == waiting.client.id, 5.0
+        ), "the waiting tab never took the session"
+        await wait_for_app_ready()
 
 
 @pytest.mark.integration

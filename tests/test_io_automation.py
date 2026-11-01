@@ -17,6 +17,7 @@ import waldoctl
 from nicegui import app as ng_app
 from nicegui.testing import User
 
+from tests.helpers.scene_events import right_click
 from tests.helpers.wait import enable_sim, wait_for_app_ready
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.services.control_lease import MCP, control_lease
@@ -91,12 +92,15 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     assert automation_state.cycle_start_enabled
 
     # Guard: editing mode blocks the trigger (edge is consumed, not queued).
-    waldoctl.commander.status.editing_mode = True
+    right_click(user, ui_state.urdf_scene.scene, [], [0.3, 0.1, 0.0])
+    user.find(marker="scene-target-at-robot").click()
     _pulse_input_1()
     await _settle()
     assert not is_any_program_running()
     assert script_exec.last_exit_code is None
-    waldoctl.commander.status.editing_mode = False
+    # The placement went into the program; Ctrl+Z takes it back out.
+    ui_state.urdf_scene.undo_edit()
+    assert ui_state.active_textarea.value == script
 
     # Guard: e-stop not clear blocks the trigger. The injected estop=0 is
     # consumed with the pulse on the same tick, then re-published clear.

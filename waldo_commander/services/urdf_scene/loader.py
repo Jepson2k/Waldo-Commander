@@ -124,38 +124,6 @@ def get_transl_and_rpy(mat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return trans, rpy
 
 
-def rot_joint(axis: np.ndarray, rot_rad: float) -> tuple[np.ndarray, np.ndarray]:
-    """Transformation for rotatory joint around `axis` with value `rot_rad` [rad].
-
-    Args:
-        axis: Joint axis of rotation (3D vector)
-        rot_rad: Rotation angle in radians
-
-    Returns:
-        Tuple of (translation, rpy) - translation is zero for revolute joints
-    """
-    norm_axis = axis / np.linalg.norm(axis)
-    rpy = R.from_rotvec(rot_rad * norm_axis).as_euler("xyz", degrees=False)
-    t = np.zeros_like(rpy)
-    return t, rpy
-
-
-def transl_joint(axis: np.ndarray, transl: float) -> tuple[np.ndarray, np.ndarray]:
-    """Transformation for translational joint along `axis` with value `transl` [m].
-
-    Args:
-        axis: Joint axis of translation (3D vector)
-        transl: Translation distance in meters
-
-    Returns:
-        Tuple of (translation, rpy) - rpy is zero for prismatic joints
-    """
-    norm_axis = axis / np.linalg.norm(axis)
-    t = transl * norm_axis
-    rpy = np.zeros_like(t)
-    return t, rpy
-
-
 def normalize_axis(axis) -> np.ndarray:
     """Normalize an axis-like value to a 3-vector (numpy array).
 

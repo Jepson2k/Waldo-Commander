@@ -22,12 +22,14 @@ from typing import Any, NoReturn
 
 import waldoctl
 from fastmcp.exceptions import ToolError
+from nicegui import app, run
 from waldoctl.shapes import Shape, ShapeWorld, shape_from_wire
 from waldoctl.world import world_from_dict, world_to_dict
 
 from waldo_commander.mcp.server import get_mcp
 from waldo_commander.mcp.tools.control import require_control
 from waldo_commander.services import world_files
+from waldo_commander.services.fixture_meshes import STORAGE_KEY, meshes_from_data
 
 mcp = get_mcp()
 
@@ -201,7 +203,16 @@ async def library_save(name: str, shapes: list[Any] | None = None) -> str:
         tuple(_parse(s) for s in shapes) if shapes is not None else tuple(scene.shapes)
     )
     try:
-        return str(world_files.save_entry(name, ShapeWorld(program=program)))
+        meshes = None
+        if shapes is None:
+            meshes = await run.io_bound(
+                meshes_from_data, app.storage.general.get(STORAGE_KEY, [])
+            )
+        return str(
+            await run.io_bound(
+                world_files.save_entry, name, ShapeWorld(program=program), meshes=meshes
+            )
+        )
     except (ValueError, OSError) as err:
         _refuse(f"library save failed: {err}")
 

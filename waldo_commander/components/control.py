@@ -11,7 +11,7 @@ from typing import Any, Callable, ClassVar
 
 import numpy as np
 import waldoctl
-from nicegui import Client, app, ui
+from nicegui import app, ui
 from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
@@ -23,7 +23,6 @@ from waldo_commander.components.settings import _setting_row
 from waldo_commander.components.readout import AI_MODE_CLASS
 from waldo_commander.constants import (
     CLICK_HOLD_THRESHOLD_S,
-    DEFAULT_CAMERA,
     HOME_LONG_PRESS_S,
     config,
 )
@@ -47,7 +46,6 @@ from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.services.startup_mode import set_startup_mode
-from waldo_commander.services.urdf_scene.scene_fx import SceneFx
 from waldo_commander.state import (
     global_phase_timer,
     robot_state,
@@ -274,9 +272,9 @@ class _ToolQuickActions:
                     tool_status,
                     "key",
                     backward=lambda key: (
-                        ui_state.active_robot.tools[key].display_name.replace("_", " ")
+                        ui_state.active_robot.tools[key].display_name
                         if key in {t.key for t in ui_state.active_robot.tools.available}
-                        else key.replace("_", " ")
+                        else key
                     ),
                 ).classes("text-xs truncate text-wc-text-muted")
                 with ui.row().classes("gap-1 no-wrap text-xs tabular-nums"):
@@ -476,6 +474,7 @@ class _ToolQuickActions:
                     ),
                 )
             else:
+                motion_guard.note_command()
                 await tool.action_l(not waldoctl.commander.status.tool.engaged)
         except waldoctl.RobotError as e:
             # A Stop cancels the action: what the user asked for, not a failure.
@@ -511,6 +510,7 @@ class _ToolQuickActions:
                         )
                         motion_recorder.record_action("gripper", calibrate=True)
             else:
+                motion_guard.note_command()
                 await tool.action_r(not waldoctl.commander.status.tool.engaged)
         except waldoctl.RobotError as e:
             # A Stop cancels the action: what the user asked for, not a failure.
@@ -698,6 +698,7 @@ class ControlPanel:
         self._joint_left_btns: dict[int, ui.button] = {}
         self._joint_right_btns: dict[int, ui.button] = {}
         self._dials: list[JointDial] = []
+        self._joint_readouts: list[ui.number] = []
         self._joint_tab_shown = True
         self._cart_axis_imgs: dict[str, ui.element] = {}
 
@@ -753,6 +754,12 @@ class ControlPanel:
         self.CADENCE_WARN_WINDOW: int = max(1, int(config.webapp_control_rate_hz))
         self.CADENCE_TOLERANCE: float = 0.015  # 15mm
         self.STREAM_TIMEOUT_S: float = 0.1
+        # How long a released drag's arm may sit still short of its target
+        # before it counts as arrived.
+        self.JOG_END_STILL_S: float = 0.5
+        # Motion below this (mm, degrees) over JOG_END_STILL_S is encoder
+        # jitter, not an approach.
+        self.JOG_END_STILL_TOL: float = 0.05
 
         self._joint_cadence = _CadenceTracker()
         self._cart_cadence = _CadenceTracker()
@@ -766,7 +773,7 @@ class ControlPanel:
         # Jog axis the status Waldo is currently looking along
         self._look_axis: str | None = None
 
-        # TCP TransformControls drag state
+        # Gizmo drag state
         self._tcp_latest_pose: list[float] | None = None
         self._tcp_last_sent_pose: list[float] | None = (
             None  # Track last sent to avoid duplicates
@@ -797,6 +804,7 @@ class ControlPanel:
         # resync (frame toggle, invert toggles remapping axis -> element).
         self._last_cart_trans_frame: str | None = None
         self._last_editing_mode: bool | None = None
+        self._last_cart_editing_mode: bool | None = None
         # Last jog availability pushed to the scene's handles; None until pushed.
         self._handles_available: bool | None = None
 
@@ -807,10 +815,13 @@ class ControlPanel:
         self._ring_angles: list[float] = []
         self._ring_sent_deg: float = math.nan
         self._ring_sent_limits: tuple[float, float] | None = None
-        self._ring_commanded: list[float] | None = None
+        # A released ring or gizmo drag still driving to its target: joint
+        # degrees, or with the flag a TCP pose in mm and degrees.
+        self._release: tuple[list[float], bool] | None = None
         self._drag_generation = 0
         self._drag_context: tuple[int, str, bool, int] | None = None
         self._remove_stop_listener: Callable[[], None] | None = None
+        self._remove_command_listener: Callable[[], None] | None = None
         self._tcp_last_sent_limits: tuple[float, float] | None = None
 
         self._jog_end_wait_task: asyncio.Task | None = None
@@ -832,9 +843,14 @@ class ControlPanel:
             and self._drag_context == self._current_drag_context()
             and control_lease.held_by(BROWSER, self._ui_client.id)
             and time.time() - waldoctl.commander.status.last_update <= 1
-            and not waldoctl.commander.status.editing_mode
             and self._movement_allowed(notify=False)
         )
+
+    def cancel_drag(self, token: int) -> None:
+        """Forget the drag ``token``, unless another has replaced it: a page
+        that lost control ends only its own drag."""
+        if token == self._drag_generation:
+            self.cancel_drags()
 
     def cancel_drags(self, *, abort_recording: bool = True) -> None:
         """Forget manual input without sending a pending target or click."""
@@ -845,7 +861,7 @@ class ControlPanel:
         self._drag_context = None
         self._ring_joint = None
         self._ring_angles = []
-        self._ring_commanded = None
+        self._release = None
         self._ring_sent_limits = None
         self._tcp_drag_active = False
         self._tcp_latest_pose = self._tcp_last_sent_pose = None
@@ -878,6 +894,7 @@ class ControlPanel:
         if self._jog_end_wait_task is not None:
             self._jog_end_wait_task.cancel()
             self._jog_end_wait_task = None
+        self._release = None
         motion_recorder.on_jog_start(kind, axis)
         self._waldo_look(axis, True)
 
@@ -1173,7 +1190,7 @@ class ControlPanel:
     def refresh_joint_enablement(self) -> None:
         """Apply stronger disabled visuals to joint +/- buttons using
         ``commander.status.joints.can_jog_pos / can_jog_neg``."""
-        editing_mode = waldoctl.commander.status.editing_mode
+        editing_mode = ui_state.editing_target
         joints = waldoctl.commander.status.joints
         pos = joints.can_jog_pos
         neg = joints.can_jog_neg
@@ -1186,6 +1203,9 @@ class ControlPanel:
             and neg is self._last_joint_neg
         ):
             return
+        if editing_mode != self._last_editing_mode:
+            for readout in self._joint_readouts:
+                readout.set_enabled(not editing_mode)
         self._last_editing_mode = editing_mode
         self._last_joint_pos = pos
         self._last_joint_neg = neg
@@ -1221,7 +1241,7 @@ class ControlPanel:
         Translation axes use the selected translation frame's enablement,
         rotation axes always use TRF enablement.
         """
-        editing_mode = waldoctl.commander.status.editing_mode
+        editing_mode = ui_state.editing_target
         frames = ui_state.active_robot.cartesian_frames
         wrf, trf = frames[0], frames[1]
         trans_frame = self._translation_frame_name()
@@ -1237,7 +1257,7 @@ class ControlPanel:
         # producer swaps them wholesale only on change), so no per-tick
         # flatten / tuple allocation.
         if (
-            editing_mode == self._last_editing_mode
+            editing_mode == self._last_cart_editing_mode
             and trans_frame == self._last_cart_trans_frame
             and wrf_pos is self._last_cart_wrf_pos
             and wrf_neg is self._last_cart_wrf_neg
@@ -1245,7 +1265,7 @@ class ControlPanel:
             and trf_neg is self._last_cart_trf_neg
         ):
             return
-        self._last_editing_mode = editing_mode
+        self._last_cart_editing_mode = editing_mode
         self._last_cart_trans_frame = trans_frame
         self._last_cart_wrf_pos = wrf_pos
         self._last_cart_wrf_neg = wrf_neg
@@ -1280,7 +1300,7 @@ class ControlPanel:
     @staticmethod
     def _jog_possible() -> bool:
         return (
-            not waldoctl.commander.status.editing_mode
+            not ui_state.editing_target
             and (
                 waldoctl.commander.status.simulator_active
                 or waldoctl.commander.status.connected
@@ -1293,19 +1313,6 @@ class ControlPanel:
         """Tell the scene's rings and gizmo whether jogging is possible, when that changes."""
         if self._drag_context is not None and not self._drag_allowed():
             self.cancel_drags()
-        if (
-            self._ring_joint is None
-            and self._ring_commanded is not None
-            and waldoctl.commander.status.action.state == waldoctl.ActionState.IDLE
-            and all(
-                abs(float(actual) - target) < 0.05
-                for actual, target in zip(
-                    waldoctl.commander.status.joints.angles.deg,
-                    self._ring_commanded,
-                )
-            )
-        ):
-            self._ring_commanded = None
         jog_possible = self._jog_possible()
         if jog_possible == self._handles_available:
             return
@@ -1317,7 +1324,19 @@ class ControlPanel:
 
     @staticmethod
     def _movement_allowed(notify: bool = True) -> bool:
-        """Return True if robot movement is permitted (simulator active or hardware connected, nobody else driving)."""
+        """Whether the live robot may be jogged: not while a target edit
+        previews another pose, and only when it may be commanded at all."""
+        if ui_state.editing_target:
+            if notify:
+                ui.notify(
+                    "Finish target editing before jogging the live robot.", color="info"
+                )
+            return False
+        return ControlPanel._robot_allowed(notify)
+
+    @staticmethod
+    def _robot_allowed(notify: bool = True) -> bool:
+        """Return True if the robot may be commanded (simulator active or hardware connected, nobody else driving)."""
         if (busy := motion_guard.busy_reason()) is not None:
             if notify:
                 ui.notify(f"{busy} — jog disabled", color="warning")
@@ -1613,7 +1632,7 @@ class ControlPanel:
         axis_info = f"J{j + 1}{sign}"
         if not is_pressed:
             self._waldo_look(axis_info, False)
-        if waldoctl.commander.status.editing_mode:
+        if ui_state.editing_target:
             return
         if not is_pressed and not self._drag_allowed():
             self.cancel_drags()
@@ -1634,7 +1653,6 @@ class ControlPanel:
             ):
                 self.cancel_drags(abort_recording=False)
             self._drag_context = self._current_drag_context()
-            self._ring_commanded = None
             self._begin_jog_record("joint", axis_info)
         else:
             self._schedule_jog_end_wait()
@@ -1792,20 +1810,22 @@ class ControlPanel:
 
     # ---- Ring drag (3D view) ----
 
-    def ring_drag_begin(self, j: int) -> bool:
-        """A ring drag on joint ``j`` starts; returns whether it may move the robot."""
-        if waldoctl.commander.status.editing_mode or not self._movement_allowed():
-            return False
+    def ring_drag_begin(self, j: int) -> int | None:
+        """A ring drag on joint ``j`` starts; returns the drag's token, or None
+        when it may not move the robot."""
+        if not self._movement_allowed():
+            return None
         angles = waldoctl.commander.status.joints.angles.deg
         if len(angles) < self._n_joints or not 0 <= j < self._n_joints:
-            return False
-        commanded = self._ring_commanded
+            return None
+        release = self._release
         self.cancel_drags(abort_recording=False)
-        self._ring_angles = (
-            list(commanded)
-            if commanded is not None
-            else [float(a) for a in angles[: self._n_joints]]
-        )
+        self._ring_angles = [float(a) for a in angles[: self._n_joints]]
+        if release is not None and not release[1]:
+            # The other joints keep heading for a released ring's target; the
+            # grabbed one starts where the dial shows it.
+            self._ring_angles = list(release[0][: self._n_joints])
+            self._ring_angles[j] = float(angles[j])
         self._drag_context = self._current_drag_context()
         self._ring_joint = j
         self._ring_sent_deg = self._ring_angles[j]
@@ -1814,7 +1834,7 @@ class ControlPanel:
         if not ui_state.joint_jog_timer.active:
             self._joint_cadence.reset()
         ui_state.joint_jog_timer.active = True
-        return True
+        return self._drag_generation
 
     def ring_drag_target(self, j: int, deg: float) -> None:
         """The ring's snapped target for joint ``j``, clamped to its limits and
@@ -1833,9 +1853,10 @@ class ControlPanel:
             deg = current
         self._ring_angles[j] = deg
 
-    async def ring_drag_end(self) -> None:
-        """The ring was released: send its last target, then record the jog once it settles."""
-        if self._ring_joint is None:
+    async def ring_drag_end(self, token: int) -> None:
+        """The ring drag ``token`` was released: send its last target, then
+        record the jog once it settles."""
+        if self._ring_joint is None or token != self._drag_generation:
             return
         generation = self._drag_generation
         if not self._drag_allowed():
@@ -1874,7 +1895,6 @@ class ControlPanel:
             ):
                 self._ring_sent_deg = target
                 self._ring_sent_limits = limits
-                self._ring_commanded = angles
         except Exception as e:
             logger.error("Ring drag streaming failed: %s", e)
 
@@ -1884,7 +1904,7 @@ class ControlPanel:
         """Hybrid click/hold for cartesian axes: click => single step, hold => stream."""
         if not is_pressed:
             self._waldo_look(axis, False)
-        if waldoctl.commander.status.editing_mode:
+        if ui_state.editing_target:
             return
         if not is_pressed and not self._drag_allowed():
             self.cancel_drags()
@@ -1906,7 +1926,6 @@ class ControlPanel:
             ):
                 self.cancel_drags(abort_recording=False)
             self._drag_context = self._current_drag_context()
-            self._ring_commanded = None
             self._begin_jog_record("cartesian", axis)
         else:
             self._schedule_jog_end_wait()
@@ -2003,7 +2022,7 @@ class ControlPanel:
             t.active = any(bool(v) for v in self._cart_pressed_axes.values())
 
     async def cart_jog_tick(self) -> None:
-        """Timer callback: unified movement timer for TransformControls drag or cartesian jog."""
+        """Timer callback: unified movement timer for a gizmo drag or cartesian jog."""
         with global_phase_timer.phase("jog"):
             if self._drag_context is not None and not self._drag_allowed():
                 self.cancel_drags()
@@ -2013,7 +2032,7 @@ class ControlPanel:
 
             speed = _norm_speed()
 
-            # Priority 1: TransformControls drag actively providing absolute poses
+            # Priority 1: a gizmo drag actively providing absolute poses
             if self._tcp_drag_active and self._tcp_latest_pose:
                 # Skip resending an unchanged pose to avoid flooding duplicates.
                 limits = (speed, _norm_accel())
@@ -2094,14 +2113,12 @@ class ControlPanel:
                 "cart",
             )
 
-    def _handle_tcp_cartesian_move_start(self) -> None:
-        """Handle start of a TCP TransformControls drag.
-
-        Ensures drag state is reset so that even small initial movements are registered.
-        """
+    def _handle_tcp_cartesian_move_start(self) -> int | None:
+        """Start of a gizmo drag; returns the drag's token, or None when it
+        may not move the robot."""
         logger.debug("TCP Drag: START event received")
         if not self._movement_allowed(notify=False):
-            return
+            return None
 
         self.cancel_drags(abort_recording=False)
         self._drag_context = self._current_drag_context()
@@ -2115,14 +2132,15 @@ class ControlPanel:
         if t and not t.active:
             self._cart_cadence.reset()
             t.active = True
+        return self._drag_generation
 
     def _handle_tcp_cartesian_move(self, pose: list[float]) -> None:
-        """Handle TCP Cartesian move events from TransformControls drag operations.
+        """Take a gizmo drag's latest target for the Cartesian jog stream.
 
         Drag-start setup (arming _tcp_drag_active and the recorder) lives in
-        _handle_tcp_cartesian_move_start, which is fired by transform_start.
-        Stale pose updates that arrive after drag-end are ignored — the timer
-        is already deactivated and the cached pose isn't streamed.
+        _handle_tcp_cartesian_move_start. Stale pose updates that arrive after
+        drag-end are ignored — the timer is already deactivated and the cached
+        pose isn't streamed.
         """
         if not self._drag_allowed():
             self.cancel_drags()
@@ -2142,15 +2160,18 @@ class ControlPanel:
             self._cart_cadence.reset()
             t.active = True
 
-    def _handle_tcp_cartesian_move_end(self) -> None:
-        """End of a TCP TransformControls drag: wait for motion to stop, then record."""
+    def _handle_tcp_cartesian_move_end(self, token: int) -> None:
+        """End of the gizmo drag ``token``: drive the tool to the last pose
+        dragged to, then record once it settles."""
         logger.debug("TCP Drag: END event received")
+        if token != self._drag_generation:
+            return
         if not self._drag_allowed():
             self.cancel_drags()
             return
         if self._tcp_drag_active:
             self._tcp_drag_active = False
-            self._schedule_jog_end_wait()
+            self._schedule_jog_end_wait(self._tcp_latest_pose, cartesian=True)
         self._tcp_last_sent_pose = None
         # If no cart axis buttons are pressed, allow timer to stop
         t = ui_state.cart_jog_timer
@@ -2158,49 +2179,72 @@ class ControlPanel:
             any_pressed = any(bool(v) for v in self._cart_pressed_axes.values())
             t.active = bool(any_pressed)
 
-    def _at_drag_target(self, target: list[float], *, cartesian: bool = False) -> bool:
+    @staticmethod
+    def _drag_position(cartesian: bool) -> np.ndarray:
+        """Where the arm is: TCP mm and degrees, or joint degrees."""
         if cartesian:
             pose = waldoctl.commander.status.pose
-            current = [pose.x, pose.y, pose.z, pose.rx, pose.ry, pose.rz]
-            delta = np.array(current) - target
+            return np.array([pose.x, pose.y, pose.z, pose.rx, pose.ry, pose.rz])
+        return np.array(waldoctl.commander.status.joints.angles.deg, dtype=float)
+
+    def _at_drag_target(self, target: list[float], *, cartesian: bool = False) -> bool:
+        delta = self._drag_position(cartesian)[: len(target)] - target
+        if cartesian:
             delta[3:] = (delta[3:] + 180) % 360 - 180
-            return bool(np.all(np.abs(delta) <= 0.01))
-        return bool(
-            np.allclose(
-                waldoctl.commander.status.joints.angles.deg, target, atol=0.01, rtol=0
+        return bool(np.all(np.abs(delta) <= 0.01))
+
+    def _schedule_jog_end_wait(
+        self, target: list[float] | None = None, *, cartesian: bool = False
+    ) -> None:
+        """Schedule a jog end wait task, cancelling any stale one. A *target*
+        is joint degrees, or with *cartesian* a TCP pose in mm and degrees."""
+        if self._jog_end_wait_task is not None and not self._jog_end_wait_task.done():
+            self._jog_end_wait_task.cancel()
+        self._release = (list(target), cartesian) if target is not None else None
+        self._jog_end_wait_task = asyncio.create_task(
+            self._wait_and_record_jog_end(
+                list(target) if target is not None else None, cartesian=cartesian
             )
         )
 
-    def _schedule_jog_end_wait(self, target: list[float] | None = None) -> None:
-        """Schedule a jog end wait task, cancelling any stale one."""
-        if self._jog_end_wait_task is not None and not self._jog_end_wait_task.done():
-            self._jog_end_wait_task.cancel()
-        self._jog_end_wait_task = asyncio.create_task(
-            self._wait_and_record_jog_end(list(target) if target is not None else None)
-        )
-
-    async def _wait_and_record_jog_end(self, target: list[float] | None = None) -> None:
+    async def _wait_and_record_jog_end(
+        self, target: list[float] | None = None, *, cartesian: bool = False
+    ) -> None:
         """Wait for robot motion to stop, then record the jog end position."""
+        servo = self.client.servo_l if cartesian else self.client.servo_j
         try:
-            # A released joint ring still owns its final target. Keep the
+            # A released ring or gizmo still owns its final target. Keep the
             # expiring stream alive until arrival, with the same cancellation
-            # gates as the held drag and a bounded completion budget.
+            # gates as the held drag and a bounded completion budget. An arm
+            # that stops short (a motor step from the target, or held at the
+            # edge of its reach) has got as close as it will.
             deadline = time.monotonic() + 30
-            while target is not None and not self._at_drag_target(target):
+            last: np.ndarray | None = None
+            stamp = still_since = 0.0
+            status = waldoctl.commander.status
+            while target is not None and not self._at_drag_target(
+                target, cartesian=cartesian
+            ):
                 if (
                     not self._drag_allowed()
-                    or waldoctl.commander.status.action.state
-                    == waldoctl.ActionState.ERROR
+                    or status.action.state == waldoctl.ActionState.ERROR
                     or time.monotonic() >= deadline
                 ):
                     self.cancel_drags()
                     return
-                if (
-                    await self.client.servo_j(
-                        target, speed=_norm_speed(), accel=_norm_accel()
-                    )
-                    < 0
-                ):
+                # Stillness is judged on fresh readings only: a stalled
+                # status stream says nothing about whether the arm stopped.
+                if status.last_update != stamp:
+                    stamp = status.last_update
+                    now = self._drag_position(cartesian)
+                    moved = None if last is None else now - last
+                    if moved is not None and cartesian:
+                        moved[3:] = (moved[3:] + 180) % 360 - 180
+                    if moved is None or np.abs(moved).max() > self.JOG_END_STILL_TOL:
+                        last, still_since = now, stamp
+                    elif stamp - still_since >= self.JOG_END_STILL_S:
+                        break
+                if await servo(target, speed=_norm_speed(), accel=_norm_accel()) < 0:
                     self.cancel_drags()
                     return
                 await asyncio.sleep(self.JOG_TICK_S)
@@ -2215,17 +2259,32 @@ class ControlPanel:
         finally:
             if self._jog_end_wait_task is asyncio.current_task():
                 self._jog_end_wait_task = None
+                self._release = None
+        self._record_jog_end()
+
+    def _record_jog_end(self) -> None:
         if not self._drag_allowed():
             motion_recorder.abort_jog()
             return
-        # asyncio.create_task spawns this without a slot stack; on_jog_end touches
-        # the editor via motion_recorder (`flash_editor_lines` → `ui.timer`), so
+        # Background tasks run without a slot stack; on_jog_end touches the
+        # editor via motion_recorder (`flash_editor_lines` → `ui.timer`), so
         # re-enter the panel's client context before any UI access.
         if self._ui_client is not None:
             with self._ui_client:
                 motion_recorder.on_jog_end()
         else:
             motion_recorder.on_jog_end()
+
+    def claim_motion(self) -> None:
+        """Another command takes the arm: a released drag stops driving to its
+        target, and its jog is recorded where the arm is now."""
+        if self._release is None:
+            return
+        self._release = None
+        task, self._jog_end_wait_task = self._jog_end_wait_task, None
+        if task is not None:
+            task.cancel()
+        self._record_jog_end()
 
     async def _dial_move(self, target: list[float], speed: float) -> None:
         """Send a dial's joint move, recorded as a jog once the arm settles. A
@@ -2266,7 +2325,6 @@ class ControlPanel:
         Nothing is shown here: the rings and the gizmo appear on hover.
         """
         if ui_state.urdf_scene:
-            ui_state.urdf_scene.set_gizmo_display_mode("TRANSLATE")
             # Fixed axis-to-slot layout for the cartesian jog grid:
             # Y (green) vertical (ud1), X (red) horizontal (lr), Z (blue) vertical (ud2).
             self.set_axis_orientation("Y", "X", "Z")
@@ -2279,38 +2337,21 @@ class ControlPanel:
             ui_state.urdf_scene.on_tcp_cartesian_move_end(
                 self._handle_tcp_cartesian_move_end
             )
+            ui_state.urdf_scene.on_tcp_cartesian_move_cancel(self.cancel_drag)
             ui_state.urdf_scene.on_ring_drag(
                 self.ring_drag_begin,
                 self.ring_drag_target,
                 self.ring_drag_end,
-                self.cancel_drags,
+                self.cancel_drag,
             )
             self._handles_available = self._jog_possible()
             ui_state.urdf_scene.set_handles_available(self._handles_available)
-
-    def on_gizmo_mode_changed(self, mode: str) -> None:
-        """Switch gizmo display mode between Move (translation) and Rotate."""
-        if ui_state.urdf_scene is None:
-            logger.warning("Cannot change gizmo mode: URDF scene not initialized")
-            return
-        internal_mode = "TRANSLATE" if mode == "Move" else "ROTATE"
-        ui_state.urdf_scene.set_gizmo_display_mode(internal_mode)
-        tcp_mode = "translate" if mode == "Move" else "rotate"
-        ui_state.urdf_scene.set_tcp_transform_mode(tcp_mode)
-
-    def on_gizmo_toggle(self, visible: bool) -> None:
-        """Allow the gizmo on hover, or never show it (Hidden)."""
-        waldoctl.commander.settings.view.gizmo_visible = bool(visible)
-        if ui_state.urdf_scene is None:
-            logger.warning("Cannot toggle gizmo: URDF scene not initialized")
-            return
-        ui_state.urdf_scene.refresh_handles()
 
     # ---- Robot action methods ----
 
     async def send_home(self, calibrate: bool = False) -> None:
         # In editing mode, home the editing robot instead of the live one.
-        if waldoctl.commander.status.editing_mode:
+        if ui_state.editing_target:
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.apply_editing_home()
                 logger.info("HOME sent to editing robot")
@@ -2396,6 +2437,11 @@ class ControlPanel:
     def _on_home_press(self, e) -> None:
         if (e.args or {}).get("button", 0) != 0:
             return
+        if ui_state.editing_target:
+            self._cancel_home_press_timer()
+            self._home_long_fired = False
+            self._home_click_suppressed = False
+            return
         if not self._movement_allowed():
             self._home_click_suppressed = True
             return
@@ -2438,19 +2484,9 @@ class ControlPanel:
         await self.send_home()
 
     def _is_urdf_scene_valid(self) -> bool:
-        """Check if urdf_scene exists and its client is still valid."""
-        if not ui_state.urdf_scene:
-            return False
-        scene = ui_state.urdf_scene.scene
-        if not scene:
-            return False
-        try:
-            scene_client = scene._client()
-            if scene_client is None or scene_client.id not in Client.instances:
-                return False
-        except (RuntimeError, AttributeError):
-            return False
-        return True
+        """Whether the urdf_scene exists and its page is still open."""
+        scene = ui_state.urdf_scene.scene if ui_state.urdf_scene else None
+        return scene is not None and not scene.is_deleted
 
     async def on_freedrive_click(self) -> None:
         """Ask the backend to release the arm for hand guiding, or take it
@@ -2459,6 +2495,7 @@ class ControlPanel:
         the arm is in no state for it — we relay its reason."""
         on = not waldoctl.commander.status.controller.freedrive
         try:
+            motion_guard.note_command()
             await self.client.freedrive(on)
             ui.notify(
                 "Freedrive on — arm unlocked, move it by hand"
@@ -2612,6 +2649,9 @@ class ControlPanel:
                     .classes("joint-readout-input")
                     .mark(f"joint-readout-{idx}")
                 )
+                num.set_enabled(not ui_state.editing_target)
+                self._joint_readouts.append(num)
+                num.tooltip("Live robot joint angle")
                 _num_ref: dict[str, Any] = {
                     "focused": False,
                     "el": num,
@@ -2687,6 +2727,7 @@ class ControlPanel:
     def render_jog_content(self) -> None:
         """Render the jog controls."""
         self._dials = []
+        self._joint_readouts = []
         with (
             ui.tabs(on_change=self._on_jog_tab_change)
             .props("dense")
@@ -2938,6 +2979,11 @@ class ControlPanel:
         self._remove_stop_listener = motion_guard.add_stop_listener(
             lambda *_: self.cancel_drags()
         )
+        if self._remove_command_listener is not None:
+            self._remove_command_listener()
+        self._remove_command_listener = motion_guard.add_command_listener(
+            self.claim_motion
+        )
         # Capture UI client for background task operations
         self._ui_client = ui.context.client
         owner = self._ui_client
@@ -2961,7 +3007,7 @@ class ControlPanel:
                 with ui.row().classes("items-center w-full no-wrap gap-1"):
                     self._build_level_chips()
                     self.tool_actions = _ToolQuickActions(
-                        self.client, self._movement_allowed
+                        self.client, self._robot_allowed
                     )
                     self.tool_actions.build()
 
@@ -3026,10 +3072,11 @@ class ControlPanel:
         )
 
     def _build_action_row(self) -> None:
-        """Build the action row: Home, Robot/Sim toggle, freedrive, gizmo
-        controls, camera reset, step input, E-Stop."""
-        # The E-Stop rides the row's right edge out of flow; the padding
-        # reserves its 72px footprint so no control grows underneath it.
+        """Build the action row: Home, Robot/Sim toggle, freedrive, step
+        input, E-Stop."""
+        # The E-Stop rides the row's right edge out of flow, hanging down
+        # beside the jog tabs rather than up over the tool controls; the
+        # padding reserves its 72px footprint so no control grows under it.
         with ui.row().classes("gap-1 items-center relative w-full pr-20"):
             self._home_btn = (
                 ui.button(icon="home", on_click=self._on_home_click)
@@ -3068,70 +3115,6 @@ class ControlPanel:
             )
             self._freedrive_btn.set_enabled(supported)
 
-            buttons: dict[str, ui.button] = {}
-
-            def paint_gizmo_buttons(mode: str) -> None:
-                for m, btn in buttons.items():
-                    btn.props(
-                        "color=wc-action text-color=wc-on-bright"
-                        if m == mode
-                        else "color=wc-control text-color=wc-text"
-                    )
-
-            def set_gizmo_mode(mode: str):
-                if mode == "Hidden":
-                    self.on_gizmo_toggle(False)
-                else:
-                    self.on_gizmo_toggle(True)
-                    self.on_gizmo_mode_changed(mode)
-                paint_gizmo_buttons(mode)
-
-            with ui.button_group().props("rounded unelevated dense"):
-                buttons["Move"] = (
-                    ui.button(
-                        icon="open_with",
-                        on_click=lambda e, m="Move": set_gizmo_mode(m),
-                    )
-                    .props("round unelevated dense")
-                    .tooltip("Translate gizmo mode")
-                    .mark("gizmo-mode-move")
-                )
-                buttons["Rotate"] = (
-                    ui.button(
-                        icon="sync",
-                        on_click=lambda e, m="Rotate": set_gizmo_mode(m),
-                    )
-                    .props("round unelevated dense")
-                    .tooltip("Rotate gizmo mode")
-                    .mark("gizmo-mode-rotate")
-                )
-                buttons["Hidden"] = (
-                    ui.button(
-                        icon="visibility_off",
-                        on_click=lambda e, m="Hidden": set_gizmo_mode(m),
-                    )
-                    .props("round unelevated dense")
-                    .tooltip("Never show the gizmo")
-                    .mark("gizmo-mode-hidden")
-                )
-                paint_gizmo_buttons(
-                    "Move"
-                    if waldoctl.commander.settings.view.gizmo_visible
-                    else "Hidden"
-                )
-
-            def _reset_cam():
-                try:
-                    if ui_state.urdf_scene and ui_state.urdf_scene.scene:
-                        scene = ui_state.urdf_scene.scene
-                        scene.move_camera(**DEFAULT_CAMERA, duration=0.8)
-                        SceneFx.ease_camera(scene)
-                except Exception as e:
-                    logger.error("Reset camera failed: %s", e)
-
-            ui.button(icon="view_in_ar", on_click=_reset_cam).props(
-                "round unelevated dense color=wc-control text-color=wc-text"
-            ).tooltip("Reset camera").mark("reset-camera")
             with ui.row(align_items="center").classes("gap-0 no-wrap"):
                 self._step_input = (
                     ui.number(
@@ -3155,7 +3138,7 @@ class ControlPanel:
             ui.button(icon="dangerous", on_click=self.on_estop_click).props(
                 "round unelevated color=wc-estop text-color=wc-on-fill"
             ).classes("text-2xl").style(
-                "position: absolute; right: 0; top: 50%; transform: translateY(-50%);"
+                "position: absolute; right: 0; top: 0;"
             ).tooltip("E-Stop").mark("btn-estop")
 
     def cleanup(self) -> None:
@@ -3164,6 +3147,9 @@ class ControlPanel:
         if self._remove_stop_listener is not None:
             self._remove_stop_listener()
             self._remove_stop_listener = None
+        if self._remove_command_listener is not None:
+            self._remove_command_listener()
+            self._remove_command_listener = None
         if self._joint_click_hold:
             self._joint_click_hold.cleanup()
         if self._cart_click_hold:

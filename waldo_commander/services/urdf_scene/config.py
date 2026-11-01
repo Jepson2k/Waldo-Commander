@@ -54,9 +54,6 @@ class UrdfSceneConfig:
     scale_stls: float = 1.0
     """Scale factor for all STL files (e.g., 1e-1 if designed in mm)."""
 
-    gizmo_scale: float | None = None
-    """Override gizmo size. If None, scales with STL scale."""
-
     draw_tcp_axes: bool = True
     """Whether to draw coordinate axes at TCP location."""
 

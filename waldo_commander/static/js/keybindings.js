@@ -7,7 +7,9 @@
 (function () {
   "use strict";
 
-  let lastFocusState = false;
+  // Unknown until the first poll, which always reports: the app may still
+  // hold the state of a page that closed while an input had focus.
+  let lastFocusState = null;
   let notifyCallback = null;
 
   /**
