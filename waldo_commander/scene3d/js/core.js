@@ -1,8 +1,8 @@
 // The 3D view in the browser: one renderer, camera and orbit control, the
 // nodes Python sends, and a draw loop that runs only while something changes.
 //
-// It draws at most `max_fps` frames a second, and a few a second while a
-// dialog covers it. A view with no size (hidden at phone width) draws
+// It draws at most `max_fps` frames a second, every display frame while a
+// hand drags something, and a few a second while a dialog covers it. A view with no size (hidden at phone width) draws
 // nothing until it has one.
 
 import * as THREE from "three";
@@ -26,6 +26,11 @@ import { surface } from "./testing.js";
 import { ViewCube } from "./viewcube.js";
 
 const COVERED_FRAME_MS = 250;
+// A frame due this close to a display frame is drawn in it: waiting for the
+// next would draw it a whole refresh late.
+const DUE_SLACK_MS = 4;
+// Longer waits than this sleep instead of stepping through display frames.
+const SLEEP_AFTER_MS = 50;
 const RESTORE_WAIT_MS = 5000;
 
 const viewed = new THREE.Vector3();
@@ -71,6 +76,9 @@ export class SceneCore {
     this.labels = new CSS2DRenderer({ element: root.querySelector(".wc-scene-labels") });
     this.controls = new OrbitControls(this.camera, this.canvas);
     this.controls.addEventListener("change", () => this.requestRender());
+    this.orbiting = false;
+    this.controls.addEventListener("start", () => (this.orbiting = true));
+    this.controls.addEventListener("end", () => (this.orbiting = false));
 
     this.ix = {};
     this.nodes = new Nodes(this);
@@ -293,6 +301,12 @@ export class SceneCore {
     return this.fx.active || this.cameraMove.active || this.gizmos.active;
   }
 
+  // What a hand is moving is drawn every display frame, so it keeps up with
+  // the pointer.
+  get following() {
+    return this.pointer.drag !== null || this.gestures.active || this.orbiting;
+  }
+
   schedule() {
     if (this.raf || this.retry || this.disposed) return;
     this.raf = requestAnimationFrame((now) => this.frame(now));
@@ -301,14 +315,17 @@ export class SceneCore {
   frame(now) {
     this.raf = 0;
     if (this.lost || !this.size[0] || !this.size[1]) return;
-    const covered = this.covered;
-    const gap = covered ? COVERED_FRAME_MS : 1000 / (this.config.max_fps || 30);
+    const gap = this.covered ? COVERED_FRAME_MS : this.following ? 0 : 1000 / (this.config.max_fps || 30);
     const wait = this.lastFrame + gap - now;
-    if (wait > 1) {
-      this.retry = setTimeout(() => {
-        this.retry = 0;
-        this.schedule();
-      }, wait);
+    if (wait > DUE_SLACK_MS) {
+      if (wait > SLEEP_AFTER_MS) {
+        this.retry = setTimeout(() => {
+          this.retry = 0;
+          this.schedule();
+        }, wait);
+      } else {
+        this.raf = requestAnimationFrame((t) => this.frame(t));
+      }
       return;
     }
     this.overlays.measure();

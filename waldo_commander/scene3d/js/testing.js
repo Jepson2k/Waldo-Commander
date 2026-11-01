@@ -311,6 +311,15 @@ export function surface(core) {
     return null;
   };
 
+  // Where the named object's gizmo handles are drawn and where the object
+  // is, in page pixels.
+  S.handlesAt = (name) => {
+    const tc = gizmoFor(name);
+    if (!tc || !tc.object) return null;
+    const at = (obj) => pixel(obj.getWorldPosition(new THREE.Vector3()).project(core.camera));
+    return { handles: at(tc.getHelper()), object: at(tc.object) };
+  };
+
   // The middle of the stretch of the named object's `letter` arrow that
   // sticks out past every object, and the arrow's direction on screen.
   S.arrowTip = (name, letter = "X") => {

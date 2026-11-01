@@ -6,6 +6,9 @@ import { overlap } from "./overlays.js";
 
 const RAD=Math.PI/180;
 const MAX_TRANSLATION=.010,MAX_ROTATION=5*RAD;
+// A step spans this many pixels: of the view for a translation, of the
+// gizmo's arc for a turn.
+const STEP_PX=2,TURN_STEP_PX=1,TICK_PX=8;
 const axes={X:new THREE.Vector3(1,0,0),Y:new THREE.Vector3(0,1,0),Z:new THREE.Vector3(0,0,1)};
 const LETTERS="XYZ";
 const NICE=[1,2,5,10];
@@ -29,6 +32,11 @@ export const niceStep=(value)=>{
   let best=power;
   for(const k of NICE)if(Math.abs(Math.log(k*power/value))<Math.abs(Math.log(best/value)))best=k*power;
   return best;
+};
+// The smallest 1, 2 or 5 times a power of ten that is at least `value`.
+const niceAbove=(value)=>{
+  const power=10**Math.floor(Math.log10(Math.max(value,1e-9)));
+  return NICE.map((k)=>k*power).find((v)=>v>=value*(1-1e-9));
 };
 
 // A signed change to the precision of the snap `step`, or as typed without one.
@@ -158,13 +166,12 @@ export class Precision {
     return this.incrementAt(tc.object.getWorldPosition(scratch),mode);
   }
 
-  // A step spans a few pixels: of the view for a translation, of the gizmo's
-  // arc for a turn. The gizmo is never drawn under 65 px, and no step is
-  // coarser than MAX_TRANSLATION or MAX_ROTATION however far out the view is.
+  // The gizmo is never drawn under 65 px, and no step is coarser than
+  // MAX_TRANSLATION or MAX_ROTATION however far out the view is.
   incrementAt(position,mode) {
     const pixel=this.core.metresPerPixel(position);
-    if(mode!=="rotate")return Math.min(MAX_TRANSLATION,niceStep(pixel*8));
-    return Math.min(MAX_ROTATION,niceStep(4/Math.max(65,.085/pixel)/RAD)*RAD);
+    if(mode!=="rotate")return Math.min(MAX_TRANSLATION,niceStep(pixel*STEP_PX));
+    return Math.min(MAX_ROTATION,niceStep(TURN_STEP_PX/Math.max(65,.085/pixel)/RAD)*RAD);
   }
 
   refresh() {
@@ -221,7 +228,8 @@ export class Precision {
       shownStep:snap&&(tc.mode==="translate"?snap*1000:snap/RAD)};
     this.instrument=m;
     if(tc.mode==="translate") {
-      m.spacing=snap || niceStep(pixel*10);
+      // Ticks fall on steps, but never closer than TICK_PX.
+      m.spacing=snap?snap*niceAbove(Math.max(1,pixel*TICK_PX/snap)):niceStep(pixel*10);
       m.letters=[...new Set([...tc.axis||"XYZ"].filter(a=>axes[a]))];
     } else {
       const axis=m.axis=axes[tc.axis].clone();

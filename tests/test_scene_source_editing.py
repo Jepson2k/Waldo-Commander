@@ -275,6 +275,12 @@ rbt.move_l(pose=[0, 280, 250, 90, 0, 90], speed=0.5)
     translation = translated_ball(urdf.scene, x=0.005)
     drag = gizmo(user, urdf.scene).move(**translation)
     assert await held_until(drag, lambda: urdf._requested_edit_pose != start, 5)
+    # A tool change landing mid-drag, as a re-plan of a program that picks a
+    # tool brings, does not place the frame at the dragged pose, or an
+    # aborted drag would go back to it.
+    placed = urdf._tcp_placed_pose
+    urdf.refresh_tcp_pose()
+    assert urdf._tcp_placed_pose == placed
     drag.abort()
     assert urdf._requested_edit_pose == start
     # A cancelled drag writes nothing.

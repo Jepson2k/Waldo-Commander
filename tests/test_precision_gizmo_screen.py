@@ -46,8 +46,10 @@ def _reveal(screen):
 def _jog_settled(screen):
     """Wait until the jog a release or a typed change started has ended."""
     wait(screen, 15).until(
-        lambda _: ui_state.control_panel._jog_end_wait_task is None
-        or ui_state.control_panel._jog_end_wait_task.done()
+        lambda _: (
+            ui_state.control_panel._jog_end_wait_task is None
+            or ui_state.control_panel._jog_end_wait_task.done()
+        )
     )
 
 
@@ -79,6 +81,14 @@ class TestPrecisionGizmo:
                 _reveal(screen)
                 wait_for_scene_idle(screen)
                 far_step = gizmo(screen, "tcp:ball")["translationSnap"]
+                # A step spans a couple of pixels of the view.
+                pixel = scene_js(
+                    screen,
+                    "const core = getElement(S.root).core;"
+                    " const ball = core.gizmos.ball;"
+                    " return core.metresPerPixel(ball.getWorldPosition(ball.position.clone()));",
+                )
+                assert far_step / pixel < 3.2, (far_step, pixel)
                 evidence.capture("01-translation-ready-1920")
                 spot = wait(screen).until(
                     lambda _: probe(screen, "arrowTip", "tcp:ball")

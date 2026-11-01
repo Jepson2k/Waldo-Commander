@@ -84,7 +84,9 @@ export class SceneTransform extends THREE.EventDispatcher {
 
   update() {
     if(!this.object)return;
-    if(this.dragging){this.helper.position.copy(this.origin);this.helper.quaternion.copy(this.displayBasis);}
+    // A drag carries the handles with the object; they keep the axes the
+    // drag began on.
+    if(this.dragging){this.object.getWorldPosition(this.helper.position);this.helper.quaternion.copy(this.displayBasis);}
     else {
       this.object.getWorldPosition(this.helper.position);
       this.frameQuaternion(this.helper.quaternion,"translate");

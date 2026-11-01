@@ -547,15 +547,40 @@ class TestSceneElement:
             run_in_app(remove)
 
     def test_frames_are_capped_and_a_hidden_view_draws_none(self, page: Screen) -> None:
-        drawn = page.selenium.execute_async_script(
-            "const done = arguments[arguments.length - 1];"
-            "const S = getElement(document.querySelector('.wc-scene')).core.surface;"
-            "const start = S.frames(); const t0 = performance.now();"
-            "(function poke() { S.requestRender();"
-            "  if (performance.now() - t0 < 2000) requestAnimationFrame(poke);"
-            "  else done(S.frames() - start); })();"
-        )
+        def drawn_in_2_s() -> int:
+            return page.selenium.execute_async_script(
+                "const done = arguments[arguments.length - 1];"
+                "const S = getElement(document.querySelector('.wc-scene')).core.surface;"
+                "const start = S.frames(); const t0 = performance.now();"
+                "(function poke() { S.requestRender();"
+                "  if (performance.now() - t0 < 2000) requestAnimationFrame(poke);"
+                "  else done(S.frames() - start); })();"
+            )
+
+        drawn = drawn_in_2_s()
         assert 10 <= drawn <= 30 * 2 + 3, f"{drawn} frames in 2 s"
+        renderer = scene_js(
+            page,
+            "const gl = S.renderer.getContext();"
+            " const info = gl.getExtension('WEBGL_debug_renderer_info');"
+            " return info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : '';",
+        )
+        if "SwiftShader" not in renderer:
+            # Paced on the display's frames, the cap is met, not undershot by
+            # a missed one.
+            assert drawn >= 50, f"{drawn} frames in 2 s"
+            # A hand turning the view gets every display frame.
+            x, y = wait(page).until(lambda _: scene_js(page, "return S.emptySpot()"))[
+                :2
+            ]
+            action = ActionChains(page.selenium)
+            pointer_to(page, x, y, action)
+            action.click_and_hold().perform()
+            try:
+                held = drawn_in_2_s()
+            finally:
+                ActionChains(page.selenium).release().perform()
+            assert held > 80, f"{held} frames in 2 s while dragging"
 
         box = _page["box"]
         scene_js(page, "S.root.style.display = 'none'")
@@ -647,18 +672,20 @@ class TestSceneElement:
 
             view = run_in_app(mount)
             wait(page, 10).until(
-                lambda _: js(
-                    page,
-                    "return document.querySelectorAll('.wc-scene[data-ready]').length",
+                lambda _: (
+                    js(
+                        page,
+                        "return document.querySelectorAll('.wc-scene[data-ready]').length",
+                    )
+                    == 2
                 )
-                == 2
             )
             run_in_app(view.delete)
             wait(page, 10).until(
-                lambda _: js(
-                    page, "return document.querySelectorAll('.wc-scene').length"
+                lambda _: (
+                    js(page, "return document.querySelectorAll('.wc-scene').length")
+                    == 1
                 )
-                == 1
             )
         assert js(page, "return window.__layout") == start, "removed views still listen"
         assert not scene_js(page, "return S.renderer.getContext().isContextLost()"), (
@@ -860,8 +887,9 @@ class TestSceneElement:
             wait(page, 5).until(lambda _: _handles(page) == ["ring:1"])
             dial = scene_js(page, "return S.dial(1)")
             (angle,) = wait(page, 5).until(
-                lambda _: (a := scene_js(page, "return S.ringGrab(1)")) is not None
-                and [a]
+                lambda _: (
+                    (a := scene_js(page, "return S.ringGrab(1)")) is not None and [a]
+                )
             )
             t = dial["q"] + np.radians(angle)
             gx, gy = scene_js(

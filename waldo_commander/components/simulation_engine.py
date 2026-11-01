@@ -32,6 +32,10 @@ from waldo_commander.state import (
 
 logger = logging.getLogger(__name__)
 
+# A scene edit is one finished change, so its path need not wait out a
+# pause in typing.
+_SCENE_EDIT_DELAY_S = 0.15
+
 
 def get_home_joints_rad() -> list[float]:
     """Get home position in radians from the active robot."""
@@ -246,11 +250,13 @@ class SimulationEngine:
 
         return error
 
-    def schedule_debounced_simulation(self, tab_id: str | None = None) -> None:
+    def schedule_debounced_simulation(
+        self, tab_id: str | None = None, *, scene_edit: bool = False
+    ) -> None:
         """Schedule a debounced simulation run when code changes.
 
         Cancels any pending *or running* simulation and schedules a new one
-        after the debounce delay.  ``cancel(with_current_invocation=True)``
+        after the debounce delay, a shorter one for a scene edit.  ``cancel(with_current_invocation=True)``
         aborts both the debounce sleep and an in-progress simulation
         subprocess, so edits never pile up stale simulations.
         """
@@ -310,10 +316,9 @@ class SimulationEngine:
                 if self._simulation_debounce_timer is my_timer:
                     self._simulation_debounce_timer = None
 
-        logger.debug(
-            "DEBOUNCE: Scheduling new timer with delay=%.3fs", self._debounce_delay
-        )
-        my_timer = ui.timer(self._debounce_delay, run_simulation_quietly, once=True)
+        delay = _SCENE_EDIT_DELAY_S if scene_edit else self._debounce_delay
+        logger.debug("DEBOUNCE: Scheduling new timer with delay=%.3fs", delay)
+        my_timer = ui.timer(delay, run_simulation_quietly, once=True)
         self._simulation_debounce_timer = my_timer
 
     def check_position_changed(self) -> None:

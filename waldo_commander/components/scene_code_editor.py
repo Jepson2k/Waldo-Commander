@@ -22,6 +22,8 @@ class SceneCodeEditor(
         # the editor takes its own history with it.
         self._done: list[tuple[str, str]] = []
         self._undone: list[tuple[str, str]] = []
+        # True while a scene edit sets the value, for the change handlers.
+        self.scene_edit = False
         self.on("scene-mounted", self._on_scene_mounted)
         self.on("scene-unmounted", self._on_scene_unmounted)
 
@@ -96,4 +98,8 @@ class SceneCodeEditor(
             if not history or history[-1][1] != before:
                 history = []
             self._props["scene-history"] = [*history[-19:], [before, value]]
-        self.value = value
+        self.scene_edit = True
+        try:
+            self.value = value
+        finally:
+            self.scene_edit = False
