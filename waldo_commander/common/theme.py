@@ -573,7 +573,11 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
   color: var(--wc-text);
   isolation: isolate;
 }}
-.q-menu {{ background: var(--wc-glass-end) !important; border-radius: var(--wc-radius-sm); }}
+.q-menu {{ background: var(--wc-glass-end) !important; border-radius: var(--wc-radius-sm); padding: 4px; }}
+/* shadcn's menu rows: compact, rounded, filled on hover. */
+.q-menu .q-item {{ min-height: 32px; padding: 6px 8px; border-radius: 6px; }}
+.q-menu .q-item:hover {{ background: var(--wc-state-hover); }}
+.q-menu .q-separator {{ margin: 4px -4px; }}
 .well {{ background: var(--wc-well); border-radius: var(--wc-radius-sm); }}
 .q-item, .q-toolbar, .q-field, .q-tab-panels, .q-tab-panel {{ background: transparent; }}
 .q-separator {{ background: var(--wc-glass-border); }}
@@ -592,6 +596,9 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
   min-width: var(--wc-size-control) !important;
 }}
 .q-btn--flat, .q-btn--outline {{ color: var(--wc-text); }}
+/* A pressed toggle is filled, as shadcn's are: its primary icon alone
+   would read no different from the white of the others. */
+.q-btn--flat[aria-pressed="true"] {{ background: var(--wc-state-selected) !important; }}
 .q-btn:focus-visible, .q-field__native:focus-visible, .q-tab:focus-visible {{
   outline: 3px solid var(--wc-focus-ring);
   outline-offset: 0;

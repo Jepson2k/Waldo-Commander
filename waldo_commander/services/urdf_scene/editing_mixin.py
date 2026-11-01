@@ -365,9 +365,9 @@ class EditingMixin(ShapeEditingMixin):
                 ui.item(f"Move (Line {move['line']})").classes("font-bold text-sm")
             else:
                 if self._last_click_coords is not None:
-                    x_mm, y_mm = [c * 1000 for c in self._last_click_coords[:2]]
+                    x_mm, y_mm = [round(c * 1000) for c in self._last_click_coords[:2]]
                     ui.menu_item(
-                        f"Place Target Here ({x_mm:.0f}, {y_mm:.0f})...",
+                        f"Place Target Here ({x_mm}, {y_mm})...",
                         on_click=lambda: self._show_unified_target_editor(
                             use_click_position=True
                         ),

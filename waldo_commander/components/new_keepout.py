@@ -50,7 +50,10 @@ class NewKeepout:
         )
         self.shape = (
             ui.toggle(_SHAPES, value="box")
-            .props("dense no-caps unelevated spread")
+            .props(
+                "dense no-caps unelevated spread"
+                " toggle-color=wc-action toggle-text-color=wc-on-bright"
+            )
             .classes("w-full")
             .mark("keepout-shape")
         )
@@ -101,8 +104,8 @@ class NewKeepout:
         label = self.surface["label"]
         if self.face is not None:
             return label
-        x, y = (v * 1000 for v in self.surface["origin"][:2])
-        return f"{label} at {x:.0f}, {y:.0f} mm"
+        x, y = (round(v * 1000) for v in self.surface["origin"][:2])
+        return f"{label} at {x}, {y} mm"
 
     def close(self) -> None:
         if self.closed:
