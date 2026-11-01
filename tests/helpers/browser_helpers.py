@@ -134,9 +134,15 @@ def click_marked(screen: "Screen", marker: str, timeout: float = 10.0) -> None:
 
 @contextmanager
 def viewport(
-    screen: "Screen", width: int, height: int, *, mobile: bool = False
+    screen: "Screen",
+    width: int,
+    height: int,
+    *,
+    mobile: bool = False,
+    scale: float = 1,
 ) -> Iterator[None]:
-    """Emulate a viewport of exactly ``width`` × ``height`` CSS pixels.
+    """Emulate a viewport of exactly ``width`` × ``height`` CSS pixels, at
+    ``scale`` device pixels to one.
 
     Nested captures restore the enclosing viewport; the outermost clears it.
     """
@@ -145,7 +151,7 @@ def viewport(
     settings = {
         "width": width,
         "height": height,
-        "deviceScaleFactor": 1,
+        "deviceScaleFactor": scale,
         "mobile": mobile,
     }
     driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", settings)

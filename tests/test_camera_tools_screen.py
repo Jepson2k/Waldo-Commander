@@ -166,8 +166,9 @@ class TestCameraTools:
                     )
                     hold(screen, spot, 20)
                     wait(screen).until(
-                        lambda _: run_in_app(lambda: scene._requested_edit_pose)
-                        != initial
+                        lambda _: (
+                            run_in_app(lambda: scene._requested_edit_pose) != initial
+                        )
                     )
                     wait_for_scene_idle(screen)
                     evidence.capture("06-orthographic-drag-1366")
@@ -175,8 +176,9 @@ class TestCameraTools:
                         Keys.ESCAPE
                     ).release().perform()
                     wait(screen).until(
-                        lambda _: run_in_app(lambda: scene._requested_edit_pose)
-                        == initial
+                        lambda _: (
+                            run_in_app(lambda: scene._requested_edit_pose) == initial
+                        )
                     )
                     end_target_edit(screen)
                     evidence.capture("07-camera-tools-1366")
@@ -247,8 +249,9 @@ class TestCameraTools:
 
                 tap(marked_element(screen, "camera-orthographic"))
                 wait(screen).until(
-                    lambda _: orthographic()
-                    and _projection_shown(screen, "orthographic")
+                    lambda _: (
+                        orthographic() and _projection_shown(screen, "orthographic")
+                    )
                 )
                 face = tap_cube()
                 assert np.dot(looking_from(), face) > 0.999
@@ -301,8 +304,9 @@ class TestCameraTools:
                 )
                 wait_for_scene_idle(screen)
                 wait(screen).until(
-                    lambda _: not orthographic()
-                    and _projection_shown(screen, "perspective")
+                    lambda _: (
+                        not orthographic() and _projection_shown(screen, "perspective")
+                    )
                 )
                 evidence.capture("03-recovered-tools-touch-1024")
                 # The recovered view has no earlier one for Shift+F to go back
@@ -311,8 +315,9 @@ class TestCameraTools:
                 camera_action(screen, "back")
                 tap(marked_element(screen, "camera-orthographic"))
                 wait(screen).until(
-                    lambda _: orthographic()
-                    and _projection_shown(screen, "orthographic")
+                    lambda _: (
+                        orthographic() and _projection_shown(screen, "orthographic")
+                    )
                 )
                 assert scene_js(screen, "return S.cameraPose()") == pytest.approx(
                     recovered, abs=1e-6
@@ -320,14 +325,41 @@ class TestCameraTools:
                 click_marked(screen, "camera-reset")
                 camera_settled(screen)
                 wait(screen).until(
-                    lambda _: not orthographic()
-                    and _projection_shown(screen, "perspective")
+                    lambda _: (
+                        not orthographic() and _projection_shown(screen, "perspective")
+                    )
                 )
                 evidence.finish()
             finally:
                 evidence.stop()
                 screen.selenium.execute_cdp_cmd(
                     "Emulation.setTouchEmulationEnabled", {"enabled": False}
+                )
+
+    def test_a_dense_screen_gets_a_sharp_view(self, camera_screen):
+        """A screen of two device pixels to one gets a view drawn at that
+        density, the cube still answers where it is drawn, and a move to a
+        plainer screen of the same size follows."""
+        screen = camera_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40)
+
+        def density():
+            return scene_js(
+                screen,
+                "const c = S.renderer.domElement;"
+                " return [c.width / c.clientWidth, c.height / c.clientHeight]",
+            )
+
+        with viewport(screen, 1366, 768, scale=2):
+            wait(screen).until(lambda _: density() == pytest.approx([2, 2], abs=0.01))
+            cube_view(screen, [0, 0, 1])
+            camera_settled(screen)
+            assert scene_js(screen, "return S.viewDirection()") == pytest.approx(
+                [0, 0, 1], abs=1e-5
+            )
+            with viewport(screen, 1366, 768):
+                wait(screen).until(
+                    lambda _: density() == pytest.approx([1, 1], abs=0.01)
                 )
 
     def test_face_alignment_projection_and_back(self, camera_screen):

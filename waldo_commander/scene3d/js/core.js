@@ -110,7 +110,20 @@ export class SceneCore {
     this.onRestored = () => this.contextRestored();
     this.canvas.addEventListener("webglcontextlost", this.onLost);
     this.canvas.addEventListener("webglcontextrestored", this.onRestored);
+    this.watchDensity();
     this.resize();
+  }
+
+  // Moving the window to a screen of another density leaves its CSS size as
+  // it was, so the resize observer never hears of it.
+  watchDensity() {
+    this.density?.removeEventListener("change", this.onDensity);
+    this.density = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+    this.onDensity = () => {
+      this.watchDensity();
+      this.resize();
+    };
+    this.density.addEventListener("change", this.onDensity);
   }
 
   // ---- ops from Python --------------------------------------------------
@@ -398,6 +411,8 @@ export class SceneCore {
     const h = this.root.clientHeight;
     this.size = [w, h];
     if (!w || !h) return;
+    // Past 2× a sharper image costs more than it shows.
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.setSize(w, h, false);
     this.labels.setSize(w, h);
     this.applyView();
@@ -498,6 +513,7 @@ export class SceneCore {
     clearTimeout(this.retry);
     clearTimeout(this.restoreTimer);
     this.observer.disconnect();
+    this.density.removeEventListener("change", this.onDensity);
     this.gestures.abort("unmount");
     this.gestures.dispose();
     window.removeEventListener("blur", this.onBlur);
