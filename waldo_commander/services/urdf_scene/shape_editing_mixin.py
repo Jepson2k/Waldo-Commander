@@ -1,8 +1,8 @@
 """Keep-out shape editing in the 3D viewer.
 
-Right-click empty space to place a Box/Sphere/Cylinder keep-out at the
-clicked point; right-click a program-layer shape to select it for editing,
-drag it, attach it to the flange or delete it. Every mutation goes through
+Right-click a program-layer shape to select it for editing, drag it,
+attach it to the flange or delete it; new keep-outs are made in the scene
+panel's card. Every mutation goes through
 ``commander.scene.shapes`` — the same request/readback path a program's
 ``set_shapes`` uses — so the backend push, draft styling and program
 recording all apply unchanged. Installation-layer shapes come from the
@@ -70,13 +70,6 @@ def object_label(shape: Shape) -> str:
 # A released value this close to the authored one (m, rad) is the browser's
 # rounding, not a move.
 _UNMOVED = 1e-6
-
-# Reasonable birth sizes (m) so a fresh shape is visible and grabbable.
-_DEFAULT_DIMS: dict[str, dict[str, float]] = {
-    "box": {"x": 0.1, "y": 0.1, "z": 0.1},
-    "sphere": {"radius": 0.05},
-    "cylinder": {"radius": 0.05, "length": 0.1},
-}
 
 
 class ShapeEditingMixin:
@@ -372,43 +365,6 @@ class ShapeEditingMixin:
                 )
         dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
         dialog.open()
-
-    def _populate_shape_add_menu(self, click_point: tuple[float, float, float]) -> None:
-        """'Add keep-out here' items for a right-click on empty space."""
-        if self._shape_handle() is None:
-            return
-        ui.separator()
-        ui.item("Add Keep-out").classes("font-bold text-sm")
-        for kind in _PLACEABLE:
-            ui.menu_item(
-                f"{kind.capitalize()} here",
-                on_click=lambda k=kind, p=click_point: self._place_shape(k, p),
-            ).mark(f"scene-add-{kind}")
-
-    async def _place_shape(self, kind: str, at: tuple[float, float, float]) -> None:
-        """A default-sized *kind* resting on the floor at *at*, selected."""
-        handle = self._shape_handle()
-        if handle is None or kind not in _PLACEABLE:
-            return
-        dims = dict(_DEFAULT_DIMS[kind])
-        lift = (
-            dims["z"] / 2
-            if kind == "box"
-            else dims["length"] / 2
-            if kind == "cylinder"
-            else dims["radius"]
-        )
-        # To the millimetre, as a position typed into the program would be.
-        x, y, z = (round(float(v), 3) for v in at)
-        shape = _KINDS[kind](
-            name=self._fresh_shape_name(kind),
-            pose=(x, y, z + lift, 0.0, 0.0, 0.0),
-            **dims,
-        )
-        if await self._commit_objects(
-            "Create object", [*handle.shapes, shape], self.object_history.context()
-        ):
-            self._select_objects([f"{SHAPE_PREFIX}{shape.name}"])
 
     def _open_attachment_form(self, name: str, *, detach: bool = False) -> None:
         """Select *name* with its attach, reconcile or detach form open in

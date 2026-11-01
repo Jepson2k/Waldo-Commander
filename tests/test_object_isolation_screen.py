@@ -28,6 +28,7 @@ from tests.helpers.scene_screen import (
     click_object,
     confirmed,
     fill,
+    menu_choice,
     probe,
     program_previewed,
 )
@@ -50,17 +51,20 @@ def _visibility(screen, names):
     )
 
 
-def _isolate_shows_on(screen) -> bool:
-    """Whether the isolate button shows the view isolated."""
-    try:
-        button = marked_element(screen, "object-isolate")
-        return "text-wc-action" in button.get_attribute("class").split()
-    except (NoSuchElementException, StaleElementReferenceException):
-        return False
+def _isolate_shows_on(view) -> bool:
+    """Whether the More menu's isolate item offers to show all, as it does
+    while the view is isolated."""
+
+    def offered() -> bool:
+        item = view._inspector_controls.isolate_text
+        return item is not None and item.text == "Show all"
+
+    return run_in_app(offered)
 
 
 def _press_isolate(screen) -> None:
-    """Press the isolate button from the keyboard."""
+    """Choose the isolate item from the More menu with the keyboard."""
+    click_marked(screen, "object-actions")
 
     def pressed(_) -> bool:
         try:
@@ -74,6 +78,7 @@ def _press_isolate(screen) -> None:
         return True
 
     wait(screen).until(pressed)
+    wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
 
 
 @pytest.mark.browser
@@ -116,7 +121,13 @@ class TestObjectIsolation:
                 wait_for_scene_idle(screen)
                 # Nothing of a hidden selection is in view to isolate.
                 wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
-                click_marked(screen, "object-isolate")
+                click_marked(screen, "object-actions")
+                item = wait(screen).until(
+                    lambda _: marked_element(screen, "object-isolate")
+                )
+                assert item.get_attribute("aria-disabled") == "true"
+                ActionChains(screen.selenium).send_keys(Keys.ESCAPE).perform()
+                wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
                 wait_for_scene_idle(screen)
                 assert not run_in_app(lambda: view._isolated_view)
                 assert "faded" not in _visibility(screen, [s.name for s in shapes])
@@ -137,7 +148,7 @@ class TestObjectIsolation:
                 )
                 try:
                     evidence.capture("01-selected-workcell-1920")
-                    click_marked(screen, "object-isolate")
+                    menu_choice(screen, "object-actions", "object-isolate")
                     wait(screen).until(
                         lambda _: run_in_app(lambda: view._isolated_view)
                     )
@@ -155,7 +166,7 @@ class TestObjectIsolation:
                     np.testing.assert_allclose(
                         waldoctl.commander.status.joints.angles.rad, live, atol=1e-6
                     )
-                    wait(screen).until(lambda _: _isolate_shows_on(screen))
+                    wait(screen).until(lambda _: _isolate_shows_on(view))
                     # A faded object is context, not something to pick: a
                     # click on one is a click on nothing.
                     x, y = probe(screen, "pixelOf", "shape:Surrounding fixture")
@@ -184,7 +195,7 @@ class TestObjectIsolation:
                         "hidden",
                         "shown",
                     ]
-                    click_marked(screen, "object-isolate")
+                    menu_choice(screen, "object-actions", "object-isolate")
                     wait(screen).until(
                         lambda _: run_in_app(lambda: view._isolated_view)
                     )
@@ -231,7 +242,7 @@ class TestObjectIsolation:
                         "hidden",
                         "faded",
                     ]
-                    click_marked(screen, "object-duplicate")
+                    menu_choice(screen, "object-actions", "object-duplicate")
                     confirmed(screen, lambda: len(waldoctl.commander.scene.shapes) == 5)
                     assert _visibility(
                         screen,
@@ -246,7 +257,7 @@ class TestObjectIsolation:
                     with viewport(screen, 1366, 768):
                         wait_for_scene_idle(screen)
                         evidence.capture("05-compact-isolated-1366")
-                        click_marked(screen, "object-isolate")
+                        menu_choice(screen, "object-actions", "object-isolate")
                         wait(screen).until(
                             lambda _: not run_in_app(lambda: view._isolated_view)
                         )
@@ -258,7 +269,7 @@ class TestObjectIsolation:
                         ]
                         evidence.capture("06-show-all-1366")
                     click_object(screen, "shape:Fixture B")
-                    click_marked(screen, "object-isolate")
+                    menu_choice(screen, "object-actions", "object-isolate")
                     wait(screen).until(
                         lambda _: run_in_app(lambda: view._isolated_view)
                     )

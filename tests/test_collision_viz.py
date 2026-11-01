@@ -938,8 +938,10 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
         right_click(user, scene.scene, hits, ground)
         user.find(marker=item).click()
 
-    # Placed at once with a default size, then named in its inspector.
-    menu([], "scene-add-box", [0.4, 0.1, 0.0])
+    # Placed at once with a default size from the scene panel's card, then
+    # named in its inspector.
+    menu([], "scene-create-keepout", [0.4, 0.1, 0.0])
+    user.find(marker="keepout-place").click()
     await _until(
         lambda: handle.confirmed
         and not scene.object_history.busy

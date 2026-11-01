@@ -36,6 +36,7 @@ from tests.helpers.scene_screen import (
     fill,
     gizmo_field,
     hold,
+    menu_choice,
     place_shape,
     probe,
     program_previewed,
@@ -115,7 +116,7 @@ class TestSelectionTransform:
             confirmed(screen, lambda: len(handle.shapes) == 1)
             fill(screen, "object-rz", 20)
             confirmed(screen, lambda: handle.shapes[0].pose[5] > 0.3)
-            click_marked(screen, "object-duplicate")
+            menu_choice(screen, "object-actions", "object-duplicate")
             confirmed(screen, lambda: len(handle.shapes) == 2)
             fill(screen, "object-name", "Fixture B")
             confirmed(screen, lambda: handle.shapes[1].name == "Fixture B")

@@ -9,7 +9,7 @@ from nicegui import ui
 from nicegui.testing.user_interaction import UserInteraction
 
 from tests.helpers.scene_events import Drag, right_click
-from tests.helpers.scene_objects import confirmed, field, select
+from tests.helpers.scene_objects import confirmed, field, new_keepout, select
 from tests.helpers.wait import wait_until
 from tests.test_scene_jog_handles import _open, _start_recording
 from waldo_commander.services import world_files
@@ -54,14 +54,14 @@ async def test_objects_record_undo_reload_and_recover_from_external_edits(
     user.find(marker="scene-close").click()
     assert not panel.is_open
 
-    right_click(user, view.scene, [], [0.40037, 0.09981, 0])
-    user.find(marker="scene-add-box").click()
+    new_keepout(user, view, [0.40037, 0.09981, 0])
     await confirmed(view, lambda: len(handle.shapes) == 1)
     name = handle.shapes[0].name
     assert view._selected_objects == [f"shape:{name}"]
     assert handle.shapes[0].pose[:2] == (0.4, 0.1)
-    # Selecting an object opens the scene panel on it.
+    # The card opened the scene panel, and leaves it on the new object.
     assert panel.is_open
+    assert view._keepout_card is None
     assert listed(user) == [name]
     assert "scene-row--selected" in row(user, name).classes
     assert user.find(marker="object-name").elements.pop().value == name
@@ -211,28 +211,49 @@ async def test_objects_record_undo_reload_and_recover_from_external_edits(
     select(user, view)
     await user.should_not_see(marker="scene-feedback")
 
-    # A drawing chosen from a menu opened before an external change is
-    # refused: the world it was offered for is gone.
-    right_click(user, view.scene, [], [0.4, 0.1, 0])
+    # A face offered for a keep-out is the face as it was right-clicked:
+    # once its object changes elsewhere, nothing is drawn on it.
+    box = handle.shapes[0]
+    UserInteraction(user, {view.scene}, None).trigger(
+        "context",
+        {
+            "epoch": view.scene.gestures.epoch,
+            "gen": 1,
+            "cx": 100,
+            "cy": 100,
+            "hits": [f"shape:{box.name}"],
+            "ground": [0.4, 0.1, 0],
+            "surface": {
+                "id": f"shape:{box.name}",
+                "x": box.pose[0],
+                "y": box.pose[1],
+                "z": box.pose[2] + box.z / 2,
+            },
+        },
+    )
+    user.find(marker="scene-face-keepout").click()
     changed = replace(handle.shapes[0], x=0.3)
     await waldoctl.commander.client.set_shapes([changed, handle.shapes[1]])
     await handle.refresh_from_backend()
     # A readback already under way adopts the change instead of this one.
     assert await wait_until(lambda: handle.shapes[0] == changed, 5)
-    user.find(marker="scene-draw-box").click()
+    user.find(marker="keepout-draw").click()
     await asyncio.sleep(0)
     assert view._drawing is None
+    assert "has changed" in user.find(marker="keepout-feedback").elements.pop().text
     assert handle.shapes[0] == changed
     assert len(handle.shapes) == 2
     assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live)
     assert source_before != textarea.value
 
-    # The scene panel's draw menu draws on the floor of the world as it is now.
+    # The scene panel's Add menu draws on the floor of the world as it is now.
     await confirmed(view)
-    user.find(marker="scene-panel-draw-box").click()
+    user.find(marker="scene-add-keepout").click()
+    assert user.find(marker="keepout-surface").elements.pop().text.startswith("Floor")
+    user.find(marker="keepout-draw").click()
     drawing = view.scene.interaction["shapeDraw"]
     assert view._drawing["primitive"] == "box"
-    assert drawing["label"] == "Floor"
+    assert drawing["quaternion"] == pytest.approx([0, 0, 0, 1])
     UserInteraction(user, {view.scene}, None).trigger(
         "draw_cancel", {"session": drawing["session"]}
     )
@@ -262,14 +283,13 @@ async def test_the_scene_panel_leaves_alone_what_a_press_does_not_change(user):
     await confirmed(view)
     panel = ui_state.scene_panel
     for count, point in enumerate(([0.4, 0.1, 0], [0.4, -0.15, 0]), 1):
-        right_click(user, view.scene, [], point)
-        user.find(marker="scene-add-box").click()
+        new_keepout(user, view, point)
         await confirmed(view, lambda n=count: len(handle.shapes) == n)
     first, second = handle.shapes[0].name, handle.shapes[1].name
     assert view._selected_objects == [f"shape:{second}"]
 
-    # The mode and isolation buttons change in place: the one pressed stays,
-    # with the keyboard focus it was pressed with.
+    # The mode buttons and the isolation item change in place: the one
+    # pressed stays, with the keyboard focus it was pressed with.
     for marker in ("object-mode-resize", "object-isolate"):
         button = user.find(marker=marker).elements.pop()
         user.find(marker=marker).click()
@@ -287,7 +307,8 @@ async def test_the_scene_panel_leaves_alone_what_a_press_does_not_change(user):
     assert "alert" not in panel.tab.props
 
     # Toggling a row the work in hand is not about leaves that work alone.
-    user.find(marker="scene-panel-draw-box").click()
+    user.find(marker="scene-add-keepout").click()
+    user.find(marker="keepout-draw").click()
     drawing = view._drawing
     assert drawing is not None
     user.find(marker=f"scene-lock-{first}").trigger("click.stop")
@@ -321,8 +342,7 @@ async def test_the_scene_panel_leaves_alone_what_a_press_does_not_change(user):
     assert view._selected_objects == [f"shape:{second}"]
     assert panel.is_open
 
-    right_click(user, view.scene, [], [0.4, 0.3, 0])
-    user.find(marker="scene-add-box").click()
+    new_keepout(user, view, [0.4, 0.3, 0])
     await confirmed(view, lambda: len(handle.shapes) == 3)
     third = handle.shapes[-1].name
     select(user, view)
@@ -373,8 +393,7 @@ async def test_object_edit_stays_pending_until_real_readback_and_preserves_new_s
 
     monkeypatch.setattr(client, "shapes", held_readback)
     try:
-        right_click(user, view.scene, [], [0.45, 0, 0])
-        user.find(marker="scene-add-box").click()
+        new_keepout(user, view, [0.45, 0, 0])
         await asyncio.wait_for(entered.wait(), 5)
         assert view.object_history.busy
         assert not handle.confirmed
@@ -404,8 +423,7 @@ async def test_scene_undo_redo_and_new_edits_remain_undoable_as_a_recording_take
     handle = waldoctl.commander.scene
     textarea = await _start_recording(user)
     source = textarea.value
-    right_click(user, view.scene, [], [0.4, 0.1, 0])
-    user.find(marker="scene-add-box").click()
+    new_keepout(user, view, [0.4, 0.1, 0])
     await confirmed(view, lambda: len(handle.shapes) == 1)
     original = handle.shapes[0]
     field(user, "object-x", 500)
@@ -446,8 +464,7 @@ async def test_capture_conversion_invalidates_object_history_and_keeps_live_bloc
     assert await wait_until(lambda: _capture(recorder.session) is not None, 20)
     block = _capture(recorder.session)
 
-    right_click(user, view.scene, [], [0.45, 0, 0])
-    user.find(marker="scene-add-box").click()
+    new_keepout(user, view, [0.45, 0, 0])
     await confirmed(view, lambda: bool(view.object_history.undo_stack))
     shapes = list(waldoctl.commander.scene.shapes)
     real_io_bound = run.io_bound

@@ -43,7 +43,7 @@ class EditingMixin(ShapeEditingMixin):
     built here, and its shape branches call straight into that surface."""
 
     _context_surface: dict | None
-    _populate_draw_menu: Any
+    _open_keepout_card: Any
     _cancel_shape_drawing: Any
     _joint_travel: Any
 
@@ -382,26 +382,21 @@ class EditingMixin(ShapeEditingMixin):
                         use_click_position=False
                     ),
                 ).mark("scene-target-at-robot")
-                with ui.menu_item("Create keep-out", auto_close=False).mark(
-                    "scene-create-keepout"
-                ):
-                    with ui.item_section().props("side"):
-                        ui.icon("chevron_right")
-                    with ui.menu().props(
-                        'anchor="top end" self="top start" auto-close'
-                    ):
-                        self._populate_shape_add_menu(
-                            self._last_click_coords or (0.3, 0.0, 0.0)
-                        )
-                        if ground is not None:
-                            self._populate_draw_menu(ground, self._context_surface)
-                with ui.menu_item("Installation", auto_close=False):
-                    with ui.item_section().props("side"):
-                        ui.icon("chevron_right")
-                    with ui.menu().props(
-                        'anchor="top end" self="top start" auto-close'
-                    ):
-                        self._populate_installation_menu()
+                at = self._context_surface or {
+                    "origin": list(ground or (0.3, 0.0, 0.0)),
+                    "normal": [0.0, 0.0, 1.0],
+                    "label": "Floor",
+                }
+                face = self._context_surface is not None
+                ui.menu_item(
+                    "Add keep-out on this face…" if face else "Add keep-out…",
+                    on_click=lambda p=at: self._open_keepout_card(p),
+                ).mark("scene-face-keepout" if face else "scene-create-keepout")
+                ui.menu_item(
+                    "Add installation…",
+                    on_click=lambda p=at: self._open_keepout_card(p, installation=True),
+                ).mark("scene-create-installation")
+                self._populate_installation_menu()
             if move is not None and path is not None:
                 ui.separator()
                 with ui.menu_item(
@@ -448,11 +443,10 @@ class EditingMixin(ShapeEditingMixin):
                     "scene-teach-surface"
                 )
             if self._context_surface and (shape_name or target_id):
-                with ui.menu_item("Draw keep-out", auto_close=False):
-                    with ui.menu().props(
-                        'anchor="top end" self="top start" auto-close'
-                    ):
-                        self._populate_draw_menu(ground, self._context_surface)
+                ui.menu_item(
+                    "Add keep-out on this face…",
+                    on_click=lambda p=self._context_surface: self._open_keepout_card(p),
+                ).mark("scene-face-keepout")
             from waldo_commander.components.world_library import show_world_library
 
             ui.separator()

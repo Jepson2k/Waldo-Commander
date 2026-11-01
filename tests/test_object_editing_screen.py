@@ -39,6 +39,7 @@ from tests.helpers.scene_screen import (
     fill,
     frame_mm,
     hold,
+    menu_choice,
     object_mode,
     park_scene_pointer,
     place_shape,
@@ -245,7 +246,7 @@ class TestObjectEditing:
             evidence = VisualEvidence(screen, "stl-import")
             try:
                 click_marked(screen, "tab-scene")
-                click_marked(screen, "scene-import-mesh")
+                menu_choice(screen, "scene-add-menu", "scene-import-mesh")
                 upload = settled_element(
                     screen, lambda: marked_element(screen, "mesh-upload")
                 )
@@ -405,7 +406,7 @@ class TestObjectEditing:
                 fill(screen, "object-dim-x", 240)
                 confirmed(screen, lambda: handle.shapes[0].x == 0.24)
                 evidence.capture("04-rotated-resized-1920")
-                click_marked(screen, "object-duplicate")
+                menu_choice(screen, "object-actions", "object-duplicate")
                 confirmed(screen, lambda: len(handle.shapes) == 2)
                 object_mode(screen, "Move")
                 fill(screen, "object-x", 450)

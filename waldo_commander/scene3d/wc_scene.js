@@ -68,6 +68,10 @@ export default {
     clear_inspection(revision) {
       if (revision === this.core.inspection.data?.revision) this.core.inspection.clear();
     },
+    // The scene panel's height for the drawing `session`; "create" makes it.
+    drawing(session, action, height) {
+      this.core.drawingTool.fromPanel(session, action, height);
+    },
     apply(ops) {
       this.core.apply(ops);
     },

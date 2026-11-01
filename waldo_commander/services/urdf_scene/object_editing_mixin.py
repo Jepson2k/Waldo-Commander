@@ -11,7 +11,7 @@ from typing import Any
 from .config import DRAFT_PREFIX
 from .mesh_editing_mixin import MeshEditingMixin
 from waldo_commander.services.fixture_meshes import MESH_PREFIX, FixtureMesh
-from .shape_editing_mixin import _PLACEABLE, RESIZE_AXES, object_label
+from .shape_editing_mixin import RESIZE_AXES, object_label
 
 from nicegui import background_tasks, ui
 from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, param_names
@@ -31,6 +31,9 @@ _DIMENSION_PREFIXES = {"radius": "R", "length": "L"}
 # above one at the panel's top, beside one that may open either way.
 _TIP_ABOVE = 'anchor="top middle" self="bottom middle"'
 _TIP_BESIDE = 'anchor="center left" self="center right"'
+# Where the Add menu's keep-out is placed: in front of the arm, where an
+# imported mesh goes, not on its base.
+_FLOOR = {"origin": [0.3, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "label": "Floor"}
 
 _RESIZE_TIPS = {
     "box": "Resize: drag a face; Shift resizes from the centre",
@@ -63,6 +66,7 @@ class _InspectorControls:
         self.shown: dict[str, Any] = {}
         self.feedback: Any = None
         self.isolate: Any = None
+        self.isolate_text: Any = None
         self.modes: dict[str, Any] = {}
         self.resize_centre: Any = None
         self.attachment: list[Any] = []
@@ -285,6 +289,38 @@ class ObjectEditingMixin(MeshEditingMixin):
         self._object_inspector_key = None
         flat = "flat round dense color=wc-text"
         with panel.tools:
+            with (
+                ui.button(icon="add").props(flat).mark("scene-add-menu") as add,
+                ui.menu().props('anchor="bottom right" self="top right"'),
+            ):
+                for text, icon, action, marker in (
+                    (
+                        "Keep-out…",
+                        "add_box",
+                        lambda: self._open_keepout_card(_FLOOR),
+                        "scene-add-keepout",
+                    ),
+                    (
+                        "Import STL…",
+                        "upload_file",
+                        lambda: self._open_mesh_import(),
+                        "scene-import-mesh",
+                    ),
+                    (
+                        "Workcells…",
+                        "inventory_2",
+                        lambda: show_world_library(self),
+                        "scene-workcells",
+                    ),
+                ):
+                    with (
+                        ui.menu_item(on_click=action).props("dense").mark(marker),
+                        ui.row().classes("items-center no-wrap gap-2"),
+                    ):
+                        ui.icon(icon, size="20px")
+                        ui.label(text)
+            with add:
+                ui.tooltip("Add").props(_TIP_ABOVE)
             self._multi_select_button = (
                 ui.button(icon="library_add_check", on_click=self._toggle_multi_select)
                 .props(flat)
@@ -292,31 +328,6 @@ class ObjectEditingMixin(MeshEditingMixin):
                 .mark("scene-multi-select")
             )
             self._show_multi_select()
-            ui.button(
-                icon="upload_file", on_click=lambda: self._open_mesh_import()
-            ).props(flat).tooltip("Import a fixture mesh (STL)").mark(
-                "scene-import-mesh"
-            )
-            with (
-                ui.button(icon="add_box").props(flat).mark("scene-draw") as draw,
-                ui.menu().props('anchor="bottom right" self="top right"'),
-            ):
-                for kind in _PLACEABLE:
-                    with (
-                        ui.menu_item(on_click=lambda k=kind: self._draw_on_floor(k))
-                        .props("dense")
-                        .mark(f"scene-panel-draw-{kind}"),
-                        ui.row().classes("items-center no-wrap gap-2"),
-                    ):
-                        ui.icon(_KIND_ICONS[kind], size="20px")
-                        ui.label(kind.capitalize())
-            with draw:
-                ui.tooltip("Draw a keep-out on the floor").props(_TIP_ABOVE)
-            ui.button(
-                icon="inventory_2", on_click=lambda: show_world_library(self)
-            ).props(flat).tooltip("Workcells: save, load and insert").mark(
-                "scene-workcells"
-            )
             # The wrapper keeps the reason accessible while Undo is disabled.
             with ui.element("span").classes("inline-flex"):
                 undo = (
@@ -361,11 +372,27 @@ class ObjectEditingMixin(MeshEditingMixin):
         self._show_multi_select()
         self._refresh_object_inspector()
 
-    def _draw_on_floor(self, kind: str) -> None:
-        self._start_shape_drawing(
-            kind,
-            {"origin": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "label": "Floor"},
-            self.object_history.context(),
+    def _close_panel_cards(self) -> None:
+        """The scene panel shows one card at a time over its list."""
+        from waldo_commander.components.world_library import close_world_library
+
+        for card in (self._mesh_import, self._keepout_card):
+            if card is not None:
+                card.close()
+        close_world_library(self)
+
+    def _open_keepout_card(self, plane, *, installation: bool = False) -> None:
+        """Open the scene panel on a new keep-out, or installation shape, to
+        place or draw on *plane*."""
+        from waldo_commander.components.new_keepout import NewKeepout
+
+        panel = self._scene_panel()
+        if panel is None:
+            return
+        self._close_panel_cards()
+        panel.open()
+        self._keepout_card = NewKeepout(
+            self, self._library_host, plane, installation=installation
         )
 
     def _refresh_object_inspector(self, *, reset_values: bool = False) -> None:
@@ -495,25 +522,24 @@ class ObjectEditingMixin(MeshEditingMixin):
                     icon="center_focus_strong",
                     on_click=lambda: self.scene.run_method("camera_action", "focus"),
                 ).props(flat).tooltip("Focus · F").mark("object-focus")
-                controls.isolate = (
-                    ui.button(icon="flip_to_front", on_click=self._toggle_isolation)
-                    .props(flat)
-                    .tooltip("Isolate; again to show all")
-                    .mark("object-isolate")
-                )
-                controls.editable(
-                    ui.button(icon="content_copy", on_click=self._duplicate_objects)
-                    .props(flat)
-                    .tooltip("Duplicate")
-                    .mark("object-duplicate"),
-                    readonly,
-                )
                 with (
                     ui.button(icon="more_vert")
                     .props(flat)
                     .mark("object-actions") as more,
                     ui.menu(),
                 ):
+                    controls.isolate = ui.menu_item(
+                        on_click=self._toggle_isolation
+                    ).mark("object-isolate")
+                    with controls.isolate:
+                        controls.isolate_text = ui.item_section("Isolate")
+                    controls.editable(
+                        ui.menu_item(
+                            "Duplicate", on_click=self._duplicate_objects
+                        ).mark("object-duplicate"),
+                        readonly,
+                    )
+                    ui.separator()
                     hidden = all(k in self._hidden_objects for k, _ in selected)
                     ui.menu_item(
                         "Show" if hidden else "Hide",
@@ -543,33 +569,35 @@ class ObjectEditingMixin(MeshEditingMixin):
                 modes = [("translate", "open_with", "Move and turn with the handles")]
                 if shape.kind in RESIZE_AXES:
                     modes.append(("resize", "open_in_full", _RESIZE_TIPS[shape.kind]))
-                with (
-                    ui.button_group()
-                    .props("unelevated rounded")
-                    .classes("self-start")
-                    .mark("object-transform")
-                ):
-                    for value, icon, tip in modes:
-                        controls.modes[value] = controls.editable(
-                            ui.button(
-                                icon=icon,
-                                on_click=lambda v=value: self._set_object_mode(v),
+                with ui.row().classes("w-full items-center no-wrap gap-0"):
+                    ui.label("Position & rotation").classes("scene-section flex-1")
+                    with (
+                        ui.button_group()
+                        .props("unelevated rounded")
+                        .mark("object-transform")
+                    ):
+                        for value, icon, tip in modes:
+                            controls.modes[value] = controls.editable(
+                                ui.button(
+                                    icon=icon,
+                                    on_click=lambda v=value: self._set_object_mode(v),
+                                )
+                                .props("dense unelevated")
+                                .tooltip(tip)
+                                .mark(f"object-mode-{value}"),
+                                readonly,
                             )
-                            .props("dense unelevated")
-                            .tooltip(tip)
-                            .mark(f"object-mode-{value}"),
-                            readonly,
-                        )
-                    if shape.kind in RESIZE_AXES:
-                        controls.resize_centre = controls.editable(
-                            ui.button(
-                                icon="zoom_out_map", on_click=self._toggle_resize_centre
+                        if shape.kind in RESIZE_AXES:
+                            controls.resize_centre = controls.editable(
+                                ui.button(
+                                    icon="zoom_out_map",
+                                    on_click=self._toggle_resize_centre,
+                                )
+                                .props(flat)
+                                .tooltip("Resize from the centre (or hold Shift)")
+                                .mark("object-resize-centre"),
+                                readonly,
                             )
-                            .props(flat)
-                            .tooltip("Resize from the centre (or hold Shift)")
-                            .mark("object-resize-centre"),
-                            readonly,
-                        )
                 for icon, tip, axes, values, offset, scale in (
                     (
                         "my_location",
@@ -619,11 +647,13 @@ class ObjectEditingMixin(MeshEditingMixin):
 
                             field.on("blur", callback)
                             field.on("keydown.enter", callback)
+                ui.label("Size").classes("scene-section")
                 self._object_dimensions(shape, entity, readonly, controls)
+                ui.label("Collision").classes("scene-section")
                 with ui.row().classes("scene-field-row w-full no-wrap items-center"):
                     collision = (
                         ui.switch(
-                            "Collision",
+                            "Checked",
                             value=shape.collision,
                             on_change=lambda e: self._object_patch(
                                 entity, collision=bool(e.value)
@@ -773,7 +803,7 @@ class ObjectEditingMixin(MeshEditingMixin):
                     f"scene-hide-all-{prefix.rstrip(':')}"
                 )
         if prefix == SHAPE_PREFIX and not shapes:
-            ui.label("Draw one with + above, or right-click the floor").classes(
+            ui.label("Add one with + above, or right-click the floor").classes(
                 "scene-empty"
             )
         for shape in shapes:
@@ -955,8 +985,8 @@ class ObjectEditingMixin(MeshEditingMixin):
             return
         controls.shown["modes"] = state
         if controls.isolate is not None:
-            controls.isolate.props(
-                f"flat round dense color={'wc-action' if self._isolated_view else 'wc-text'}"
+            controls.isolate_text.set_text(
+                "Show all" if self._isolated_view else "Isolate"
             )
             controls.isolate.set_enabled(state[1])
         for value, button in controls.modes.items():

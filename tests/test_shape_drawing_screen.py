@@ -1,15 +1,18 @@
-"""Draw keep-outs on the floor and a tilted primitive face with actual pointers."""
+"""Draw keep-outs on the floor and a tilted primitive face with actual
+pointers, from the scene panel's New keep-out card."""
 
 import numpy as np
 import pytest
 import waldoctl
 from contextlib import suppress
 from scipy.spatial.transform import Rotation
-from selenium.common.exceptions import InvalidArgumentException
+from selenium.common.exceptions import (
+    InvalidArgumentException,
+    StaleElementReferenceException,
+)
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support import expected_conditions as EC
 
 from tests.helpers.browser_helpers import (
     click_marked,
@@ -27,7 +30,9 @@ from tests.helpers.scene_screen import (
     clear_selection,
     confirmed,
     create_shape,
+    keepout_card,
     object_mode,
+    open_scene_panel,
     fill,
     probe,
     program_previewed,
@@ -45,13 +50,15 @@ from waldo_commander.state import ui_state
 
 
 # A free floor point whose surrounding 10 cm square is inside the view with a
-# margin, so a footprint drawn around it stays on screen at any camera.
+# margin and clear of the panels, so a footprint drawn around it stays on
+# screen at any camera.
 _ROOMY_FLOOR_SPOT = """
 const c = getElement(S.root).core, r = c.canvas.getBoundingClientRect();
 const v = new (c.camera.position.constructor)();
 const at = (x, y) => c.pointer.screen(v.set(x, y, 0).project(c.camera));
 const inside = ([sx, sy]) =>
-  sx > r.left + 40 && sx < r.right - 40 && sy > r.top + 40 && sy < r.bottom - 40;
+  sx > r.left + 40 && sx < r.right - 40 && sy > r.top + 40 && sy < r.bottom - 40
+  && !S.pick(Math.round(sx), Math.round(sy)).covered;
 for (let rad = 0.2; rad <= 0.45; rad += 0.05) {
   for (let a = 0; a < 360; a += 15) {
     const t = (a * Math.PI) / 180, x = rad * Math.cos(t), y = rad * Math.sin(t);
@@ -67,10 +74,26 @@ return null;
 
 
 def _draw_floor(screen, kind):
-    wait_for_scene_idle(screen)
+    # The card opens in the scene panel; opened first, the spot chosen is
+    # clear of it.
+    open_scene_panel(screen)
     point = wait(screen).until(lambda _: scene_js(screen, _ROOMY_FLOOR_SPOT))
-    choose(screen, *point[:2], f"Draw {kind.capitalize()}…")
+    choose(screen, *point[:2], "Add keep-out…")
+    keepout_card(screen, kind, "keepout-draw")
     wait(screen).until(lambda _: probe(screen, "drawing")["active"])
+
+
+def _height_field(screen):
+    """The card's height field, once the drawing's height phase enables it."""
+
+    def enabled(_):
+        try:
+            field = marked_element(screen, "keepout-height")
+            return field if field.is_displayed() and field.is_enabled() else False
+        except StaleElementReferenceException:
+            return False
+
+    return wait(screen).until(enabled)
 
 
 def _footprint(screen, points):
@@ -298,26 +321,19 @@ class TestShapeDrawing:
                 x, y = project_local(
                     screen, f"shape:{fixture.name}", [[0, 0, fixture.z / 2]]
                 )[0]
-                choose(screen, x, y, "Draw Cylinder…")
-                # The card follows the drawing the app sends, a frame later.
+                choose(screen, x, y, "Add keep-out on this face…")
                 wait(screen).until(
-                    lambda _: probe(screen, "drawing")["active"]
-                    and "Face of Tilted fixture"
-                    in screen.selenium.find_element(
-                        By.CSS_SELECTOR, ".wc-draw-readout"
-                    ).text
+                    lambda _: marked_element(screen, "keepout-surface").text
+                    == "Face of Tilted fixture"
                 )
+                keepout_card(screen, "cylinder", "keepout-draw")
+                wait(screen).until(lambda _: probe(screen, "drawing")["active"])
                 _footprint(screen, [[0, 0], [0.04, 0]])
                 ActionChains(screen.selenium).release().perform()
                 wait(screen).until(
                     lambda _: probe(screen, "drawing")["phase"] == "height"
                 )
-                # The readout is placed with the frame after the phase changes.
-                height = wait(screen).until(
-                    EC.element_to_be_clickable(
-                        (By.CSS_SELECTOR, ".wc-draw-readout input")
-                    )
-                )
+                height = _height_field(screen)
                 height.send_keys(Keys.CONTROL, "a", Keys.NULL, "60")
                 evidence.capture("01-face-cylinder-height-1920")
                 count = len(handle.shapes)
@@ -372,12 +388,7 @@ class TestShapeDrawing:
                 wait(screen).until(
                     lambda _: probe(screen, "drawing")["phase"] == "height"
                 )
-                # The readout is placed with the frame after the phase changes.
-                height = wait(screen).until(
-                    EC.element_to_be_clickable(
-                        (By.CSS_SELECTOR, ".wc-draw-readout input")
-                    )
-                )
+                height = _height_field(screen)
                 height.send_keys(Keys.CONTROL, "a", Keys.NULL, "75")
                 evidence.capture("01-top-view-numeric-height-1366")
                 count = len(handle.shapes)
@@ -402,7 +413,7 @@ class TestShapeDrawing:
                 screen, "shape-drawing/touch", synchronized_frames=True
             )
             try:
-                wait_for_scene_idle(screen)
+                open_scene_panel(screen)
                 point = wait(screen).until(lambda _: probe(screen, "floorSpot"))
                 _touch(screen, "touchStart", [(1, *point[:2])])
                 wait(screen).until(
@@ -411,9 +422,10 @@ class TestShapeDrawing:
                     ).is_displayed()
                 )
                 _touch(screen, "touchEnd", [])
+                # Add keep-out… in the menu, then Draw in the card it opens.
                 for touch, marker in (
                     (2, "scene-create-keepout"),
-                    (3, "scene-draw-box"),
+                    (3, "keepout-draw"),
                 ):
                     item = wait(screen).until(
                         lambda _, m=marker: (

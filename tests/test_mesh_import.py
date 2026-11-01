@@ -10,7 +10,13 @@ from stl import Mode, mesh
 from waldoctl.shapes import Box, ShapeWorld
 
 from tests.helpers.scene_events import Drag, right_click
-from tests.helpers.scene_objects import confirmed, field, fixture_stl, select
+from tests.helpers.scene_objects import (
+    confirmed,
+    field,
+    fixture_stl,
+    new_keepout,
+    select,
+)
 from tests.helpers.wait import reload_page, wait_until
 from tests.test_scene_jog_handles import _open
 from waldo_commander.common.theme import SceneColors
@@ -351,8 +357,7 @@ async def test_fixture_identity_proxy_deletion_and_partial_asset_recovery(
     proxy = fixture.proxy_names[0]
     await user.should_see(marker="object-isolate")
 
-    right_click(user, view.scene, [], [0.5, 0.2, 0])
-    user.find(marker="scene-add-box").click()
+    new_keepout(user, view, [0.5, 0.2, 0])
     await confirmed(view, lambda: len(handle.shapes) == 3)
     field(user, "object-name", "mesh:Fixture")
     await confirmed(view, lambda: any(s.name == "mesh:Fixture" for s in handle.shapes))

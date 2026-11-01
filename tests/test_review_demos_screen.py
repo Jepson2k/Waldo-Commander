@@ -1040,7 +1040,8 @@ class TestReviewDemos:
         video = DemoVideo(screen, "stl-import")
         video.jump(1400, 700)
         try:
-            video.caption("Import a fixture STL from the scene panel")
+            video.caption("Import a fixture STL from the scene panel's Add menu")
+            _press_mark(video, "scene-add-menu")
             _press_mark(video, "scene-import-mesh")
             upload = _settled(screen, lambda: marked_element(screen, "mesh-upload"))
             video.glide(_center(upload), 0.4)
@@ -1465,6 +1466,8 @@ class TestReviewDemos:
         handle = waldoctl.commander.scene
         run_in_app(lambda: setattr(handle, "shapes", []))
         confirmed(screen, lambda: not handle.shapes)
+        # The card opens in the scene panel; open, it leaves the view still.
+        _open_scene_panel(screen)
         scene_js(screen, "S.setCameraPose(arguments[0])", PLACEMENT_VIEW)
         wait_for_scene_idle(screen)
         x, y, *_ = wait(screen).until(lambda _: probe(screen, "floorSpot"))
@@ -1474,16 +1477,23 @@ class TestReviewDemos:
         video.pause(0.6)
         video.glide((x, y), 1.0)
         video.context_click()
-        submenu = _menu_item(screen, "Create keep-out")
+        item = _menu_item(screen, "Add keep-out…")
         video.pause(0.5)
-        video.glide(_center(submenu), 0.7)
-        video.click()
-        item = _menu_item(screen, "Box here")
-        video.pause(0.4)
-        video.glide(_center(item), 0.6)
-        video.click(settle=lambda: confirmed(screen, lambda: len(handle.shapes) == 1))
+        video.glide(_center(item), 0.7)
+        video.click(
+            settle=lambda: _settled(
+                screen, lambda: marked_element(screen, "keepout-place")
+            )
+        )
+        video.caption("The scene panel holds the new keep-out: place a box there")
+        video.pause(1.0)
+        _press_mark(
+            video,
+            "keepout-place",
+            settle=lambda: confirmed(screen, lambda: len(handle.shapes) == 1),
+        )
         name = handle.shapes[0].name
-        video.caption("It is placed and selected; the scene panel opens with it")
+        video.caption("It is placed and selected")
         video.pause(1.8)
         ax, ay, dx, dy = wait(screen).until(
             lambda _: probe(screen, "arrowTip", f"shape:{name}")
@@ -1504,26 +1514,32 @@ class TestReviewDemos:
         handle = waldoctl.commander.scene
         run_in_app(lambda: setattr(handle, "shapes", []))
         confirmed(screen, lambda: not handle.shapes)
+        # The card opens in the scene panel; open, it leaves the view still.
+        _open_scene_panel(screen)
         scene_js(screen, "S.setCameraPose(arguments[0])", PLACEMENT_VIEW)
         wait_for_scene_idle(screen)
         x, y, *_ = wait(screen).until(lambda _: probe(screen, "floorSpot"))
         video = DemoVideo(screen, "keepout-draw-box")
         video.jump(*_outward((x, y), _arm_pixel(screen)))
-        video.caption("Right-click the floor, Create keep-out, Draw Box")
+        video.caption("Right-click the floor, Add keep-out…, then Draw")
         video.pause(0.6)
         video.glide((x, y), 1.0)
         video.context_click()
-        submenu = _menu_item(screen, "Create keep-out")
+        item = _menu_item(screen, "Add keep-out…")
         video.pause(0.5)
-        video.glide(_center(submenu), 0.7)
-        video.click()
-        item = _menu_item(screen, "Draw Box")
-        video.pause(0.4)
-        video.glide(_center(item), 0.6)
+        video.glide(_center(item), 0.7)
         video.click(
+            settle=lambda: _settled(
+                screen, lambda: marked_element(screen, "keepout-draw")
+            )
+        )
+        video.pause(0.4)
+        _press_mark(
+            video,
+            "keepout-draw",
             settle=lambda: wait(screen).until(
                 lambda _: probe(screen, "drawing")["active"]
-            )
+            ),
         )
         start, end = probe(screen, "drawingPlane", [[-0.06, -0.05], [0.06, 0.05]])
         video.caption("Drag out its footprint")
@@ -1623,13 +1639,22 @@ class TestReviewDemos:
         video.pause(0.8)
 
         def isolate(done) -> None:
-            video.glide(_center(marked_element(screen, "object-isolate")), 0.8)
-            video.click(settle=lambda: wait(screen).until(lambda _: done()))
+            video.glide(_center(marked_element(screen, "object-actions")), 0.8)
+            video.click(
+                settle=lambda: _settled(
+                    screen, lambda: marked_element(screen, "object-isolate")
+                )
+            )
+            _press_mark(
+                video,
+                "object-isolate",
+                settle=lambda: wait(screen).until(lambda _: done()),
+            )
 
-        video.caption("Isolate them from the scene panel: the rest fades out")
+        video.caption("Isolate them from the scene panel's More menu: the rest fades")
         isolate(lambda: run_in_app(lambda: view._isolated_view))
         video.pause(2.0)
-        video.caption("The same button shows everything again")
+        video.caption("The same menu shows everything again")
         isolate(lambda: not run_in_app(lambda: view._isolated_view))
         video.pause(1.5)
         video.save()
@@ -1801,20 +1826,26 @@ class TestReviewDemos:
                 )
             )
             video.pause(0.6)
-            video.caption("+ draws a new keep-out on the floor")
-            video.glide(_center(marked_element(screen, "scene-draw")), 0.8)
+            video.caption("+ adds a keep-out: draw one on the floor")
+            video.glide(_center(marked_element(screen, "scene-add-menu")), 0.8)
             video.click()
-            item = _settled(
-                screen, lambda: marked_element(screen, "scene-panel-draw-box")
-            )
+            item = _settled(screen, lambda: marked_element(screen, "scene-add-keepout"))
             video.pause(0.3)
             video.glide(_center(item), 0.6)
             video.click(
-                settle=lambda: wait(screen).until(
-                    lambda _: probe(screen, "drawing")["active"]
+                settle=lambda: _settled(
+                    screen, lambda: marked_element(screen, "keepout-draw")
                 )
             )
-            start, end = probe(screen, "drawingPlane", [[0.3, 0.2], [0.38, 0.28]])
+            _press_mark(
+                video,
+                "keepout-draw",
+                settle=lambda: wait(screen).until(
+                    lambda _: probe(screen, "drawing")["active"]
+                ),
+            )
+            # From the card's point on the floor, 300 mm in front of the arm.
+            start, end = probe(screen, "drawingPlane", [[0, 0.2], [0.08, 0.28]])
             video.glide(tuple(start), 0.8)
             video.press()
             video.glide(tuple(end), 2.0)

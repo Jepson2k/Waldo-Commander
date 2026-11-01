@@ -467,9 +467,6 @@ def assert_dial_readable(screen, joint=0):
     assert not problems, problems
 
 
-KEEPOUT_SUBMENUS = ("Create keep-out", "Draw keep-out")
-
-
 def choose(screen: Screen, x: float, y: float, item: str) -> list[str]:
     """Right-click at (x, y), pick ``item`` from the scene's menu and return
     the items the menu offered."""
@@ -479,7 +476,6 @@ def choose(screen: Screen, x: float, y: float, item: str) -> list[str]:
     actions.perform()
 
     offered: list[str] = []
-    clicked: set[str] = set()
 
     def shown_item(driver):
         shown = [
@@ -488,23 +484,6 @@ def choose(screen: Screen, x: float, y: float, item: str) -> list[str]:
             if e.is_displayed()
         ]
         texts = [e.text.strip() for e in shown]
-        if item not in texts and (item.endswith(" here") or item.startswith("Draw ")):
-            # Empty space files keep-outs under "Create keep-out", an object's
-            # face under "Draw keep-out".
-            submenu = next(
-                (
-                    e
-                    for e, text in zip(shown, texts)
-                    if text.split("\n")[0] in KEEPOUT_SUBMENUS
-                ),
-                None,
-            )
-            # Clicked again before it opens, the submenu would close; a menu
-            # filled in anew has a new entry to click.
-            if submenu is not None and submenu.id not in clicked:
-                submenu.click()
-                clicked.add(submenu.id)
-                return False
         # The menu fills in after it opens; pick from it once it stops changing.
         settled, offered[:] = texts == offered, texts
         if not settled or item not in texts:
@@ -543,6 +522,58 @@ def choose(screen: Screen, x: float, y: float, item: str) -> list[str]:
     # The app closes it, after whatever the item set off.
     wait(screen, 10).until(lambda _: no_visible(screen, ".q-menu"))
     return offered
+
+
+def menu_choice(screen, opener: str, marker: str) -> None:
+    """Open the menu of the button marked ``opener`` and choose the item
+    marked ``marker``."""
+    click_marked(screen, opener)
+    click_marked(screen, marker)
+    # A closing menu still covers what is under it.
+    wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+
+
+def open_scene_panel(screen) -> None:
+    """Open the scene panel, and let the view settle beside it."""
+    if not run_in_app(lambda: ui_state.scene_panel.is_open):
+        click_marked(screen, "tab-scene")
+    wait(screen).until(lambda _: marked_element(screen, "scene-tree").is_displayed())
+    wait_for_scene_idle(screen)
+
+
+def keepout_card(screen, kind: str, button: str) -> None:
+    """In the scene panel's New keep-out card, pick ``kind`` and press
+    ``button``: keepout-place or keepout-draw."""
+    label = kind.capitalize()
+
+    def picked(_) -> bool:
+        try:
+            toggle = marked_element(screen, "keepout-shape")
+            option = next(
+                (
+                    b
+                    for b in toggle.find_elements(By.CSS_SELECTOR, "button")
+                    if b.text.strip() == label
+                ),
+                None,
+            )
+            if option is None:
+                return False
+            option.click()
+        except (
+            ElementClickInterceptedException,
+            ElementNotInteractableException,
+            NoSuchElementException,
+            StaleElementReferenceException,
+        ):
+            return False
+        return run_in_app(
+            lambda: (card := ui_state.urdf_scene._keepout_card) is not None
+            and card.shape.value == kind
+        )
+
+    wait(screen).until(picked)
+    click_marked(screen, button)
 
 
 def end_target_edit(screen) -> None:
@@ -633,10 +664,12 @@ def confirmed(screen, predicate=lambda: True):
 
 
 def place_shape(screen, kind, x, y, name=None):
-    """Place a default ``kind`` keep-out at viewport (x, y) from the menu,
-    wait until it is selected and, given ``name``, rename it. Its name."""
+    """Place a default ``kind`` keep-out at viewport (x, y) from the menu's
+    Add keep-out… card, wait until it is selected and, given ``name``, rename
+    it. Its name."""
     before = {s.name for s in waldoctl.commander.scene.shapes}
-    choose(screen, x, y, f"{kind.capitalize()} here")
+    choose(screen, x, y, "Add keep-out…")
+    keepout_card(screen, kind, "keepout-place")
     placed = poll(
         lambda: next(
             (

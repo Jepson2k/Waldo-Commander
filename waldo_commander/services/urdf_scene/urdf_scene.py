@@ -504,6 +504,7 @@ class UrdfScene(
         self.scene.client.on_disconnect(self.cancel_target_edit)
         self.scene.client.on_disconnect(lambda: self._cancel_shape_drawing())
         self.scene.on("draw_cancel", self._cancel_shape_drawing)
+        self.scene.on("draw_phase", self._on_draw_phase)
         self.scene.gestures.authorized = self._has_control
         self._register_gestures()
         self._push_interaction()

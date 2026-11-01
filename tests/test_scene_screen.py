@@ -57,6 +57,7 @@ from tests.helpers.scene_screen import (
     grab_ring,
     joint_deg,
     joint_settled,
+    keepout_card,
     poll,
     place_shape,
     probe,
@@ -1275,8 +1276,9 @@ class TestScene:
                 x, y, *floor = poll(
                     lambda: probe(screen, "floorSpot"), 5.0, "floor near the arm"
                 )
-                offered = choose(screen, x, y, "Box here")
+                offered = choose(screen, x, y, "Add keep-out…")
                 assert any(i.startswith("Place Target Here") for i in offered), offered
+                keepout_card(screen, "box", "keepout-place")
                 (name,) = poll(
                     lambda: set(shapes()) - set(before), 5.0, "the new keep-out"
                 )
@@ -1284,6 +1286,13 @@ class TestScene:
                     "the keep-out is not where the floor was clicked"
                 )
                 obj = f"shape:{name}"
+                # Placed once the controller confirms it, it is selected.
+                poll(
+                    lambda: run_in_app(lambda: ui_state.urdf_scene._selected_objects)
+                    == [obj],
+                    5.0,
+                    "the new keep-out selected",
+                )
                 # Move it by its gizmo's arrow; the drop is its new pose.
                 clear_selection(screen)
                 centre = settled_pixel(screen, obj)
