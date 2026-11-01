@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import waldoctl
 from scipy.spatial.transform import Rotation
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -292,11 +293,21 @@ class TestCameraTools:
                 evidence.capture("02-corner-view-touch-1024")
                 evidence.stop()
                 scene_js(screen, "S.renderer.forceContextLoss()")
-                notice = screen.selenium.find_element(By.CSS_SELECTOR, ".wc-scene-lost")
-                wait(screen, 10).until(
-                    lambda _: notice.value_of_css_property("cursor") == "pointer"
-                )
-                notice.click()
+
+                def offered():
+                    """The lost-context notice once it offers a remount; the
+                    scene drawing it again replaces the element."""
+                    try:
+                        notice = screen.selenium.find_element(
+                            By.CSS_SELECTOR, ".wc-scene-lost"
+                        )
+                        if notice.value_of_css_property("cursor") == "pointer":
+                            return notice
+                    except StaleElementReferenceException:
+                        pass
+                    return None
+
+                wait(screen, 10).until(lambda _: offered()).click()
                 wait(screen, 15).until(
                     lambda _: screen.selenium.find_elements(
                         By.CSS_SELECTOR, ".wc-scene[data-ready]:not([data-gl])"

@@ -2650,7 +2650,6 @@ class ControlPanel:
                 )
                 num.set_enabled(not ui_state.editing_target)
                 self._joint_readouts.append(num)
-                num.tooltip("Live robot joint angle")
                 _num_ref: dict[str, Any] = {
                     "focused": False,
                     "el": num,
