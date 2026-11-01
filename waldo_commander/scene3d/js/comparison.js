@@ -83,8 +83,10 @@ export class Comparison {
   status({state,reason}) {
     if(this.data && state==="ready")return;
     if(this.data && state!=="ready")this.reset();
-    this.bar.hidden=state==="unavailable" || state==="ready";
-    this.summary.textContent=`Prediction · ${{pending:"Computing…",failed:"Failed",stale:"Stale"}[state] || ""}`;
+    // A pass in flight shows on the playback bar; until one lands there is
+    // nothing to compare.
+    this.bar.hidden=state!=="failed";
+    this.summary.textContent="Prediction · Failed";
     this.duration.textContent=reason;
     for(const item of [this.modeInput,this.previous,this.next,this.maximum,this.settings])item.hidden=true;
     this.core.requestRender();

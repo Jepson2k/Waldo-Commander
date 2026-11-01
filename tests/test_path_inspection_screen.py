@@ -25,6 +25,7 @@ from tests.helpers.scene_screen import (
     camera_kept,
     camera_pose,
     path_point,
+    poll,
     program_previewed,
     settled_element,
     teleport_jog_pose,
@@ -106,6 +107,55 @@ def _matches_record(screen):
 
 @pytest.mark.browser
 class TestPathInspection:
+    def test_the_prediction_bar_shows_only_a_result(self, class_screen):
+        """The physics-prediction bar stays out of the view until it has a
+        comparison or a failure to show: not for the starting program, which
+        is never previewed, and not while a pass runs."""
+        from waldo_commander.services.path_visualizer import path_visualizer
+        from waldo_commander.state import simulation_state
+
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40)
+        teleport_jog_pose()
+        screen.selenium.execute_script(
+            """const bar=document.querySelector(".wc-comparison-bar");
+            const seen=window.__comparisonShown=[];
+            const note=()=>{if(!bar.hidden)seen.push(bar.textContent);};
+            new MutationObserver(note).observe(bar,{attributes:true,childList:true,subtree:true,characterData:true});
+            note();"""
+        )
+
+        def told() -> bool:
+            inspection = ui_state.urdf_scene.inspection
+            status = path_visualizer.prediction_status(
+                waldoctl.commander.programs.active
+            )
+            return inspection._status_key is not None and inspection._status_key[
+                2
+            ] == tuple(status.items())
+
+        def relearn() -> None:
+            path_visualizer._predicted_diverges.clear()
+            simulation_state.notify_changed()
+
+        run_in_app(relearn)
+        poll(lambda: run_in_app(told), 10.0, "the scene told the prediction status")
+        wait_for_scene_idle(screen)
+        with program_previewed(PATH_PROGRAM):
+            poll(
+                lambda: run_in_app(
+                    lambda: "parol6" in path_visualizer._predicted_diverges
+                    and not path_visualizer.physics_in_flight(
+                        waldoctl.commander.programs.active.id
+                    )
+                ),
+                60.0,
+                "the predicted pass",
+            )
+            poll(lambda: run_in_app(told), 10.0, "the scene told the outcome")
+            wait_for_scene_idle(screen)
+        assert screen.selenium.execute_script("return window.__comparisonShown") == []
+
     def test_swept_volume_menu_endpoints_cleanup_and_invalidation(self, class_screen):
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)
