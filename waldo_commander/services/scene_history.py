@@ -143,6 +143,21 @@ class SceneHistory:
         else:
             program.source = source
 
+    def amend_source(self, source: str) -> None:
+        """Make *source* part of the last edit, so one undo takes back both."""
+        self.validate()
+        if (
+            not self.undo_stack
+            or self.expected != self.context()
+            or motion_recorder.scene_edit_busy
+            or is_any_program_recording()
+        ):
+            raise ValueError("The scene or program changed since that move")
+        edit = self.undo_stack[-1]
+        self._set_source(edit.program, source)
+        self.undo_stack[-1] = replace(edit, source_after=self.document()[1])
+        self.expected = self.context()
+
     @staticmethod
     def validate_names(shapes: tuple[Shape, ...]) -> None:
         """Refuse empty or repeated names; a shape checks its own geometry

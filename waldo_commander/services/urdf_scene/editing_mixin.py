@@ -324,9 +324,9 @@ class EditingMixin(ShapeEditingMixin):
             elif target_id:
                 target = self._find_target_by_id(target_id)
                 if target:
-                    ui.item(f"Target (Line {target.line_number})").classes(
-                        "font-bold text-sm"
-                    )
+                    ui.item(
+                        f"Target (Line {target.line_number}){self._stored_in(target)}"
+                    ).classes("font-bold text-sm").mark("target-menu-title")
                     ui.separator()
                     tid = target_id
 
@@ -709,6 +709,22 @@ class EditingMixin(ShapeEditingMixin):
     def _program_text() -> str | None:
         textarea = ui_state.active_textarea
         return None if textarea is None else str(textarea.value or "")
+
+    def _stored_in(self, target) -> str:
+        """Where *target* is written: in world coordinates, which stay put
+        when a fixture moves, in a setup frame, or as joint angles."""
+        program = waldoctl.commander.programs.active
+        if program is None:
+            return ""
+        try:
+            binding = target_binding(
+                program.source, target.line_number, len(self.joint_names)
+            )
+        except ValueError:
+            return ""
+        if binding.storage is not None:
+            return f" · in {binding.storage.name}"
+        return " · joint angles" if binding.kind == "joints" else " · in world"
 
     def _write_target_edit(self) -> None:
         """Write where the target is now into its line, as one undoable edit.

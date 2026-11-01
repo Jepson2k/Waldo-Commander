@@ -1,5 +1,6 @@
 """Authored object transactions through the real UI and fake-serial controller."""
 
+import ast
 import asyncio
 from dataclasses import replace
 
@@ -491,3 +492,57 @@ async def test_capture_conversion_invalidates_object_history_and_keeps_live_bloc
         assert "replay_demonstration" in textarea.value
     finally:
         release.set()
+
+
+@pytest.mark.integration
+async def test_moving_an_object_offers_to_carry_the_targets_left_on_it(user):
+    """A target written in world coordinates stays put when the object it
+    sat on moves. The scene panel says so, and carries it along on request,
+    in the same undo step as the move."""
+    from waldo_commander.components.simulation_engine import simulation
+
+    view = await _open(user)
+    await confirmed(view)
+    handle = waldoctl.commander.scene
+    # A workpiece standing under the first target, 2 cm below it; the
+    # second target is clear of it.
+    new_keepout(user, view, [0.0, 0.28, 0])
+    await confirmed(view, lambda: len(handle.shapes) == 1)
+    user.find(marker="object-collision").elements.pop().set_value(False)
+    await confirmed(view, lambda: not handle.shapes[0].collision)
+    field(user, "object-dim-z", 230)
+    await confirmed(view, lambda: handle.shapes[0].z == pytest.approx(0.23))
+    field(user, "object-z", 115)
+    await confirmed(view, lambda: handle.shapes[0].pose[2] == pytest.approx(0.115))
+    name = handle.shapes[0].name
+    textarea = ui_state.active_textarea
+    source = (
+        "from parol6 import RobotClient\n"
+        "rbt = RobotClient()\n"
+        "rbt.move_l(pose=[0, 280, 250, 90, 0, 90], speed=0.5)\n"
+        "rbt.move_l(pose=[100, 280, 250, 90, 0, 90], speed=0.5)\n"
+    )
+    textarea.value = source
+    await simulation.run_simulation()
+    program = waldoctl.commander.programs.active
+    assert await wait_until(lambda: len(program.dry_run.targets) == 2, 5)
+
+    field(user, "object-x", 50)
+    await confirmed(view, lambda: handle.shapes[0].pose[0] == pytest.approx(0.05))
+    await user.should_see(f"1 target on {name} stayed where it was")
+    assert textarea.value == source
+    user.find(marker="stranded-show").click()
+    user.find(marker="stranded-move").click()
+    assert await wait_until(lambda: textarea.value != source, 3)
+    moved, kept = (
+        ast.literal_eval(call.value.keywords[0].value)
+        for call in ast.parse(textarea.value).body[2:]
+    )
+    assert moved == pytest.approx([50, 280, 250, 90, 0, 90], abs=1e-6)
+    assert kept == [100, 280, 250, 90, 0, 90]
+    await user.should_not_see(marker="stranded-text")
+
+    # One undo takes back the move and what it carried.
+    user.find(marker="object-undo").click()
+    await confirmed(view, lambda: handle.shapes[0].pose[0] == pytest.approx(0.0))
+    assert await wait_until(lambda: textarea.value == source, 3)

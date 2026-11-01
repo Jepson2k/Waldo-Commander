@@ -13,11 +13,18 @@ from .mesh_editing_mixin import MeshEditingMixin
 from waldo_commander.services.fixture_meshes import MESH_PREFIX, FixtureMesh
 from .shape_editing_mixin import RESIZE_AXES, object_label
 
+import waldoctl
 from nicegui import background_tasks, ui
 from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, param_names
 
-from waldo_commander.common.theme import OPACITY
+from waldo_commander.common.theme import OPACITY, hex_of
 from waldo_commander.services.scene_history import SceneHistory
+from waldo_commander.services.stranded_targets import (
+    Stranded,
+    carried,
+    moves,
+    stranded,
+)
 from waldo_commander.state import ui_state
 
 # What the scene panel's list shows each kind of object as.
@@ -82,6 +89,8 @@ class _InspectorControls:
 
 class ObjectEditingMixin(MeshEditingMixin):
     inspection: Any
+    joint_names: list[str]
+    _target_objects: dict[str, dict[str, Any]]
     _install_ground: set[str]
     _current_tool: str
     cancel_target_edit: Any
@@ -106,6 +115,11 @@ class ObjectEditingMixin(MeshEditingMixin):
         self._object_mode = "translate"
         self._isolated_view = False
         self._object_renames = ()
+        # Targets the last move left behind, against the source it read.
+        self._stranded: list[Stranded] = []
+        self._stranded_source = ""
+        self._stranded_key: tuple | None = None
+        self._stranded_host = None
 
     def _set_object_renames(self, renames):
         self._object_renames = renames
@@ -354,6 +368,10 @@ class ObjectEditingMixin(MeshEditingMixin):
                 .classes("text-xs text-wc-warning")
                 .mark("fixture-recovery-feedback")
             )
+            self._stranded_host = (
+                ui.row().classes("w-full items-center no-wrap").mark("stranded-note")
+            )
+            self._stranded_key = None
             self._library_host = ui.column().classes("w-full gap-0")
             self._object_tree = (
                 ui.column().classes("scene-tree w-full").mark("scene-tree")
@@ -444,6 +462,7 @@ class ObjectEditingMixin(MeshEditingMixin):
             if history.invalidated and not program_undo
             else "Undo scene edit · Ctrl+Z"
         )
+        self._show_stranded()
         self._refresh_object_tree(handle, panel)
         if any(isinstance(s, FixtureMesh) for _, s in selected):
             self._fixture_inspector(selected, status)
@@ -1051,8 +1070,12 @@ class ObjectEditingMixin(MeshEditingMixin):
         self, label, shapes, revision, *, renames=(), draft=None, meshes=None
     ):
         refused = False
+        # A note about a move before this edit no longer fits the history.
+        self._stranded = []
+        before = tuple(self._shape_handle().shapes)
+        meshes_before = self.fixture_meshes
         try:
-            for current in self._shape_handle().shapes:
+            for current in before:
                 if (
                     f"{SHAPE_PREFIX}{current.name}" in self._locked_objects
                     and current not in shapes
@@ -1087,6 +1110,7 @@ class ObjectEditingMixin(MeshEditingMixin):
             )
             if self.object_history.expected == self.object_history.context():
                 self._shape_move_document = self.object_history.document()
+            self._note_stranded(before, meshes_before)
             return True
         except (ValueError, TypeError) as error:
             refused = True
@@ -1097,6 +1121,78 @@ class ObjectEditingMixin(MeshEditingMixin):
         finally:
             self._push_interaction()
             self._refresh_object_inspector(reset_values=refused)
+
+    def _note_stranded(self, before, meshes_before) -> None:
+        """Note the program's world-pinned targets that sat on what moved."""
+        program = waldoctl.commander.programs.active
+        if program is None:
+            return
+        moved = moves(
+            before, self._shape_handle().shapes, meshes_before, self.fixture_meshes
+        )
+        self._stranded_source = program.source
+        self._stranded = stranded(
+            moved,
+            [(t.id, t.line_number) for t in program.dry_run.targets],
+            program.source,
+            len(self.joint_names),
+        )
+
+    def _show_stranded(self) -> None:
+        host = self._stranded_host
+        if host is None or host.is_deleted:
+            return
+        program = waldoctl.commander.programs.active
+        left = (
+            self._stranded
+            if program is not None and program.source == self._stranded_source
+            else []
+        )
+        names = sorted({item.move.name for item in left})
+        key = (len(left), tuple(names))
+        if key == self._stranded_key:
+            return
+        self._stranded_key = key
+        host.clear()
+        host.set_visibility(bool(left))
+        if not left:
+            return
+        count = len(left)
+        with host:
+            ui.label(
+                f"{count} target{'s' if count > 1 else ''} on {', '.join(names)}"
+                f" stayed where {'they were' if count > 1 else 'it was'}"
+            ).classes("text-xs text-wc-warning flex-1").mark("stranded-text")
+            ui.button(
+                f"Move {'them' if count > 1 else 'it'} too",
+                on_click=self._carry_stranded,
+            ).props("flat dense no-caps color=wc-text").tooltip(
+                "Move with the object, as part of the same undo step"
+            ).mark("stranded-move")
+            ui.button("Show", on_click=self._flash_stranded).props(
+                "flat dense no-caps color=wc-text"
+            ).mark("stranded-show")
+
+    def _carry_stranded(self) -> None:
+        program = waldoctl.commander.programs.active
+        left = self._stranded
+        self._stranded = []
+        if program is not None and left and program.source == self._stranded_source:
+            try:
+                self.object_history.amend_source(
+                    carried(program.source, left, len(self.joint_names))
+                )
+            except ValueError as error:
+                self.object_history.feedback = str(error)
+        self._refresh_object_inspector()
+
+    def _flash_stranded(self) -> None:
+        markers = [
+            self._target_objects[item.target_id]["marker"]
+            for item in self._stranded
+            if item.target_id in self._target_objects
+        ]
+        self.scene.fx.alarm(markers, hex_of("warning"))
 
     async def _object_patch(self, key, **changes):
         shape = self._object_shape(key)

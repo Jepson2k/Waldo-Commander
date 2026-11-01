@@ -53,6 +53,9 @@ async def test_target_storage_frame_rewrite_edit_undo_and_setup_relocation(
     async def edit():
         target = await preview()
         right_click(user, urdf.scene, [f"target:{target.id}"])
+        # The menu says where the target is written.
+        stored = "fixture" if "Pose(" in textarea.value else "world"
+        await user.should_see(f"Target (Line {target.line_number}) · in {stored}")
         user.find(marker="scene-edit-target").click()
         assert urdf._editing_unified_target
         assert urdf._edit_line == target.line_number
