@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from nicegui.testing import Screen
 
 FPS = 30
+#: The browser's input API's button masks.
+_BUTTONS = {"left": 1, "right": 2}
 #: How much slower than the video real time runs while a demo records.
 SLOWDOWN = 10
 ROOT = Path(".scene-evidence") / "demos"
@@ -44,11 +46,22 @@ if (!window.__demo) {
   caption.style.cssText = 'position:fixed;left:50%;bottom:72px;transform:translateX(-50%);'
     + 'padding:10px 18px;border-radius:999px;background:var(--wc-surface);'
     + 'color:var(--wc-text);border:1px solid var(--wc-glass-border);'
-    + 'font:500 20px/1.3 system-ui,sans-serif;white-space:nowrap;pointer-events:none;'
+    + 'font:500 20px/1.3 var(--wc-font-sans);white-space:nowrap;pointer-events:none;'
     + 'z-index:10001';
   caption.hidden = true;
-  document.body.append(pointer, caption);
-  window.__demo = {pointer, caption};
+  const title = document.createElement('div');
+  title.style.cssText = 'position:fixed;inset:0;display:flex;flex-direction:column;'
+    + 'align-items:center;justify-content:center;gap:14px;background:var(--wc-scene-bg);'
+    + 'color:var(--wc-text);font-family:var(--wc-font-sans);pointer-events:none;'
+    + 'z-index:10002';
+  const heading = document.createElement('div');
+  heading.style.cssText = 'font:600 48px/1.2 var(--wc-font-sans);letter-spacing:-0.02em';
+  const text = document.createElement('div');
+  text.style.cssText = 'font:400 22px/1.4 var(--wc-font-sans);color:var(--wc-text-muted)';
+  title.append(heading, text);
+  title.hidden = true;
+  document.body.append(pointer, caption, title);
+  window.__demo = {pointer, caption, title, heading, text};
 }
 """
 
@@ -57,6 +70,14 @@ const d = window.__demo, [x, y, pressed] = arguments;
 d.pointer.style.left = x + 'px';
 d.pointer.style.top = y + 'px';
 d.pointer.style.background = pressed ? 'var(--wc-action)' : 'transparent';
+"""
+
+_TITLE = """
+const d = window.__demo, [heading, text, opacity] = arguments;
+d.heading.textContent = heading || '';
+d.text.textContent = text || '';
+d.title.style.opacity = opacity;
+d.title.hidden = !heading;
 """
 
 _CAPTION = """
@@ -81,13 +102,15 @@ class DemoVideo:
     #: The video being recorded, which a failed demo leaves unsaved.
     current: DemoVideo | None = None
 
-    def __init__(self, screen: Screen, name: str) -> None:
+    def __init__(self, screen: Screen, name: str, root: Path = ROOT) -> None:
         DemoVideo.current = self
         self.screen = screen
         self.name = name
+        self.root = root
         self.frames: list[bytes] = []
         self.at = (0.0, 0.0)
         self.pressed = False
+        self.button = "left"
         screen.selenium.execute_script(_OVERLAY)
         # Real time runs about ten times slower than the video while it is
         # recorded, so the hover grace is stretched by as much; otherwise a
@@ -122,6 +145,17 @@ class DemoVideo:
         """Say what the next steps do; None takes the caption away."""
         self.screen.selenium.execute_script(_CAPTION, text)
 
+    def title(self, heading: str, text: str = "", seconds: float = 2.5) -> None:
+        """A title card over the app, held for ``seconds``, then faded out."""
+        self.screen.selenium.execute_script(_TITLE, heading, text, 1)
+        self.frame()
+        self.pause(seconds)
+        steps = round(0.5 * FPS)
+        for k in range(1, steps + 1):
+            self.screen.selenium.execute_script(_TITLE, heading, text, 1 - k / steps)
+            self.frame()
+        self.screen.selenium.execute_script(_TITLE, None, None, 1)
+
     # ---- the pointer --------------------------------------------------------
 
     def _mouse(
@@ -149,7 +183,7 @@ class DemoVideo:
     def _move(self, x: float, y: float) -> None:
         self.at = (x, y)
         if self.pressed:
-            self._mouse("mouseMoved", "left", 1)
+            self._mouse("mouseMoved", self.button, _BUTTONS[self.button])
         else:
             self._mouse("mouseMoved", "none", 0)
 
@@ -193,15 +227,37 @@ class DemoVideo:
                 return True
         return until is None
 
-    def press(self) -> None:
+    def press(self, button: str = "left") -> None:
         self.pressed = True
-        self._mouse("mousePressed", "left", 1, 1)
+        self.button = button
+        self._mouse("mousePressed", button, _BUTTONS[button], 1)
         self.frame()
 
     def release(self, settle: Callable[[], object] | None = None) -> None:
         self.pressed = False
-        self._mouse("mouseReleased", "left", 0, 1)
+        self._mouse("mouseReleased", self.button, 0, 1)
         self.frame(settle)
+
+    def scroll(
+        self, delta: float, seconds: float, settle: Callable[[], object] | None = None
+    ) -> None:
+        """Turn the wheel by ``delta`` pixels (positive: toward the user)
+        over ``seconds``, a frame per notch."""
+        steps = max(1, round(seconds * FPS))
+        x, y = self.at
+        for _ in range(steps):
+            self.screen.selenium.execute_cdp_cmd(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": "mouseWheel",
+                    "x": x,
+                    "y": y,
+                    "deltaX": 0,
+                    "deltaY": delta / steps,
+                    "pointerType": "mouse",
+                },
+            )
+            self.frame(settle)
 
     def click(
         self, settle: Callable[[], object] | None = None, *, shift: bool = False
@@ -332,7 +388,7 @@ class DemoVideo:
     # ---- output -------------------------------------------------------------
 
     def save(self, suffix: str = "") -> Path:
-        """Encode the frames as ``.scene-evidence/demos/<name><suffix>.mp4``."""
+        """Encode the frames as ``<root>/<name><suffix>.mp4``."""
         DemoVideo.current = None
         scene_js(
             self.screen,
@@ -343,8 +399,8 @@ class DemoVideo:
         assert ffmpeg, "ffmpeg is needed to encode review videos"
         assert self.frames, "a demo with no frames"
         self.caption(None)
-        ROOT.mkdir(parents=True, exist_ok=True)
-        out = ROOT / f"{self.name}{suffix}.mp4"
+        self.root.mkdir(parents=True, exist_ok=True)
+        out = self.root / f"{self.name}{suffix}.mp4"
         subprocess.run(
             [
                 ffmpeg,
@@ -376,3 +432,28 @@ class DemoVideo:
             timeout=max(120.0, len(self.frames) * 0.5),
         )
         return out
+
+
+TUTORIALS = Path(".scene-evidence") / "tutorials"
+
+
+class Tutorial(DemoVideo):
+    """A tutorial video: a title card, a caption read before each step is
+    shown, and a hold at the end. Slower than a review demo, for someone
+    seeing the feature for the first time."""
+
+    def __init__(self, screen: Screen, name: str, heading: str, text: str) -> None:
+        super().__init__(screen, name, TUTORIALS)
+        self.title(heading, text)
+
+    def step(self, caption: str, read: float = 1.0) -> None:
+        """Say what comes next, and hold while it is read."""
+        self.caption(caption)
+        self.frame()
+        self.pause(read)
+
+    def finish(self) -> Path:
+        self.caption(None)
+        self.frame()
+        self.pause(1.5)
+        return self.save()

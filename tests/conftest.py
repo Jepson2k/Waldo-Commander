@@ -479,6 +479,27 @@ def class_screen(
         os.environ.pop("NICEGUI_SCREEN_TEST_PORT", None)
 
 
+@pytest.fixture
+def demo_screen(class_screen: "Screen") -> Generator["Screen", None, None]:
+    """The app for a recorded video (a review demo or a tutorial): 1920 ×
+    1080, the arm at its jog pose, no objects, the camera given back after."""
+    from tests.helpers.browser_helpers import run_in_app, viewport
+    from tests.helpers.demo_video import DemoVideo
+    from tests.helpers.scene_screen import at_start, camera_kept, confirmed
+    from tests.helpers.wait import screen_wait_for_scene_ready
+
+    screen_wait_for_scene_ready(class_screen, timeout_s=40)
+    at_start(class_screen)
+    # Objects an earlier recording left would crowd the floor and view.
+    run_in_app(lambda: setattr(waldoctl.commander.scene, "shapes", []))
+    confirmed(class_screen, lambda: not waldoctl.commander.scene.shapes)
+    with viewport(class_screen, 1920, 1080), camera_kept(class_screen):
+        yield class_screen
+    # A recording that failed keeps what it took, to show where it went wrong.
+    if DemoVideo.current is not None and DemoVideo.current.frames:
+        DemoVideo.current.save("-failed")
+
+
 def _clear_world() -> None:
     """Empty the controller's world: it outlives the page, so objects an
     earlier class placed would crowd this one's floor, and enough of them
@@ -664,8 +685,12 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
-    """The review demos only record; they run under --evidence alone."""
-    if collection_path.name == "test_review_demos_screen.py":
+    """The review demos and tutorials only record; they run under --evidence
+    alone."""
+    if (
+        collection_path.name == "test_review_demos_screen.py"
+        or collection_path.parent.name == "tutorials"
+    ):
         return not config.getoption("evidence") or None
     return None
 
