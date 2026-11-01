@@ -1376,9 +1376,16 @@ class TestReviewDemos:
 
                 wait(screen, 10).until(matches)
 
-            # From partway along line 7, clear of the arm, to the path's end.
+            # From partway along line 7, where nothing covers the path, to its end.
             first = next(i for i, b in enumerate(record["blocks"]) if b["line"] == 7)
-            points = []
+            grab = wait(screen).until(
+                lambda _: scene_js(
+                    screen,
+                    "return S.pathGrab(0, arguments[0], 0.25)",
+                    record["blocks"][first]["command"],
+                )
+            )
+            points = [(grab[0], grab[1])]
             for i, block in enumerate(record["blocks"][first:]):
                 pixels = scene_js(
                     screen, "return S.pathPixels(0, arguments[0])", block["command"]
@@ -1386,7 +1393,7 @@ class TestReviewDemos:
                 if not pixels or len(pixels) < 2:
                     continue
                 if i == 0:
-                    pixels = pixels[len(pixels) // 10 :]
+                    pixels = [p for p in pixels if p[2] > grab[2]]
                 points += [(p[0], p[1]) for p in pixels[:: max(1, len(pixels) // 40)]]
             video = DemoVideo(screen, "path-scrub")
             video.jump(*_outward(points[0], _arm_pixel(screen)))
