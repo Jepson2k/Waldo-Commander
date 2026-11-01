@@ -1391,9 +1391,8 @@ class ControlPanel:
         approvals and the one-time hardware-consent floor). Driven by the
         1 Hz ping; the mode and Take control sit in the footer's chip.
 
-        Parented at the page root: the overlay-card's ``backdrop-filter``
-        creates a containing block that would trap these ``position:fixed``
-        overlays inside the panel instead of the viewport."""
+        Parented at the page root, so these ``position:fixed`` overlays span
+        the viewport, not the panel."""
         with self._ui_client.content:
             self._build_control_indicator_elements()
 

@@ -42,12 +42,12 @@ const AXIS_RADIUS = 0.022;
 // Each face: the direction it is seen from, and its right and up as its
 // label reads.
 export const FACES = [
-  { label: "FRONT", n: [0, -1, 0], r: [1, 0, 0], u: [0, 0, 1] },
-  { label: "BACK", n: [0, 1, 0], r: [-1, 0, 0], u: [0, 0, 1] },
-  { label: "RIGHT", n: [1, 0, 0], r: [0, 1, 0], u: [0, 0, 1] },
-  { label: "LEFT", n: [-1, 0, 0], r: [0, -1, 0], u: [0, 0, 1] },
-  { label: "TOP", n: [0, 0, 1], r: [1, 0, 0], u: [0, 1, 0] },
-  { label: "BOTTOM", n: [0, 0, -1], r: [1, 0, 0], u: [0, -1, 0] },
+  { label: "Front", n: [0, -1, 0], r: [1, 0, 0], u: [0, 0, 1] },
+  { label: "Back", n: [0, 1, 0], r: [-1, 0, 0], u: [0, 0, 1] },
+  { label: "Right", n: [1, 0, 0], r: [0, 1, 0], u: [0, 0, 1] },
+  { label: "Left", n: [-1, 0, 0], r: [0, -1, 0], u: [0, 0, 1] },
+  { label: "Top", n: [0, 0, 1], r: [1, 0, 0], u: [0, 1, 0] },
+  { label: "Bottom", n: [0, 0, -1], r: [1, 0, 0], u: [0, -1, 0] },
 ];
 
 // The faces in the order a box geometry's groups are: +x, -x, +y, -y, +z, -z.

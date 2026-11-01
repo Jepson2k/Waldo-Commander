@@ -169,8 +169,8 @@ def inject_panel_css() -> None:
 .scene-name .q-field__native { font-weight: 600; }
 .scene-field-row { gap: 4px; }
 .scene-field-icon { flex-shrink: 0; width: 22px; color: var(--wc-text-muted); }
-.scene-field { background: var(--wc-well); border-radius: var(--wc-radius-sm); padding: 0 6px; font-variant-numeric: tabular-nums; }
-.scene-field .q-field__prefix { padding-right: 4px; color: var(--wc-text-muted); font-weight: 600; }
+.scene-field { background: var(--wc-well); border-radius: var(--wc-radius-sm); padding: 0 4px; font-variant-numeric: tabular-nums; }
+.scene-field .q-field__prefix { padding-right: 2px; color: var(--wc-text-muted); font-weight: 600; }
 .scene-field.axis-x .q-field__prefix { color: var(--wc-axis-x-text); }
 .scene-field.axis-y .q-field__prefix { color: var(--wc-axis-y-text); }
 .scene-field.axis-z .q-field__prefix { color: var(--wc-axis-z-text); }
