@@ -107,17 +107,22 @@ def _matches_record(screen):
 
 @pytest.mark.browser
 class TestPathInspection:
-    def test_the_prediction_bar_shows_only_a_result(self, class_screen):
-        """The physics-prediction bar stays out of the view until it has a
-        comparison or a failure to show: not for the starting program, which
-        is never previewed, and not while a pass runs."""
+    def test_the_prediction_bar_shows_only_a_difference(self, class_screen):
+        """The physics-prediction bar shows only when the predicted path
+        differs from the ideal one: not for the starting program, which is
+        never previewed, not while a pass runs, not for a backend whose
+        prediction is its plan, and not for a prediction within the
+        thresholds."""
+        from tests.test_predicted_preview import _pair
         from waldo_commander.services.path_visualizer import path_visualizer
+        from waldo_commander.services.preview_segments import segments_from_record
         from waldo_commander.state import simulation_state
 
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)
         teleport_jog_pose()
-        screen.selenium.execute_script(
+        driver = screen.selenium
+        driver.execute_script(
             """const bar=document.querySelector(".wc-comparison-bar");
             const seen=window.__comparisonShown=[];
             const note=()=>{if(!bar.hidden)seen.push(bar.textContent);};
@@ -126,17 +131,50 @@ class TestPathInspection:
         )
 
         def told() -> bool:
-            inspection = ui_state.urdf_scene.inspection
+            key = ui_state.urdf_scene.inspection._status_key
             status = path_visualizer.prediction_status(
                 waldoctl.commander.programs.active
             )
-            return inspection._status_key is not None and inspection._status_key[
-                2
-            ] == tuple(status.items())
+            return key is not None and key[2] == tuple(status.items())
 
         def relearn() -> None:
             path_visualizer._predicted_diverges.clear()
             simulation_state.notify_changed()
+
+        def predict(lag: float) -> None:
+            tab = waldoctl.commander.programs.active
+            dry = tab.dry_run
+            commanded, predicted = _pair(
+                waldoctl.commander.status.joints.angles.rad, lag=lag
+            )
+            dry.commanded = commanded
+            dry.path_segments = segments_from_record(commanded, [])
+            dry.predicted = predicted
+            dry.predicted_revision = dry.commanded_revision
+            path_visualizer._predicted_diverges["parol6"] = True
+            path_visualizer._prediction_status[tab.id] = (dry.revision, "ready", "")
+            simulation_state.notify_changed()
+
+        def bar_after(lag: float) -> str | None:
+            inspection = ui_state.urdf_scene.inspection
+            before = run_in_app(lambda: inspection.generation)
+            run_in_app(lambda: predict(lag))
+
+            def compared() -> bool:
+                generation = run_in_app(lambda: inspection.generation)
+                state = scene_js(screen, "return S.inspection()")
+                return (
+                    generation > before
+                    and state["revision"] == generation
+                    and state["comparison"]["state"] == "ready"
+                )
+
+            poll(compared, 20.0, "the comparison")
+            wait_for_scene_idle(screen)
+            return driver.execute_script(
+                'const bar=document.querySelector(".wc-comparison-bar");'
+                "return bar.hidden?null:bar.textContent"
+            )
 
         run_in_app(relearn)
         poll(lambda: run_in_app(told), 10.0, "the scene told the prediction status")
@@ -154,7 +192,15 @@ class TestPathInspection:
             )
             poll(lambda: run_in_app(told), 10.0, "the scene told the outcome")
             wait_for_scene_idle(screen)
-        assert screen.selenium.execute_script("return window.__comparisonShown") == []
+            assert driver.execute_script("return window.__comparisonShown") == []
+            try:
+                assert bar_after(0.002) is None, "a prediction within the thresholds"
+                shown = bar_after(0.02)
+                assert shown is not None and "deviation" in shown
+            finally:
+                run_in_app(
+                    lambda: path_visualizer._predicted_diverges.update(parol6=False)
+                )
 
     def test_swept_volume_menu_endpoints_cleanup_and_invalidation(self, class_screen):
         screen = class_screen

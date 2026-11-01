@@ -23,8 +23,11 @@ rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
 """
 
 
-def _pair(q_rad, rows: int = 30) -> tuple[waldoctl.TickIndex, waldoctl.TickIndex]:
-    """A commanded record and a predicted one that lags it."""
+def _pair(
+    q_rad, rows: int = 30, lag: float = 0.02
+) -> tuple[waldoctl.TickIndex, waldoctl.TickIndex]:
+    """A commanded record and a predicted one that lags it by up to *lag*
+    radians on every joint."""
     t = np.linspace(0.0, 1.0, rows, dtype=np.float32)
     joints = np.tile(np.asarray(q_rad, dtype=np.float32)[:6], (rows, 1))
     tcp = np.zeros((rows, 6), dtype=np.float32)
@@ -43,9 +46,7 @@ def _pair(q_rad, rows: int = 30) -> tuple[waldoctl.TickIndex, waldoctl.TickIndex
             digest=digest,
         )
 
-    return record(joints + t[:, None] * 0.02, b"commanded"), record(
-        joints, b"predicted"
-    )
+    return record(joints + t[:, None] * lag, b"commanded"), record(joints, b"predicted")
 
 
 @pytest.mark.integration
