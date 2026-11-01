@@ -841,7 +841,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             ui_state.io_page.build()
 
         with ui.tab_panel("gripper").classes(
-            "gap-2 overlay-card gripper-panel overflow-hidden"
+            "gap-2 overlay-card gripper-panel overflow-x-hidden overflow-y-auto"
         ) as gripper_panel_container:
             gripper_content_built = False
 

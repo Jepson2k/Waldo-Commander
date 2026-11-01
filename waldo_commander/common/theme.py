@@ -717,7 +717,8 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
             "minWidth": 378,
             "minHeight": 310,
             "defaultWidth": 378,
-            "defaultHeight": 310,
+            # Tall enough for the chart, the status and the sliders below them.
+            "defaultHeight": 450,
             "cameraWidth": 660,
             "cameraHeight": 675,
             "group": "top",

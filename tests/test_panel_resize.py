@@ -456,3 +456,66 @@ class TestProgramColumn:
             lambda _: (r := js(screen, measure))["topBottom"] <= r["bottomTop"] + 1
             and r
         )
+
+
+@pytest.mark.browser
+class TestGripperPanel:
+    def test_the_gripper_panel_opens_with_its_controls_in_view(
+        self, class_screen: "Screen"
+    ) -> None:
+        """Opened at its default size with an electric gripper fitted, the
+        gripper panel shows its chart, its status and its sliders whole:
+        nothing is cut off below its bottom edge."""
+        import asyncio
+
+        import waldoctl
+        from nicegui import core
+
+        screen = class_screen
+        wait_ready(screen, timeout=10)
+        js(screen, "PanelResize.clearAllSizes()")
+
+        def select(key: str) -> None:
+            async def run() -> None:
+                client = waldoctl.commander.client
+                assert await client.wait_command(
+                    await client.select_tool(key), timeout=10
+                )
+
+            asyncio.run_coroutine_threadsafe(run(), core.loop).result(20)
+
+        select("SSG-48")
+        try:
+            # A tab click while the panel's tool is still arriving can miss; a
+            # tab never closes its own panel, so click until it is up.
+            def opened(_):
+                shown = js(
+                    screen,
+                    "return !!document.querySelector('.gripper-panel')?.offsetParent",
+                )
+                if not shown:
+                    marked_element(screen, "tab-gripper").click()
+                return shown
+
+            wait(screen, 15).until(opened)
+            measure = """
+                const p = document.querySelector('.gripper-panel');
+                const r = p.getBoundingClientRect();
+                const sliders = [...p.querySelectorAll('.q-slider')]
+                    .map(s => s.getBoundingClientRect()).filter(s => s.height);
+                return {bottom: r.bottom, scroll: p.scrollHeight, client: p.clientHeight,
+                        sliders: sliders.map(s => s.bottom)};
+            """
+            panel = wait(screen).until(
+                lambda _: (m := js(screen, measure))["sliders"] and m
+            )
+            assert len(panel["sliders"]) >= 2, panel
+            assert all(b <= panel["bottom"] for b in panel["sliders"]), panel
+            assert panel["scroll"] <= panel["client"] + 1, panel
+        finally:
+            select("NONE")
+            if js(
+                screen,
+                "return !!document.querySelector('.gripper-panel')?.offsetParent",
+            ):
+                close_panel(screen, "gripper-panel")
