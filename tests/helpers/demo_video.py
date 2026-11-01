@@ -274,6 +274,28 @@ class DemoVideo:
         self._mouse("mouseReleased", "left", 0, 1, modifiers=8)
         self.frame(settle)
 
+    def quick_click(self, settle: Callable[[], object] | None = None) -> None:
+        """A click as quick as a user's, about 60 ms down: no frame between
+        press and release, where a press held across a frame's capture would
+        count as a hold."""
+        x, y = self.at
+        for kind, buttons in (("mousePressed", 1), ("mouseReleased", 0)):
+            if buttons == 0:
+                time.sleep(0.06)
+            self.screen.selenium.execute_cdp_cmd(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": kind,
+                    "x": x,
+                    "y": y,
+                    "button": "left",
+                    "buttons": buttons,
+                    "clickCount": 1,
+                    "pointerType": "mouse",
+                },
+            )
+        self.frame(settle)
+
     def context_click(self) -> None:
         self._mouse("mousePressed", "right", 2, 1)
         self._mouse("mouseReleased", "right", 0, 1)
@@ -301,6 +323,25 @@ class DemoVideo:
         """Press one key (a character or a selenium ``Keys`` value)."""
         ActionChains(self.screen.selenium).send_keys(key).perform()
         self.frame(settle)
+
+    def hold_key(self, key: str, seconds: float) -> None:
+        """Hold a letter key down for ``seconds`` of real time, recorded live:
+        a held key repeats, and the app acts on it until it comes up."""
+        event = {
+            "key": key,
+            "code": f"Key{key.upper()}",
+            "windowsVirtualKeyCode": ord(key.upper()),
+        }
+        self.screen.selenium.execute_cdp_cmd(
+            "Input.dispatchKeyEvent", {"type": "keyDown", "text": key, **event}
+        )
+        try:
+            self.live(seconds)
+        finally:
+            self.screen.selenium.execute_cdp_cmd(
+                "Input.dispatchKeyEvent", {"type": "keyUp", **event}
+            )
+        self.frame()
 
     def chord(
         self, modifier: str, key: str, settle: Callable[[], object] | None = None
