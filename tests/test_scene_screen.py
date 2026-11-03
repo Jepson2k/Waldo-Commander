@@ -515,7 +515,7 @@ def _program_previewed(source: str) -> Iterator[list[str]]:
 
     def previewing() -> bool:
         return (
-            simulation._simulation_debounce_timer is not None
+            bool(simulation._simulation_debounce_timers)
             or simulation._physics_timer is not None
         )
 

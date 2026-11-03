@@ -141,6 +141,7 @@ class RobotState(ChangeNotifierMixin):
     # All joints homed, from the status stream. Seeds dry-run previews so an
     # unhomed robot's preview mirrors the controller's planned-motion gate.
     homed: bool = True
+    motion_profile: str | None = None
     # Last calibration confirmed by Commander. The shared status protocol
     # does not expose the backend's calibration latch.
     gripper_calibrated: bool = False
@@ -167,6 +168,7 @@ class RobotState(ChangeNotifierMixin):
         self.torque_time_series.clear()
         self.speeds[:] = 0.0
         self.homed = True
+        self.motion_profile = None
         self.gripper_calibrated = False
         self.controller_session = None
         self.standing_error = None

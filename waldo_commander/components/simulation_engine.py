@@ -74,7 +74,7 @@ class SimulationEngine:
     """
 
     def __init__(self) -> None:
-        self._simulation_debounce_timer: ui.timer | None = None
+        self._simulation_debounce_timers: dict[str, ui.timer] = {}
         self._debounce_delay: float = 1.0  # seconds of idle before running
         self._physics_timer: ui.timer | None = None
         # Longer, deliberately. Planning is milliseconds and belongs
@@ -85,9 +85,9 @@ class SimulationEngine:
     def cleanup(self) -> None:
         """Per-page cleanup — cancel any pending debounced simulation so it
         doesn't fire against a dead client."""
-        if self._simulation_debounce_timer is not None:
-            self._simulation_debounce_timer.cancel(with_current_invocation=True)
-            self._simulation_debounce_timer = None
+        for timer in self._simulation_debounce_timers.values():
+            timer.cancel(with_current_invocation=True)
+        self._simulation_debounce_timers.clear()
         self._cancel_physics()
 
     def _cancel_physics(self) -> None:
@@ -249,20 +249,21 @@ class SimulationEngine:
     def schedule_debounced_simulation(self, tab_id: str | None = None) -> None:
         """Schedule a debounced simulation run when code changes.
 
-        Cancels any pending *or running* simulation and schedules a new one
-        after the debounce delay.  ``cancel(with_current_invocation=True)``
+        Cancels this program's pending *or running* simulation and schedules
+        a new one after the debounce delay.  ``cancel(with_current_invocation=True)``
         aborts both the debounce sleep and an in-progress simulation
-        subprocess, so edits never pile up stale simulations.
+        subprocess, so edits never pile up stale simulations. Another
+        program's run is left to land, or its preview would stay stale.
         """
         if tab_id is None:
             tab_id = waldoctl.commander.programs.active_id
         if not tab_id:
             return
 
-        if self._simulation_debounce_timer is not None:
+        superseded = self._simulation_debounce_timers.pop(tab_id, None)
+        if superseded is not None:
             logger.debug("DEBOUNCE: Cancelling pending/running simulation")
-            self._simulation_debounce_timer.cancel(with_current_invocation=True)
-            self._simulation_debounce_timer = None
+            superseded.cancel(with_current_invocation=True)
         # The edit retires whatever physics was running or queued: it
         # describes a program that no longer exists — and the revision
         # says so, so a pass already past cancelling lands against nothing.
@@ -298,21 +299,22 @@ class SimulationEngine:
                 logger.debug("DEBOUNCE: Starting simulation...")
                 await self.run_simulation(tab_id=tab_id)
                 logger.debug("DEBOUNCE: Simulation completed successfully")
-                self.schedule_physics_simulation(tab_id)
+                if tab_id == waldoctl.commander.programs.active_id:
+                    self.schedule_physics_simulation(tab_id)
             except asyncio.CancelledError:
                 logger.debug("DEBOUNCE: Simulation cancelled by newer edit")
             except Exception as e:
                 logger.error("Auto-simulation failed: %s", e, exc_info=True)
                 ui.notify(f"Simulation error: {e}", color="negative", timeout=3000)
             finally:
-                if self._simulation_debounce_timer is my_timer:
-                    self._simulation_debounce_timer = None
+                if self._simulation_debounce_timers.get(tab_id) is my_timer:
+                    del self._simulation_debounce_timers[tab_id]
 
         logger.debug(
             "DEBOUNCE: Scheduling new timer with delay=%.3fs", self._debounce_delay
         )
         my_timer = ui.timer(self._debounce_delay, run_simulation_quietly, once=True)
-        self._simulation_debounce_timer = my_timer
+        self._simulation_debounce_timers[tab_id] = my_timer
 
     def check_position_changed(self) -> None:
         """Periodically check if robot position changed and re-run path preview."""
@@ -323,7 +325,7 @@ class SimulationEngine:
         if (
             is_any_program_running()
             or waldoctl.commander.status.editing_mode
-            or self._simulation_debounce_timer is not None
+            or self._simulation_debounce_timers
             or playback_coordination.sim_pose_override
             or is_playback_active
         ):
