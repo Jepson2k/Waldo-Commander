@@ -132,7 +132,9 @@ def test_a_predicted_record_plays_its_own_rows_at_the_same_point_of_each_command
     early = 2 * dt
     late = commanded.duration_s - 2 * dt
     assert tl.predicted_row(early) == commanded.row_at(early)
-    assert tl.predicted_row((first.rows - 1) * dt) == first.rows - 1
+    # Rows are sampled mid-row: a time on a row boundary can floor to the
+    # row before it.
+    assert tl.predicted_row((first.rows - 0.5) * dt) == first.rows - 1
     assert tl.predicted_row(late) == commanded.row_at(late) + settle
     sample = tl.sample(late)
     assert sample.segment_index == 1
@@ -146,7 +148,7 @@ def test_a_predicted_record_plays_its_own_rows_at_the_same_point_of_each_command
     block = tl.sample_objects(early)["block"]
     assert block.physics
     assert block.pose[0] == pytest.approx(float(poses[commanded.row_at(early), 0]))
-    assert "block" not in tl.sample_objects((lost - settle) * dt)
+    assert "block" not in tl.sample_objects((lost - settle + 0.5) * dt)
     assert Timeline.from_record(commanded, segments).sample_objects(early) == {}
 
 

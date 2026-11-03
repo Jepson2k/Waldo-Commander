@@ -15,7 +15,8 @@ def stored_motion_profile(robot: Robot) -> str:
     stored = app.storage.general.get("motion_profile")
     if stored in profiles:
         return stored
-    return "TOPPRA" if "TOPPRA" in profiles else profiles[0]
+    # The backend lists its own startup default first.
+    return profiles[0]
 
 
 def preview_motion_profile(robot: Robot) -> str:

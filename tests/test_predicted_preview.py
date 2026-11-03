@@ -276,6 +276,9 @@ with RobotClient() as rbt:
         ui.select, next(iter(user.find(marker="select-motion-profile").elements))
     )
 
+    # The backend lists its startup profile first; reset_state returns to it.
+    startup = ui_state.active_robot.motion_profiles[0]
+
     async def reported(profile: str) -> None:
         assert await wait_until(
             lambda: robot_state.motion_profile == profile
@@ -285,8 +288,8 @@ with RobotClient() as rbt:
         )
 
     try:
-        assert await client.select_profile("TOPPRA") == 1
-        await reported("TOPPRA")
+        assert await client.select_profile(startup) == 1
+        await reported(startup)
         assert await wait_until(
             lambda: program.dry_run.commanded_revision == program.dry_run.revision,
             timeout_s=30,
@@ -319,13 +322,13 @@ with RobotClient() as rbt:
         ), "The controller profile changed during the run but its preview stayed stale"
 
         assert await client.reset_state() == 1
-        await reported("TOPPRA")
+        await reported(startup)
         assert await wait_until(
             lambda: program.dry_run.commanded is not None
             and abs(program.dry_run.commanded.duration_s - baseline.duration_s) < 1e-6,
             timeout_s=30,
-        ), "reset_state must restore the preview's TOPPRA timing"
+        ), "reset_state must restore the preview's startup-profile timing"
     finally:
         if is_any_program_running():
             await script_exec.stop()
-        await client.select_profile("TOPPRA")
+        await client.select_profile(startup)
