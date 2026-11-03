@@ -462,7 +462,7 @@ async def test_a_take_selects_the_tool_on_the_arm_and_undo_restores_the_programs
         # The preview applies the program's first tool to the arm; let it do
         # that before another tool goes on.
         assert await wait_until(
-            lambda: simulation._simulation_debounce_timer is None, timeout_s=15
+            lambda: not simulation._simulation_debounce_timers, timeout_s=15
         )
         index = await client.select_tool(key)
         assert await client.wait_command(index, timeout=5)

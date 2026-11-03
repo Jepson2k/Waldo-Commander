@@ -185,7 +185,7 @@ if os.environ.get("WALDO_STEP_SESSION"):
     program = waldoctl.commander.programs.active
     assert program is not None
     assert await wait_until(
-        lambda: simulation._simulation_debounce_timer is None
+        lambda: not simulation._simulation_debounce_timers
         and simulation._physics_timer is None,
         timeout_s=30,
     )
