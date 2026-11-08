@@ -22,6 +22,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from nicegui import Client, core
 
 from tests.helpers.browser_helpers import (
+    click_marked,
     click_tab,
     close_panel,
     focus_editor,
@@ -31,6 +32,7 @@ from tests.helpers.browser_helpers import (
     viewport,
 )
 from tests.helpers.browser_session import no_visible, wait, window_size
+from tests.helpers.scene_screen import open_scene_panel
 from tests.helpers.scene_surface import SCENE_ROOT, frames, scene_js
 from tests.helpers.wait import JOG_SAFE_POSE_DEG, screen_wait_for_scene_ready
 
@@ -485,6 +487,21 @@ class TestShellLayout:
         assert closed["fullWidth"] == closed["width"], closed
         assert closed["offsetY"] == closed["footerCover"] > 0, closed
         assert closed["fullHeight"] == closed["height"] + closed["footerCover"], closed
+
+        # The scene panel is a card over the view's corner: the image stays put.
+        open_scene_panel(screen)
+        wait(screen).until(
+            lambda _: js(
+                screen,
+                "const r = document.querySelector('.scene-panel').getBoundingClientRect();"
+                "return PanelResize.layout().obstacles"
+                ".some(o => o.right === r.right && o.top === r.top);",
+            )
+        )
+        beside = _view(screen)
+        assert beside["fullWidth"] == beside["width"], beside
+        click_marked(screen, "scene-close")
+        wait(screen).until(lambda _: no_visible(screen, ".scene-panel"))
 
         click_tab(screen, "program")
         opened = _wait_view(
