@@ -138,6 +138,30 @@ export function surface(core) {
       const v = new THREE.Vector3();
       return points.map(([x, y, z]) => pixel(v.set(x, y, z).applyMatrix4(o.matrixWorld).project(core.camera)));
     },
+    // The viewport box round what of ``name`` is drawn: its visible meshes,
+    // not its invisible pick proxies.
+    screenBox(name) {
+      const o = byName(name);
+      if (!o) return null;
+      o.updateWorldMatrix(true, true);
+      const box = new THREE.Box3(), part = new THREE.Box3(), v = new THREE.Vector3();
+      o.traverseVisible(c => {
+        const m = c.material;
+        if (!(c.isMesh || c.isLine || c.isPoints) || !m || m.visible === false
+            || m.colorWrite === false || (m.transparent && m.opacity === 0)) return;
+        if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
+        box.union(part.copy(c.geometry.boundingBox).applyMatrix4(c.matrixWorld));
+      });
+      if (box.isEmpty()) return null;
+      const xs = [], ys = [];
+      for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y])
+        for (const z of [box.min.z, box.max.z]) {
+          const [px, py] = pixel(v.set(x, y, z).project(core.camera));
+          xs.push(px); ys.push(py);
+        }
+      const l = Math.min(...xs), t = Math.min(...ys);
+      return [l, t, Math.max(...xs) - l, Math.max(...ys) - t];
+    },
     pixelOf(name) {
       const o = byName(name);
       if (!o) return null;
@@ -473,6 +497,19 @@ export function surface(core) {
       return [r.left + x, r.top + y, new THREE.Vector3(...d).normalize().toArray()];
     }
     return null;
+  };
+
+  // The viewport box round the cube as drawn: the pixels a press would pick.
+  S.cubeBox = () => {
+    const cube = core.cube;
+    if (!cube.at) return null;
+    const r = cube.box.getBoundingClientRect();
+    let l = Infinity, t = Infinity, rr = -Infinity, b = -Infinity;
+    for (let y = 1; y < r.height; y += 2) for (let x = 1; x < r.width; x += 2) {
+      if (!cube.regionAt(x, y)) continue;
+      l = Math.min(l, x); t = Math.min(t, y); rr = Math.max(rr, x); b = Math.max(b, y);
+    }
+    return l === Infinity ? null : [r.left + l - 1, r.top + t - 1, rr - l + 2, b - t + 2];
   };
 
   return S;
