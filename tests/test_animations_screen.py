@@ -21,13 +21,15 @@ from PIL import Image
 from selenium.webdriver.common.by import By
 
 from tests.helpers.browser_helpers import (
+    click_marked,
     click_tab,
     dismiss_dialogs,
     ensure_robot_homed,
     marked_element,
     run_in_app,
 )
-from tests.helpers.browser_session import window_size
+from tests.helpers.browser_session import no_visible, wait, window_size
+from tests.helpers.demo_steps import motion
 from tests.helpers.scene_surface import frames, with_surface
 
 # Eye scale, left pupil offset, visible mouth and sweat drop of the Waldo at
@@ -47,6 +49,26 @@ return {
   mouth: mouth ? mouth.dataset.mouth : null,
   sweat: !!root.querySelector('.waldo-drop'),
 };
+"""
+# Click arguments[0], which opens a bottom panel, then the bottom panels'
+# height each frame of the slide and once it has ended.
+_SLIDE_JS = """
+const [tab, done] = arguments;
+const panels = document.querySelector('.bottom-panels-container');
+const frames = [];
+const start = performance.now();
+let seen = false;
+tab.click();
+(function sample() {
+  const sliding = [...panels.children].some((p) => /q-transition--/.test(p.className));
+  const height = Math.round(panels.getBoundingClientRect().height);
+  if (sliding) {
+    seen = true;
+    frames.push(height);
+  }
+  if ((seen && !sliding) || performance.now() - start > 3000) done({frames, settled: height});
+  else requestAnimationFrame(sample);
+})();
 """
 _CHIP = ".footer-mode .waldo"
 _FOOTER = ".footer-mode"
@@ -915,3 +937,19 @@ class TestAnimations:
                 {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
             )
             run_in_app(_clear)
+
+    def test_a_panel_keeps_its_height_while_it_slides_in(self, class_screen) -> None:
+        """A panel sliding in from off-screen overflows its wrapper sideways:
+        a scrollbar there would stand the panel taller until the slide ended."""
+        screen = class_screen
+        dismiss_dialogs(screen)
+        try:
+            with motion(screen):
+                slide = screen.selenium.execute_async_script(
+                    _SLIDE_JS, marked_element(screen, "tab-scene")
+                )
+        finally:
+            click_marked(screen, "scene-close")
+            wait(screen).until(lambda _: no_visible(screen, ".scene-panel"))
+        assert slide["frames"], "the scene panel never slid in"
+        assert set(slide["frames"]) == {slide["settled"]}, slide

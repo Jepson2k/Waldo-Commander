@@ -1241,6 +1241,10 @@ body:has(.q-dialog__backdrop) .status-footer .btn-take-control { pointer-events:
 
 .left-panels-container::-webkit-scrollbar { display: none !important; }
 
+/* A tab panel sliding in overflows its wrapper sideways; a scrollbar there
+   would stand the panel taller until the slide ends. */
+.q-panel[class*="q-transition--"] { overflow: hidden; }
+
 .top-panels-container { top: var(--wc-space-3); }
 
 /* Over the footer's Log or Diagnostics panel when that is open, which
