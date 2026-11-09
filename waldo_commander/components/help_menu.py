@@ -127,15 +127,31 @@ class HelpMenu:
 
                     Keyboard shortcuts: **WASD** + **Q/E** for Cartesian movement, **[** / **]** to adjust speed. Clicking a jog button or key sends a single step; holding it jogs continuously until you release.
                 """,
-                "video": "basic_control.mp4",
+                "video": "basic_controls.mp4",
             },
             {
                 "title": "Connecting Your Robot",
                 "description": """
                     Open **Settings** from the gear in the bottom-left rail and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown by Waldo, the little robot at the left end of the footer:
                 """,
-                "video": "connecting_to_robot.mp4",
+                "video": "connecting_your_robot.mp4",
                 "status_legend": True,
+            },
+            {
+                "title": "Navigating the 3D View",
+                "description": """
+                    Drag empty space to orbit around the robot, right-drag to pan, and scroll to zoom. Click a face of the view cube in the top-right corner to look along that axis, or a corner for a three-sided view; dragging the cube orbits too. The buttons under the cube frame the robot (**Focus**, or **F**) and go back to the starting view (**Reset view**).
+                """,
+                "video": "navigating_the_3d_view.mp4",
+            },
+            {
+                "title": "Jogging in the 3D View",
+                "description": """
+                    Rest the pointer on a link of the arm and that joint's ring appears around it; rest it on the last link or the tool and the gizmo appears at the TCP. Clicking the **TCP** badge beside the tool brings up the gizmo too, and keeps it up until you click empty space.
+
+                    Drag anywhere on a ring to turn its joint, or drag a gizmo arrow to move the tool along its own axes. Click an arrow instead of dragging it to type an exact distance; **Enter** moves the tool that far.
+                """,
+                "video": "jogging_in_the_3d_view.mp4",
             },
             {
                 "title": "Programming, Recording, and Path Visualization",
@@ -144,14 +160,42 @@ class HelpMenu:
 
                     Run programs against the simulator to preview the motion path in 3D. The path traces the TCP position through each move, color-coded by reachability. Execute on hardware when you're ready.
                 """,
-                "video": "recording_and_previewing_actions.mp4",
+                "video": "programming_and_recording.mp4",
+            },
+            {
+                "title": "Editing Targets",
+                "description": """
+                    Each move's target shows in the 3D view. Right-click one and choose **Edit Target**, then drag the gizmo: the target moves and the arm stays where it is. **Escape** finishes editing and rewrites the move's line in the program; **Ctrl+Z** puts it back. Right-click the floor and choose **Place Target Here** to add a move to that point to the program.
+                """,
+                "video": "editing_targets.mp4",
+            },
+            {
+                "title": "Keep-outs",
+                "description": """
+                    A keep-out marks space the arm must stay out of. Right-click the floor and choose **Add keep-out…**: the scene panel opens on a new keep-out card. Pick a box, sphere or cylinder, then **Place here** to put it where you clicked, or **Draw** to drag out its footprint on the floor and pull up its height. Every keep-out is listed in the scene panel, opened from the bottom-left rail; drag a keep-out's gizmo to move it and the panel's values follow.
+                """,
+                "video": "keep_outs.mp4",
+            },
+            {
+                "title": "Inspecting a Path",
+                "description": """
+                    Rest the pointer on a previewed path and it lights up; press and drag along it, and the simulator follows to that point of the program. Right-click a target and choose **Show swept volume** to draw everything the arm passes through on the move to it. From where the move runs into a keep-out, the sweep is drawn red.
+                """,
+                "video": "inspecting_a_path.mp4",
+            },
+            {
+                "title": "Setup Frames",
+                "description": """
+                    A target can be stored relative to a fixture's frame from a named setup instead of the world, so it moves with the fixture when the fixture is re-taught while the program's numbers stay the same. While editing a target, click the gizmo's **World** badge and choose **Store in › fixture**: the target stays put, and its line now reads in that fixture's frame.
+                """,
+                "video": "setup_frames.mp4",
             },
             {
                 "title": "I/O and Tool Control",
                 "description": """
                     Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, slide the position and current controls and watch the gripper track in real time — a live chart plots position and current over time. Tool and variant switching happens under **Settings → Tool**; the 3D model updates to show the attached tool.
                 """,
-                "video": "attaching_a_tool.mp4",
+                "video": "io_and_tools.mp4",
             },
         ]
 
