@@ -36,6 +36,19 @@ async def upload(user, name, data):
     await asyncio.sleep(0)
 
 
+async def _remove_fixtures(user, view):
+    """Delete every fixture with its proxies, then every other keep-out."""
+    handle = waldoctl.commander.scene
+    for fixture in view.fixture_meshes:
+        select(user, view, fixture.key)
+        user.find(marker="object-delete").click()
+        await confirmed(
+            view, lambda key=fixture.key: all(m.key != key for m in view.fixture_meshes)
+        )
+    handle.shapes = []
+    await confirmed(view, lambda: not handle.shapes and not view.fixture_meshes)
+
+
 def test_startup_asset_sweep_requires_complete_references(
     tmp_path, monkeypatch, caplog
 ):
@@ -107,9 +120,27 @@ def test_startup_asset_sweep_requires_complete_references(
 
 
 @pytest.mark.integration
-async def test_fixture_upload_group_edit_undo_and_workcell_roundtrip(
-    user, tmp_path, monkeypatch
-):
+async def test_fixtures_upload_edit_undo_save_and_recover(user, tmp_path, monkeypatch):
+    """The importer in the scene panel refuses unreadable, non-finite,
+    oversized, over-dense and over-large meshes and sizes the rest in the
+    chosen units. An added fixture stands where it was placed with a box
+    proxy; the two select, hide, lock, move, delete and undo together, while
+    the proxy also edits on its own. A workcell saves and loads its fixtures,
+    an MCP save keeps them, and the program gets only the keep-outs. Fixtures
+    outlast a reload, one without a keep-out says so and gets one back, and
+    the same bytes share one asset. An upload replaced or removed while it is
+    read or parsed leaves only the current one, and a reload while an
+    addition awaits its readback keeps the addition. A keep-out named like a
+    fixture stays a keep-out, a deleted proxy undoes and redoes, and deleting
+    a fixture leaves a keep-out that took its proxy's name. A missing asset is
+    reported after a reload, its fixture kept until the asset returns, and
+    nested asset folders load as distinct meshes."""
+    from dataclasses import replace
+
+    from nicegui.elements.upload_files import LargeFileUpload
+
+    from waldo_commander.components import mesh_import
+
     library = tmp_path / "worlds"
     monkeypatch.setattr(world_files, "library_dir", lambda: library)
     source = fixture_stl(tmp_path / "Fixture.stl")
@@ -331,20 +362,102 @@ async def test_fixture_upload_group_edit_undo_and_workcell_roundtrip(
     assert list((library / "assets").iterdir()) == [asset]
     assert asset.stat().st_mtime_ns == modified
 
+    # Each section below starts from a scene without fixtures.
+    await _remove_fixtures(user, view)
+    user.find(marker="scene-import-mesh").click()
+    importer = view._mesh_import
+    entered, release, read_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original_read = LargeFileUpload.read
 
-@pytest.mark.integration
-async def test_fixture_identity_proxy_deletion_and_partial_asset_recovery(
-    user, tmp_path, monkeypatch
-):
-    from dataclasses import replace
+    async def held_read(file):
+        data = await original_read(file)
+        entered.set()
+        await release.wait()
+        read_finished.set()
+        return data
 
-    library = tmp_path / "worlds"
-    monkeypatch.setattr(world_files, "library_dir", lambda: library)
+    with monkeypatch.context() as delayed:
+        delayed.setattr(LargeFileUpload, "read", held_read)
+        await element(user, "mesh-upload").handle_uploads(
+            [LargeFileUpload("Old.stl", "model/stl", source)]
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            user.find(marker="mesh-upload").trigger("removed")
+            await upload(user, "Current.stl", source.read_bytes())
+            await user.should_see("12 × 8 × 4 mm")
+            release.set()
+            await asyncio.wait_for(read_finished.wait(), 5)
+            assert importer.filename == "Current.stl"
+        finally:
+            release.set()
+            await asyncio.wait_for(read_finished.wait(), 5)
+
+    entered, release, parse_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    actual_io = run.io_bound
+
+    async def held_parse(function, *args, **kwargs):
+        result = await actual_io(function, *args, **kwargs)
+        if function is mesh_import.stl_bounds:
+            entered.set()
+            await release.wait()
+            parse_finished.set()
+        return result
+
+    with monkeypatch.context() as delayed:
+        delayed.setattr(run, "io_bound", held_parse)
+        await upload(user, "Removed.stl", importer.data)
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            user.find(marker="mesh-upload").trigger("removed")
+            release.set()
+            await asyncio.wait_for(parse_finished.wait(), 5)
+            assert importer.data is None and not element(user, "mesh-add").enabled
+        finally:
+            release.set()
+            if entered.is_set():
+                await asyncio.wait_for(parse_finished.wait(), 5)
+    await upload(
+        user, "Current.stl", fixture_stl(tmp_path / "Current.stl").read_bytes()
+    )
+    await user.should_see("12 × 8 × 4 mm")
+
+    client = waldoctl.commander.client
+    actual_readback = client.shapes
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def held_readback():
+        world = await actual_readback()
+        entered.set()
+        await release.wait()
+        return world
+
+    with monkeypatch.context() as delayed:
+        delayed.setattr(client, "shapes", held_readback)
+        try:
+            user.find(marker="mesh-add").click()
+            await asyncio.wait_for(entered.wait(), 5)
+            reloading = asyncio.create_task(reload_page(user))
+            assert await wait_until(
+                lambda: ui_state.urdf_scene not in (None, view)
+                and ui_state.urdf_scene.scene is not None
+            )
+            replacement = ui_state.urdf_scene
+            release.set()
+            await reloading
+            await confirmed(replacement, lambda: len(replacement.fixture_meshes) == 1)
+            fixture = replacement.fixture_meshes[0]
+            assert fixture.name == "Current"
+            assert fixture.key in replacement._shape_objects
+            assert app.storage.general[STORAGE_KEY] == [fixture.to_dict()]
+        finally:
+            release.set()
+
+    view = ui_state.urdf_scene
+    handle = waldoctl.commander.scene
+    await _remove_fixtures(user, view)
     source = fixture_stl(tmp_path / "fixture.stl")
     data = source.read_bytes()
-    view = await _open(user)
-    handle = waldoctl.commander.scene
-    await confirmed(view)
     for name in ("Fixture", "Other"):
         user.find(marker="scene-import-mesh").click()
         await upload(
@@ -441,105 +554,3 @@ async def test_fixture_identity_proxy_deletion_and_partial_asset_recovery(
     await confirmed(view, lambda: view.fixture_meshes == tuple(nested))
     urls = [view._shape_objects[m.key].args[0] for m in nested]
     assert len(set(urls)) == 3
-
-
-@pytest.mark.integration
-async def test_fixture_upload_invalidation_and_reload_during_confirmation(
-    user, tmp_path, monkeypatch
-):
-    from nicegui.elements.upload_files import LargeFileUpload
-
-    monkeypatch.setattr(world_files, "library_dir", lambda: tmp_path / "worlds")
-    source = fixture_stl(tmp_path / "Fixture.stl")
-    view = await _open(user)
-    await confirmed(view)
-    user.find(marker="scene-import-mesh").click()
-    importer = view._mesh_import
-    entered, release, read_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    original_read = LargeFileUpload.read
-
-    async def held_read(file):
-        data = await original_read(file)
-        entered.set()
-        await release.wait()
-        read_finished.set()
-        return data
-
-    with monkeypatch.context() as delayed:
-        delayed.setattr(LargeFileUpload, "read", held_read)
-        await element(user, "mesh-upload").handle_uploads(
-            [LargeFileUpload("Old.stl", "model/stl", source)]
-        )
-        try:
-            await asyncio.wait_for(entered.wait(), 5)
-            user.find(marker="mesh-upload").trigger("removed")
-            await upload(user, "Current.stl", source.read_bytes())
-            await user.should_see("12 × 8 × 4 mm")
-            release.set()
-            await asyncio.wait_for(read_finished.wait(), 5)
-            assert importer.filename == "Current.stl"
-        finally:
-            release.set()
-            await asyncio.wait_for(read_finished.wait(), 5)
-
-    from waldo_commander.components import mesh_import
-
-    entered, release, parse_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    actual_io = run.io_bound
-
-    async def held_parse(function, *args, **kwargs):
-        result = await actual_io(function, *args, **kwargs)
-        if function is mesh_import.stl_bounds:
-            entered.set()
-            await release.wait()
-            parse_finished.set()
-        return result
-
-    with monkeypatch.context() as delayed:
-        delayed.setattr(run, "io_bound", held_parse)
-        await upload(user, "Removed.stl", importer.data)
-        try:
-            await asyncio.wait_for(entered.wait(), 5)
-            user.find(marker="mesh-upload").trigger("removed")
-            release.set()
-            await asyncio.wait_for(parse_finished.wait(), 5)
-            assert importer.data is None and not element(user, "mesh-add").enabled
-        finally:
-            release.set()
-            if entered.is_set():
-                await asyncio.wait_for(parse_finished.wait(), 5)
-    await upload(
-        user, "Current.stl", fixture_stl(tmp_path / "Current.stl").read_bytes()
-    )
-    await user.should_see("12 × 8 × 4 mm")
-
-    client = waldoctl.commander.client
-    actual_readback = client.shapes
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def held_readback():
-        world = await actual_readback()
-        entered.set()
-        await release.wait()
-        return world
-
-    with monkeypatch.context() as delayed:
-        delayed.setattr(client, "shapes", held_readback)
-        try:
-            user.find(marker="mesh-add").click()
-            await asyncio.wait_for(entered.wait(), 5)
-            reloading = asyncio.create_task(reload_page(user))
-            assert await wait_until(
-                lambda: ui_state.urdf_scene not in (None, view)
-                and ui_state.urdf_scene.scene is not None
-            )
-            replacement = ui_state.urdf_scene
-            release.set()
-            await reloading
-            await confirmed(replacement, lambda: len(replacement.fixture_meshes) == 1)
-            fixture = replacement.fixture_meshes[0]
-            assert fixture.name == "Current"
-            assert fixture.key in replacement._shape_objects
-            assert app.storage.general[STORAGE_KEY] == [fixture.to_dict()]
-        finally:
-            release.set()

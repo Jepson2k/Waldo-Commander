@@ -66,7 +66,15 @@ async def test_recorded_lines_are_staged_until_kept_and_undo_takes_them_out(
     below the cursor in the order they happened, leave the cursor alone, and
     stay marked until kept: Undo takes them out, Keep (even mid-take) keeps
     them. Recording over a selection replaces it, and Undo puts it back.
-    With the program panel covered, a recorded step flashes the program tab."""
+    With the program panel covered, a recorded step flashes the program tab.
+    The recorder reads back the browser's echo of its line anchors. An edit
+    above the take moves where the next step lands. A report of the anchors
+    from before a write, or of positions that write then moved, does not
+    move the take. Undo leaves lines the operator removed or changed. A
+    reload builds new editors while the take goes on staged. Keep and Undo
+    act on the editor the program has now, not on the one it had."""
+    from waldo_commander.services.motion_recorder import _RECORD_ANCHOR_ID
+
     textarea = await _open_program(user, PROGRAM)
     program = waldoctl.commander.programs.active
     assert program is not None
@@ -209,18 +217,8 @@ async def test_recorded_lines_are_staged_until_kept_and_undo_takes_them_out(
     assert lines[4] == "    rbt.write_io(0, 1)", textarea.value
     assert lines[5] == "    rbt.delay(1.0)", textarea.value
 
-
-@pytest.mark.integration
-async def test_the_take_follows_the_anchors_the_browser_reports(user: User):
-    """The recorder reads back the browser's echo of its line anchors. An
-    edit above the take moves where the next step lands. A report of the
-    anchors from before a write, or of positions that write then moved, does
-    not move the take. Undo leaves lines the operator removed or changed."""
-    from waldo_commander.services.motion_recorder import _RECORD_ANCHOR_ID
-
-    textarea = await _open_program(user, "# head\n# taught spot\n# tail\n")
-    program = waldoctl.commander.programs.active
-    assert program is not None
+    textarea.value = "# head\n# taught spot\n# tail\n"
+    await asyncio.sleep(0)
 
     async def record_at(line: int) -> None:
         _set_cursor_line(textarea, line)
@@ -333,6 +331,35 @@ async def test_the_take_follows_the_anchors_the_browser_reports(user: User):
     await asyncio.sleep(0)
     assert str(textarea.value).split("\n") == edited, textarea.value
 
+    # Last: the reload replaces the editor the sections above hold.
+    textarea.value = PROGRAM
+    await asyncio.sleep(0)
+    original = str(textarea.value)
+    _set_cursor_line(textarea, 3)
+    await _toggle_record(user, True)
+    motion_recorder.record_action("io", port=0, state=1)
+    await _toggle_record(user, False)
+    assert str(textarea.value) != original
+
+    # User.open leaves the previous simulated page alive. Close it first so
+    # its heartbeat cannot schedule a competing reload of the same user.
+    previous_page = user.client
+    assert previous_page is not None
+    for handler in previous_page.disconnect_handlers:
+        previous_page.safe_invoke(handler)
+    previous_page.delete()
+    await user.open("/")
+    await wait_for_app_ready()
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    rebuilt = ui_state.textareas_by_tab[program.id]
+    assert rebuilt is not textarea
+    assert staged_lines(rebuilt), "the reloaded editor does not mark the take"
+    user.find(marker="staged-undo").click()
+    await asyncio.sleep(0)
+    assert str(rebuilt.value) == original, rebuilt.value
+    assert program.source == original
+
 
 def _captured_moves(textarea, *, kept_only: bool = False) -> list[str]:
     """Move lines a take captured, optionally only those no take has staged."""
@@ -348,17 +375,80 @@ def _captured_moves(textarea, *, kept_only: bool = False) -> list[str]:
 
 
 @pytest.mark.integration
-async def test_captured_motion_survives_a_pass_keep_mid_move_and_a_quick_restart(
+async def test_a_take_selects_the_tool_captures_motion_and_its_pauses_run(
     user: User, tmp_path, monkeypatch
 ):
-    """A simulation pass keeps the anchors of the lines a take captured; Keep
-    with the arm still moving keeps the motion so far; and Stop then Record
-    in one tick leaves the motion under way in the take being stopped."""
+    """Recording with a tool on the arm that the program does not name adds
+    its select_tool before the first move, in the move's block. Where the
+    program names another tool, the take rewrites that line and Undo puts
+    the program's own back. A simulation pass keeps the anchors of the lines
+    a take captured; Keep with the arm still moving keeps the motion so far;
+    and Stop then Record in one tick leaves the motion under way in the take
+    being stopped. The time between two recorded steps is written as a
+    sleep. A program that never imported ``time`` where the sleeps run, only
+    inside a function of its own and below them, gets the import with the
+    first one, and only once, and the kept take runs to the end."""
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.programs import is_any_program_running
+
     monkeypatch.setenv("WALDO_RECORDING_DIR", str(tmp_path))
-    textarea = await _open_program(user, PROGRAM)
+    unnamed = (
+        "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    rbt.home()\n"
+    )
+    named = (
+        "from parol6 import RobotClient\n"
+        "with RobotClient() as rbt:\n"
+        '    rbt.select_tool("NONE")\n'
+        "    rbt.home()\n"
+    )
+    # These edits land whole; there is no typing pause to wait out.
+    delay, simulation._debounce_delay = simulation._debounce_delay, 0.1
+    textarea = await _open_program(user, unnamed)
+    client = waldoctl.commander.client
+
+    async def put_on_arm(key: str) -> None:
+        # The preview applies the program's first tool to the arm; let it do
+        # that before another tool goes on.
+        assert await wait_until(
+            lambda: simulation._simulation_debounce_timer is None, timeout_s=15
+        )
+        index = await client.select_tool(key)
+        assert await client.wait_command(index, timeout=5)
+        assert await wait_until(
+            lambda: waldoctl.commander.status.tool.key == key, timeout_s=5
+        )
+
+    try:
+        await put_on_arm("PNEUMATIC")
+        _set_cursor_line(textarea, 3)
+        await _toggle_record(user, True)
+        lines = str(textarea.value).split("\n")
+        assert lines[2] == '    rbt.select_tool("PNEUMATIC")', textarea.value
+        compile(str(textarea.value), "program.py", "exec")
+        user.find(marker="staged-undo").click()
+        await asyncio.sleep(0)
+        assert motion_recorder.session is None
+
+        textarea.value = named
+        await asyncio.sleep(0)
+        await put_on_arm("PNEUMATIC")
+        _set_cursor_line(textarea, 4)
+        await _toggle_record(user, True)
+        assert 'rbt.select_tool("PNEUMATIC")' in str(textarea.value), textarea.value
+        user.find(marker="staged-undo").click()
+        await asyncio.sleep(0)
+        assert str(textarea.value) == named
+    finally:
+        simulation._debounce_delay = delay
+        if is_any_program_recording():
+            motion_recorder.toggle_recording()
+        index = await client.select_tool("NONE")
+        assert await client.wait_command(index, timeout=5)
+
+    textarea.value = PROGRAM
+    await asyncio.sleep(0)
     program = waldoctl.commander.programs.active
     assert program is not None
-    client = waldoctl.commander.client
     program.dry_run.playback.active_cursor_line = 3
     await _toggle_record(user, True)
     try:
@@ -437,119 +527,18 @@ async def test_captured_motion_survives_a_pass_keep_mid_move_and_a_quick_restart
         if is_any_program_recording():
             motion_recorder.toggle_recording()
 
-
-@pytest.mark.integration
-async def test_a_take_selects_the_tool_on_the_arm_and_undo_restores_the_programs(
-    user: User,
-):
-    """Recording with a tool on the arm that the program does not name adds
-    its select_tool before the first move, in the move's block. Where the
-    program names another tool, the take rewrites that line and Undo puts
-    the program's own back."""
-    unnamed = (
-        "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    rbt.home()\n"
-    )
-    named = (
+    # The restarted take is kept so the program below records a take of
+    # its own.
+    motion_recorder.keep()
+    textarea.value = (
         "from parol6 import RobotClient\n"
         "with RobotClient() as rbt:\n"
-        '    rbt.select_tool("NONE")\n'
         "    rbt.home()\n"
+        "    rbt.move_j([85, -90, 180, 0, 0, 180], speed=0.5)\n"
+        "\n\ndef settle():\n    import time\n    time.sleep(0.1)\n"
+        "\n\nimport time\n"
     )
-    textarea = await _open_program(user, unnamed)
-    client = waldoctl.commander.client
-
-    async def put_on_arm(key: str) -> None:
-        # The preview applies the program's first tool to the arm; let it do
-        # that before another tool goes on.
-        assert await wait_until(
-            lambda: simulation._simulation_debounce_timer is None, timeout_s=15
-        )
-        index = await client.select_tool(key)
-        assert await client.wait_command(index, timeout=5)
-        assert await wait_until(
-            lambda: waldoctl.commander.status.tool.key == key, timeout_s=5
-        )
-
-    try:
-        await put_on_arm("PNEUMATIC")
-        _set_cursor_line(textarea, 3)
-        await _toggle_record(user, True)
-        lines = str(textarea.value).split("\n")
-        assert lines[2] == '    rbt.select_tool("PNEUMATIC")', textarea.value
-        compile(str(textarea.value), "program.py", "exec")
-        user.find(marker="staged-undo").click()
-        await asyncio.sleep(0)
-        assert motion_recorder.session is None
-
-        textarea.value = named
-        await asyncio.sleep(0)
-        await put_on_arm("PNEUMATIC")
-        _set_cursor_line(textarea, 4)
-        await _toggle_record(user, True)
-        assert 'rbt.select_tool("PNEUMATIC")' in str(textarea.value), textarea.value
-        user.find(marker="staged-undo").click()
-        await asyncio.sleep(0)
-        assert str(textarea.value) == named
-    finally:
-        if is_any_program_recording():
-            motion_recorder.toggle_recording()
-        index = await client.select_tool("NONE")
-        assert await client.wait_command(index, timeout=5)
-
-
-@pytest.mark.integration
-async def test_a_take_survives_a_page_reload(user: User):
-    """A reload builds new editors while the take goes on staged. Keep and
-    Undo act on the editor the program has now, not on the one it had."""
-    textarea = await _open_program(user, PROGRAM)
-    program = waldoctl.commander.programs.active
-    assert program is not None
-    original = str(textarea.value)
-    _set_cursor_line(textarea, 3)
-    await _toggle_record(user, True)
-    motion_recorder.record_action("io", port=0, state=1)
-    await _toggle_record(user, False)
-    assert str(textarea.value) != original
-
-    # User.open leaves the previous simulated page alive. Close it first so
-    # its heartbeat cannot schedule a competing reload of the same user.
-    previous_page = user.client
-    assert previous_page is not None
-    for handler in previous_page.disconnect_handlers:
-        previous_page.safe_invoke(handler)
-    previous_page.delete()
-    await user.open("/")
-    await wait_for_app_ready()
-    user.find(marker="tab-program").click()
     await asyncio.sleep(0)
-    rebuilt = ui_state.textareas_by_tab[program.id]
-    assert rebuilt is not textarea
-    assert staged_lines(rebuilt), "the reloaded editor does not mark the take"
-    user.find(marker="staged-undo").click()
-    await asyncio.sleep(0)
-    assert str(rebuilt.value) == original, rebuilt.value
-    assert program.source == original
-
-
-@pytest.mark.integration
-async def test_a_recorded_pause_runs_in_a_program_that_never_imported_time(
-    user: User,
-):
-    """The time between two recorded steps is written as a sleep. A program
-    that never imported ``time`` where the sleeps run, only inside a function
-    of its own and below them, gets the import with the first one, and only
-    once, and the kept take runs to the end."""
-    from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.services.programs import is_any_program_running
-
-    textarea = await _open_program(
-        user,
-        PROGRAM
-        + "\n\ndef settle():\n    import time\n    time.sleep(0.1)\n"
-        + "\n\nimport time\n",
-    )
-    program = waldoctl.commander.programs.active
-    assert program is not None
     _set_cursor_line(textarea, 3)
     await _toggle_record(user, True)
     for state in (1, 0, 1):

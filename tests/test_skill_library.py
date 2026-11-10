@@ -28,6 +28,7 @@ from tests.test_editor_integration import (
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
+    teleport_to_jog_pose,
     wait_for_app_ready,
     wait_until,
 )
@@ -173,8 +174,7 @@ async def test_skill_fields_teach_preview_record_and_run_live(
     await enable_sim(user)
     await ensure_robot_ready_for_motion()
     client = waldoctl.commander.client
-    index = await client.move_j(START, speed=1)
-    assert index >= 0 and await client.wait_command(index, timeout=20)
+    await teleport_to_jog_pose(client)
 
     def element(marker):
         return next(iter(user.find(marker=marker).elements))

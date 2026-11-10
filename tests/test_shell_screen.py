@@ -563,7 +563,17 @@ class TestShellLayout:
         assert control_lease.held_by(BROWSER, ui_state.active_client_id)
         wait(screen, 5).until(lambda _: no_visible(screen, ".control-lease-glow"))
 
-    def test_many_io_lines_keep_the_footer_one_row(self, class_screen) -> None:
+    def test_the_footer_stays_one_row_and_the_bottom_panel_pushes_the_column_up(
+        self, class_screen
+    ) -> None:
+        """In a 1366 x 768 window the footer stays one row however many I/O
+        lines it shows, each pose value centred in its slot and the pose well
+        whole inside the viewport; narrower windows give up the pose before
+        the Diagnostics and Log launchers, even with a tool named. The bottom
+        panel pushes the program column up, stays clear of the control panel
+        and frames the scene above it, its values unwrapped; on a short
+        desktop it gives way, so the column keeps room for its playbar and
+        the Stop on it."""
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
         with window_size(screen, 1366, 768):
@@ -624,18 +634,12 @@ class TestShellLayout:
             finally:
                 _select_tool("NONE")
 
-    def test_bottom_panel_pushes_the_column_up_and_stays_clear_of_the_control_panel(
-        self, class_screen
-    ) -> None:
-        screen = class_screen
-        screen_wait_for_scene_ready(screen, timeout_s=40.0)
-        geometry = """
-            const box = s => { const e = document.querySelector(s); if (!e || e.offsetParent === null) return null;
-                               const b = e.getBoundingClientRect(); return {left: b.left, right: b.right, top: b.top, bottom: b.bottom}; };
-            return {panel: box('.bottom-panel'), column: box('.program-panel'), control: box('.overlay-br'),
-                    viewport: innerHeight, framedBottom: S.framing().inset.bottom};
-        """
-        with window_size(screen, 1366, 768):
+            geometry = """
+                const box = s => { const e = document.querySelector(s); if (!e || e.offsetParent === null) return null;
+                                   const b = e.getBoundingClientRect(); return {left: b.left, right: b.right, top: b.top, bottom: b.bottom}; };
+                return {panel: box('.bottom-panel'), column: box('.program-panel'), control: box('.overlay-br'),
+                        viewport: innerHeight, framedBottom: S.framing().inset.bottom};
+            """
             click_tab(screen, "program")
             click_tab(screen, "diagnostics")
             opened = wait(screen).until(
@@ -698,9 +702,14 @@ class TestShellLayout:
                 close_panel(screen, "bottom-panel")
             close_panel(screen, "program-panel")
 
-    def test_the_bottom_panel_reopens_on_its_tab_after_a_reload(
+    def test_a_reload_reopens_the_bottom_panel_and_keeps_shortcuts_live(
         self, class_screen
     ) -> None:
+        """The bottom panel comes back on the tab it was left on. The app hears
+        from the page whether typing has focus; a page closed while the editor
+        had it must not leave the next page's shortcuts muted."""
+        from waldo_commander.services.keybindings import keybindings_manager
+
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
         wait(screen).until(
@@ -712,32 +721,6 @@ class TestShellLayout:
 
         click_tab(screen, "log")
         wait(screen, 5).until(lambda _: js(screen, saved) == "log")
-
-        screen.selenium.refresh()
-        screen_wait_for_scene_ready(screen, timeout_s=40.0)
-        wait(screen).until(
-            lambda _: run_in_app(
-                lambda: ui_state.bottom_panel.visible
-                and ui_state.bottom_panel.tabs.value == "log"
-            )
-        )
-        wait(screen).until(
-            lambda _: marked_element(screen, "response-log").is_displayed()
-        )
-
-        close_panel(screen, "bottom-panel")
-        wait(screen, 5).until(lambda _: js(screen, saved) is None)
-
-    def test_shortcuts_work_on_a_page_opened_after_one_closed_while_typing(
-        self, class_screen
-    ) -> None:
-        """The app hears from the page whether typing has focus; a page
-        closed while the editor had it must not leave the next page's
-        shortcuts muted."""
-        from waldo_commander.services.keybindings import keybindings_manager
-
-        screen = class_screen
-        screen_wait_for_scene_ready(screen, timeout_s=40.0)
         click_tab(screen, "program")
         focus_editor(screen)
         wait(screen).until(
@@ -746,6 +729,15 @@ class TestShellLayout:
         try:
             screen.selenium.refresh()
             screen_wait_for_scene_ready(screen, timeout_s=40.0)
+            wait(screen).until(
+                lambda _: run_in_app(
+                    lambda: ui_state.bottom_panel.visible
+                    and ui_state.bottom_panel.tabs.value == "log"
+                )
+            )
+            wait(screen).until(
+                lambda _: marked_element(screen, "response-log").is_displayed()
+            )
             speed = waldoctl.commander.settings.jog.speed
             ActionChains(screen.selenium).send_keys(
                 "[" if speed > 10 else "]"
@@ -753,6 +745,8 @@ class TestShellLayout:
             wait(screen).until(lambda _: waldoctl.commander.settings.jog.speed != speed)
         finally:
             close_panel(screen, "program-panel")
+            close_panel(screen, "bottom-panel")
+            wait(screen, 5).until(lambda _: js(screen, saved) is None)
 
     def test_controls_only_layout_keeps_all_footer_readings_and_restores_the_editor(
         self, class_screen

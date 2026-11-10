@@ -56,6 +56,9 @@ export function surface(core) {
     get resets() {
       return core.resets;
     },
+    set restoreWaitMs(ms) {
+      core.restoreWaitMs = ms;
+    },
     byName,
     frames: () => core.frameCount,
     clearanceLines: () => [...core.clearances.items.values()].map(item => ({

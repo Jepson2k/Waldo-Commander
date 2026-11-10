@@ -12,12 +12,14 @@ itself through CDP, since reduced motion skips the scene effects entirely.
 """
 
 import asyncio
+import re
 import time
 from io import BytesIO
 
 import pytest
 import waldoctl
 from PIL import Image
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 
 from tests.helpers.browser_helpers import (
@@ -25,6 +27,7 @@ from tests.helpers.browser_helpers import (
     click_tab,
     dismiss_dialogs,
     ensure_robot_homed,
+    js,
     marked_element,
     run_in_app,
 )
@@ -291,6 +294,41 @@ def _held(
     raise AssertionError(f"{what}; last value: {value!r}")
 
 
+_FOOTER_WALDO = ".status-footer .waldo"
+_DIALOG_WALDO = ".q-dialog .waldo"
+
+
+def _layer_shown(screen, root: str, layer: str) -> bool:
+    return bool(
+        js(
+            screen,
+            "const el = document.querySelector(arguments[0] + ' ' + arguments[1]);"
+            "return !!el && getComputedStyle(el).opacity === '1';",
+            root,
+            layer,
+        )
+    )
+
+
+def _until(condition, timeout: float, what: str) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
+def _pupil_offset(screen) -> tuple[float, float]:
+    transform = js(
+        screen,
+        "return document.querySelector(arguments[0] + ' .waldo-pupil').style.transform;",
+        _FOOTER_WALDO,
+    )
+    x, y = (float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", transform)[:2])
+    return x, y
+
+
 @pytest.mark.browser
 class TestAnimations:
     def test_waldo_blinks_follows_the_jog_and_startles_on_estop(
@@ -410,6 +448,91 @@ class TestAnimations:
             bool,
             15,
             "the chip Waldo stopped blinking once the dialog's was gone",
+        )
+
+    def test_chip_waldo_greets_watches_the_pointer_and_answers_pokes(
+        self, class_screen
+    ) -> None:
+        """Everything Waldo does between the server's mood and reaction
+        updates (greeting, following the pointer, answering pokes, raising
+        the alarm) happens in its Vue component."""
+        screen = class_screen
+        screen.selenium.refresh()
+
+        # The page waves hello once it has loaded: a wink from the chip.
+        _until(
+            lambda: _layer_shown(screen, _FOOTER_WALDO, ".waldo-eyes-wink"),
+            timeout=30.0,
+            what="the chip Waldo's greeting wink",
+        )
+        dismiss_dialogs(screen)
+        _until(
+            lambda: (
+                _layer_shown(screen, _FOOTER_WALDO, ".waldo-eyes-open")
+                and not _layer_shown(screen, _FOOTER_WALDO, ".waldo-eyes-wink")
+            ),
+            timeout=5.0,
+            what="the greeting to finish",
+        )
+        assert js(
+            screen,
+            "return !!document.querySelector(arguments[0] + '.waldo-mood-neutral');",
+            _FOOTER_WALDO,
+        ), "the simulator's Waldo wears the neutral mood"
+
+        # Pointer up and to the right of the footer's chip: the pupils follow it.
+        chip = screen.selenium.find_element(By.CSS_SELECTOR, _FOOTER_WALDO)
+        ActionChains(screen.selenium).move_to_element_with_offset(
+            chip, 200, -150
+        ).perform()
+        _until(
+            lambda: _pupil_offset(screen)[0] > 0.3 and _pupil_offset(screen)[1] < -0.2,
+            timeout=3.0,
+            what="the pupils to look up-right at the pointer",
+        )
+
+        # One poke giggles; a flurry makes it dizzy.
+        ActionChains(screen.selenium).move_to_element(chip).click().perform()
+        _until(
+            lambda: _layer_shown(screen, _FOOTER_WALDO, ".waldo-eyes-happy"),
+            timeout=2.0,
+            what="a giggle after one poke",
+        )
+        # Four quick pokes land dizzy whether or not the first poke is still
+        # inside the poke window: pokes are ignored while it is dizzy.
+        ActionChains(screen.selenium).click(chip).click().click().click().perform()
+        _until(
+            lambda: _layer_shown(screen, _FOOTER_WALDO, ".waldo-eyes-x"),
+            timeout=2.0,
+            what="X eyes after a flurry of pokes",
+        )
+
+        # E-STOP: the chip sounds the alarm and the dialog brings a big one.
+        click_marked(screen, "btn-estop")
+        _until(
+            lambda: js(
+                screen,
+                "return !!document.querySelector(arguments[0] + '.waldo-mood-alarmed.waldo-leds-alarm')"
+                " && !!document.querySelector(arguments[1] + '.waldo-leds-alarm');",
+                _FOOTER_WALDO,
+                _DIALOG_WALDO,
+            ),
+            timeout=5.0,
+            what="alarmed Waldos in the chip and the E-STOP dialog",
+        )
+        js(
+            screen,
+            "for (const b of document.querySelectorAll('.q-dialog button'))"
+            " if (/reset/i.test(b.textContent)) { b.click(); break; }",
+        )
+        _until(
+            lambda: js(
+                screen,
+                "return !!document.querySelector(arguments[0] + '.waldo-mood-neutral');",
+                _FOOTER_WALDO,
+            ),
+            timeout=5.0,
+            what="the chip Waldo to calm down after Reset",
         )
 
     def test_an_ai_session_takes_over_the_status_chip(self, class_screen) -> None:

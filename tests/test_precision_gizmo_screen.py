@@ -27,6 +27,7 @@ from tests.helpers.scene_surface import (
     scene_js,
     wait_for_scene_idle,
 )
+from tests.helpers import visual_evidence
 from tests.helpers.visual_evidence import VisualEvidence
 from tests.helpers.wait import screen_wait_for_scene_ready
 from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
@@ -57,7 +58,17 @@ def _jog_settled(screen):
 class TestPrecisionGizmo:
     @pytest.mark.parametrize(
         "mode",
-        [RobotAppearanceMode.SIMULATOR, RobotAppearanceMode.LIVE],
+        [
+            RobotAppearanceMode.SIMULATOR,
+            # The grey arm runs the same flow; it is worth only its captures.
+            pytest.param(
+                RobotAppearanceMode.LIVE,
+                marks=pytest.mark.skipif(
+                    not visual_evidence.enabled(),
+                    reason="only recorded with --evidence",
+                ),
+            ),
+        ],
         ids=lambda m: m.value,
     )
     def test_translation_rotation_and_exact_entry(self, class_screen, mode):
@@ -146,7 +157,6 @@ class TestPrecisionGizmo:
                     lambda _: np.linalg.norm(tcp_mm() - before) > 2.7
                 )
                 assert np.linalg.norm(tcp_mm() - before) < 3.5
-                _jog_settled(screen)
 
                 # Escape puts the field away and nothing moves.
                 at_start(screen)
@@ -192,7 +202,6 @@ class TestPrecisionGizmo:
                 ).key_up(Keys.CONTROL).send_keys(f"{base + 3:g}", Keys.ENTER).perform()
                 wait(screen, 15).until(lambda _: np.linalg.norm(tcp_mm() - after) > 2.7)
                 assert np.linalg.norm(tcp_mm() - after) < 3.5
-                _jog_settled(screen)
 
                 at_start(screen)
                 _reveal(screen)

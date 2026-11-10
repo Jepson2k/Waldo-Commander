@@ -26,12 +26,58 @@ from waldo_commander.mcp.server import get_mcp
 
 
 @pytest.mark.integration
-async def test_read_tools_settings_and_live_joint_speeds(user: User) -> None:
+async def test_mcp_tools_drive_the_live_app(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
     """The server stays off unless enabled; one tool per read-only category
     returns sensible data, ``settings.set_jog`` updates
     ``commander.settings.jog`` in place, and ``status.get_joints`` reports
-    live joint speeds in deg/s."""
+    live joint speeds in deg/s.
+
+    The three control modes govern MCP edits and motion, a refused move's
+    ``control.wait_approval`` resolves on the human's Allow/Deny, and on real
+    hardware the AI's first move needs GUI consent, whose denial is terminal for
+    a cooldown and whose grant outlives the session until the human takes
+    control back.
+
+    - **Inspect**: a proposed edit stays pending and a move is refused until
+      the human approves that specific action, after which the retry runs.
+    - **Auto-edits**: a proposed edit auto-applies; a move still prompts.
+    - **Autopilot**: a move runs with no prompt (simulator); on hardware the
+      consent floor remains.
+
+    The ``programs.*`` tools: a proposed edit waits for the human and every
+    resolution (cancel, approve, reject) reaches a waiter; new/open/switch/
+    close render in the editor exactly like the GUI, through the editor's
+    commander.programs change listener; ``new`` activates its tab and reuses
+    an open one of the same filename.
+
+    While an MCP session holds the lease, its pause/resume, play/pause and
+    simulator switch drive the same GUI state as the page's own controls:
+    the play state and simulation change channel, the preview, and the mode
+    button and playback bar styling.
+
+    A program run through MCP reports a crash and its stderr lines with a
+    single ``[ERR]`` prefix; while a program holds the robot an MCP move is
+    refused with a reason that names the program instead of interleaving with
+    the program's own moves, and the refusal ends with the run.
+    """
+    import numpy as np
+    from fastmcp.exceptions import ToolError
+    from waldoctl import EditId
+
+    from waldo_commander.components.playback import playback
     from waldo_commander.mcp import server as server_mod
+    from waldo_commander.services import control_lease as cl
+    from waldo_commander.services.control_lease import (
+        ControlMode,
+        control_lease,
+        pending_consents,
+        set_control_mode,
+    )
+    from waldo_commander.services.preview_segments import segments_from_record
+    from waldo_commander.services.programs import is_any_program_running
+    from waldo_commander.state import simulation_state, ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -80,43 +126,13 @@ async def test_read_tools_settings_and_live_joint_speeds(user: User) -> None:
             await asyncio.sleep(0.02)
     assert 10.0 <= peak <= 40.0, f"J1 peaked at {peak}, not a deg/s reading"
 
-
-@pytest.mark.integration
-async def test_control_modes_approvals_and_hardware_consent_gate_mcp(
-    user: User,
-) -> None:
-    """The three control modes govern MCP edits and motion, a refused move's
-    ``control.wait_approval`` resolves on the human's Allow/Deny, and on real
-    hardware the AI's first move needs GUI consent, whose denial is terminal for
-    a cooldown and whose grant outlives the session until the human takes
-    control back.
-
-    - **Inspect**: a proposed edit stays pending and a move is refused until
-      the human approves that specific action, after which the retry runs.
-    - **Auto-edits**: a proposed edit auto-applies; a move still prompts.
-    - **Autopilot**: a move runs with no prompt (simulator); on hardware the
-      consent floor remains.
-    """
-    from fastmcp.exceptions import ToolError
-
-    from waldo_commander.services import control_lease as cl
-    from waldo_commander.services.control_lease import (
-        ControlMode,
-        control_lease,
-        pending_consents,
-        set_control_mode,
-    )
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-
     panel = ui_state.control_panel
     ng_client = cl.Client.instances[ui_state.active_client_id]
     p = waldoctl.commander.programs.active
     assert p is not None
-    p.source = "a\nb\nc\n"
-    _DIFF_BB = "@@ -2,1 +2,1 @@\n-b\n+B\n"
+    # Comment lines: the editor previews whatever the program holds.
+    p.source = "#a\n#b\n#c\n"
+    _DIFF_BB = "@@ -2,1 +2,1 @@\n-#b\n+#B\n"
     mcp = get_mcp()
 
     def _reset_gates() -> None:
@@ -177,7 +193,9 @@ async def test_control_modes_approvals_and_hardware_consent_gate_mcp(
             )
             assert proposed["status"] == "pending"
             await asyncio.sleep(0)
-            assert p.edits.pending and p.source == "a\nb\nc\n", "Inspect must not apply"
+            assert p.edits.pending and p.source == "#a\n#b\n#c\n", (
+                "Inspect must not apply"
+            )
 
             with pytest.raises(ToolError, match="approval|approve"):
                 await client.call_tool(
@@ -197,21 +215,21 @@ async def test_control_modes_approvals_and_hardware_consent_gate_mcp(
             with ng_client:
                 panel._on_mode_toggle(ControlMode.AUTO_EDITS.value)
             await asyncio.sleep(0)
-            assert p.edits.pending == [] and p.source == "a\nB\nc\n", (
+            assert p.edits.pending == [] and p.source == "#a\n#B\n#c\n", (
                 "switching to Auto-edits must apply edits already pending"
             )
             # A freshly proposed edit also auto-applies (and the tool says so);
             # a move still prompts.
             proposed = _payload(
                 await client.call_tool(
-                    "programs.propose_edit", {"diff": "@@ -3,1 +3,1 @@\n-c\n+C\n"}
+                    "programs.propose_edit", {"diff": "@@ -3,1 +3,1 @@\n-#c\n+#C\n"}
                 )
             )
             assert proposed["status"] == "applied", (
                 "propose_edit must report the synchronous auto-apply"
             )
             await asyncio.sleep(0)
-            assert p.edits.pending == [] and p.source == "a\nB\nC\n", (
+            assert p.edits.pending == [] and p.source == "#a\n#B\n#C\n", (
                 "Auto-edits must apply the proposed edit without manual approval"
             )
             with pytest.raises(ToolError, match="approval|approve"):
@@ -294,149 +312,6 @@ async def test_control_modes_approvals_and_hardware_consent_gate_mcp(
         waldoctl.commander.status.simulator_active = True
         _reset_gates()
 
-
-@pytest.mark.integration
-async def test_mcp_drives_the_same_gui_state_as_the_page(
-    user: User, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """While an MCP session holds the lease, its pause/resume, play/pause and
-    simulator switch drive the same GUI state as the page's own controls:
-    the play state and simulation change channel, the preview, and the mode
-    button and playback bar styling."""
-    import numpy as np
-
-    from waldo_commander.components.playback import playback
-    from waldo_commander.services import control_lease as cl
-    from waldo_commander.services.control_lease import (
-        ControlMode,
-        control_lease,
-        set_control_mode,
-    )
-    from waldo_commander.services.preview_segments import segments_from_record
-    from waldo_commander.state import simulation_state, ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-
-    panel = ui_state.control_panel
-    ng_client = cl.Client.instances[ui_state.active_client_id]
-    with ng_client:
-        panel.update_robot_btn_visual()
-        playback.sync_mode()
-    assert panel._robot_btn._props.get("color") == "wc-mode-sim"  # simulator fill
-
-    set_control_mode(ControlMode.AUTOPILOT)  # the subject is mirroring, not gates
-    active = waldoctl.commander.programs.active
-    assert active is not None
-    fired = {"n": 0}
-
-    def _on_change() -> None:
-        fired["n"] += 1
-
-    flips: list[bool] = []
-
-    async def _fake_simulator(enabled: bool) -> int:
-        flips.append(enabled)
-        return 1
-
-    try:
-        async with Client(get_mcp()) as client:
-            await client.call_tool("control.take_control")
-
-            # pause_active / resume_active mirror the GUI pause path: flip the
-            # active program's is_playing and fire the simulation change
-            # channel, not just signal the script subprocess.
-            active.dry_run.playback.is_playing = True
-            simulation_state.add_change_listener(_on_change)
-            await client.call_tool("execution.pause_active")
-            assert active.dry_run.playback.is_playing is False
-            assert fired["n"] >= 1, "pause must fire the simulation change channel"
-            await client.call_tool("execution.resume_active")
-            assert active.dry_run.playback.is_playing is True
-            assert fired["n"] >= 2, "resume must fire the simulation change channel"
-            active.dry_run.playback.is_playing = False
-
-            # play_pause starts the preview of a previewed program although the
-            # lease is held by MCP, not the browser, and pauses it again.
-            rows = 251
-            q = np.asarray(waldoctl.commander.status.joints.angles.rad, np.float32)
-            commanded = waldoctl.TickIndex(
-                row_dt_s=0.02,
-                joints_rad=np.tile(q, (rows, 1)),
-                tcp=np.zeros((rows, 6), dtype=np.float32),
-                tool_closed=np.zeros(rows, dtype=np.float32),
-                tool_gripping=np.zeros(rows, dtype=np.bool_),
-                blocks=(
-                    waldoctl.TickBlock(
-                        command=0, start_row=0, rows=rows, line_number=1
-                    ),
-                ),
-                digest=b"commanded",
-            )
-            active.dry_run.commanded = commanded
-            active.dry_run.path_segments = segments_from_record(commanded, [])
-            active.dry_run.total_steps = 1
-            playback.invalidate_timeline()
-            await client.call_tool("simulation.play_pause")
-            assert active.dry_run.playback.is_active, (
-                "play_pause should start the preview when the MCP session holds "
-                "the lease"
-            )
-            # The page plays the preview without taking the lease back from
-            # the session that started it.
-            assert await wait_until(
-                lambda: active.dry_run.playback.playback_time > 0.2, timeout_s=5.0
-            )
-            holder = control_lease.holder()
-            assert holder is not None and holder.channel == cl.MCP, holder
-            await client.call_tool("simulation.play_pause")
-            assert not active.dry_run.playback.is_active
-
-            # simulation.set_simulator drives the same GUI sync as the robot/sim
-            # toggle, or the mode button keeps simulator styling while real
-            # hardware moves. The backend flip itself is stubbed: leaving
-            # simulator mode makes the controller open the real serial port,
-            # which doesn't exist on a test box.
-            monkeypatch.setattr(waldoctl.commander.client, "simulator", _fake_simulator)
-            await client.call_tool("simulation.set_simulator", {"enabled": False})
-            assert flips == [False]
-            assert panel._robot_btn._props.get("color") == "wc-control", (
-                "mode button must reflect hardware mode after an MCP switch"
-            )
-            if playback.speed_fab is not None:
-                assert playback.speed_fab.visible is True
-                assert playback._speed_2x.visible is False
-    finally:
-        simulation_state.remove_change_listener(_on_change)
-        active.dry_run.playback.is_playing = False
-        active.dry_run.playback.is_active = False
-        active.dry_run.commanded = None
-        active.dry_run.path_segments = []
-        active.dry_run.total_steps = 0
-        playback.invalidate_timeline()
-        waldoctl.commander.status.simulator_active = True
-        control_lease.reset()
-        # Let the outbox flush the queued GUI updates while the app is alive —
-        # an emit racing app teardown logs the spurious reconnect_timeout error.
-        await asyncio.sleep(0.1)
-
-
-@pytest.mark.integration
-async def test_mcp_program_tools_edit_and_render_in_editor(
-    user: User, tmp_path
-) -> None:
-    """The ``programs.*`` tools: a proposed edit waits for the human and every
-    resolution (cancel, approve, reject) reaches a waiter; new/open/switch/
-    close render in the editor exactly like the GUI, through the editor's
-    commander.programs change listener; ``new`` activates its tab and reuses
-    an open one of the same filename."""
-    from waldoctl import EditId
-
-    from waldo_commander.services import control_lease as cl
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
 
@@ -445,13 +320,13 @@ async def test_mcp_program_tools_edit_and_render_in_editor(
     p = waldoctl.commander.programs.active
     assert editor is not None
     assert p is not None, "user fixture should leave a default program open"
-    p.source = "a\nb\nc\n"
+    p.source = "#a\n#b\n#c\n"
 
     async with Client(get_mcp()) as client:
         numbered = _payload(
             await client.call_tool("programs.get_source", {"numbered": True})
         )
-        assert numbered.splitlines() == ["1\ta", "2\tb", "3\tc"], (
+        assert numbered.splitlines() == ["1\t#a", "2\t#b", "3\t#c"], (
             "numbered source is what diff hunks are authored against"
         )
 
@@ -460,7 +335,7 @@ async def test_mcp_program_tools_edit_and_render_in_editor(
             await client.call_tool(
                 "programs.propose_edit",
                 {
-                    "diff": "@@ -2,1 +2,1 @@\n-b\n+B\n",
+                    "diff": "@@ -2,1 +2,1 @@\n-#b\n+#B\n",
                     "description": "rename b to B",
                 },
             )
@@ -474,7 +349,7 @@ async def test_mcp_program_tools_edit_and_render_in_editor(
         await client.call_tool("programs.cancel_pending_edit", {"edit_id": edit_id})
         pending_after = _payload(await client.call_tool("programs.list_pending_edits"))
         assert pending_after == []
-        assert p.source == "a\nb\nc\n"  # never applied
+        assert p.source == "#a\n#b\n#c\n"  # never applied
         # The withdrawal is on record — a waiter learns it immediately.
         decision = _payload(
             await client.call_tool(
@@ -500,17 +375,17 @@ async def test_mcp_program_tools_edit_and_render_in_editor(
             assert not waiter.done(), "must still be waiting while pending"
             return proposed["id"], waiter
 
-        edit_id, waiter = await _propose_and_wait("@@ -2,1 +2,1 @@\n-b\n+B\n")
+        edit_id, waiter = await _propose_and_wait("@@ -2,1 +2,1 @@\n-#b\n+#B\n")
         with ng_client:
             editor._approve_edit(p.id, EditId(edit_id))
         assert _payload(await waiter) == {"status": "applied"}
-        assert p.source == "a\nB\nc\n"
+        assert p.source == "#a\n#B\n#c\n"
 
-        edit_id, waiter = await _propose_and_wait("@@ -3,1 +3,1 @@\n-c\n+C\n")
+        edit_id, waiter = await _propose_and_wait("@@ -3,1 +3,1 @@\n-#c\n+#C\n")
         with ng_client:
             editor._reject_edit(p.id, EditId(edit_id))
         assert _payload(await waiter) == {"status": "rejected"}
-        assert p.source == "a\nB\nc\n"
+        assert p.source == "#a\n#B\n#c\n"
 
         unknown = _payload(
             await client.call_tool(
@@ -590,27 +465,106 @@ async def test_mcp_program_tools_edit_and_render_in_editor(
         u2 = _payload(await client.call_tool("programs.new", {}))
         assert u1 != u2, "untitled.py tabs are never deduped"
 
+    panel = ui_state.control_panel
+    ng_client = cl.Client.instances[ui_state.active_client_id]
+    with ng_client:
+        panel.update_robot_btn_visual()
+        playback.sync_mode()
+    assert panel._robot_btn._props.get("color") == "wc-mode-sim"  # simulator fill
 
-@pytest.mark.integration
-async def test_mcp_runs_programs_and_nothing_else_drives_meanwhile(
-    user: User,
-) -> None:
-    """A program run through MCP reports a crash and its stderr lines with a
-    single ``[ERR]`` prefix; while a program holds the robot an MCP move is
-    refused with a reason that names the program instead of interleaving with
-    the program's own moves, and the refusal ends with the run."""
-    from fastmcp.exceptions import ToolError
+    set_control_mode(ControlMode.AUTOPILOT)  # the subject is mirroring, not gates
+    active = waldoctl.commander.programs.active
+    assert active is not None
+    fired = {"n": 0}
 
-    from waldo_commander.services.control_lease import (
-        ControlMode,
-        control_lease,
-        set_control_mode,
-    )
-    from waldo_commander.services.programs import is_any_program_running
-    from waldo_commander.state import ui_state
+    def _on_change() -> None:
+        fired["n"] += 1
 
-    await user.open("/")
-    await wait_for_app_ready()
+    flips: list[bool] = []
+
+    async def _fake_simulator(enabled: bool) -> int:
+        flips.append(enabled)
+        return 1
+
+    with monkeypatch.context() as mp:
+        try:
+            async with Client(get_mcp()) as client:
+                await client.call_tool("control.take_control")
+
+                # pause_active / resume_active mirror the GUI pause path: flip the
+                # active program's is_playing and fire the simulation change
+                # channel, not just signal the script subprocess.
+                active.dry_run.playback.is_playing = True
+                simulation_state.add_change_listener(_on_change)
+                await client.call_tool("execution.pause_active")
+                assert active.dry_run.playback.is_playing is False
+                assert fired["n"] >= 1, "pause must fire the simulation change channel"
+                await client.call_tool("execution.resume_active")
+                assert active.dry_run.playback.is_playing is True
+                assert fired["n"] >= 2, "resume must fire the simulation change channel"
+                active.dry_run.playback.is_playing = False
+
+                # play_pause starts the preview of a previewed program although the
+                # lease is held by MCP, not the browser, and pauses it again.
+                rows = 251
+                q = np.asarray(waldoctl.commander.status.joints.angles.rad, np.float32)
+                commanded = waldoctl.TickIndex(
+                    row_dt_s=0.02,
+                    joints_rad=np.tile(q, (rows, 1)),
+                    tcp=np.zeros((rows, 6), dtype=np.float32),
+                    tool_closed=np.zeros(rows, dtype=np.float32),
+                    tool_gripping=np.zeros(rows, dtype=np.bool_),
+                    blocks=(
+                        waldoctl.TickBlock(
+                            command=0, start_row=0, rows=rows, line_number=1
+                        ),
+                    ),
+                    digest=b"commanded",
+                )
+                active.dry_run.commanded = commanded
+                active.dry_run.path_segments = segments_from_record(commanded, [])
+                active.dry_run.total_steps = 1
+                playback.invalidate_timeline()
+                await client.call_tool("simulation.play_pause")
+                assert active.dry_run.playback.is_active, (
+                    "play_pause should start the preview when the MCP session holds "
+                    "the lease"
+                )
+                # The page plays the preview without taking the lease back from
+                # the session that started it.
+                assert await wait_until(
+                    lambda: active.dry_run.playback.playback_time > 0.2, timeout_s=5.0
+                )
+                holder = control_lease.holder()
+                assert holder is not None and holder.channel == cl.MCP, holder
+                await client.call_tool("simulation.play_pause")
+                assert not active.dry_run.playback.is_active
+
+                # simulation.set_simulator drives the same GUI sync as the robot/sim
+                # toggle, or the mode button keeps simulator styling while real
+                # hardware moves. The backend flip itself is stubbed: leaving
+                # simulator mode makes the controller open the real serial port,
+                # which doesn't exist on a test box.
+                mp.setattr(waldoctl.commander.client, "simulator", _fake_simulator)
+                await client.call_tool("simulation.set_simulator", {"enabled": False})
+                assert flips == [False]
+                assert panel._robot_btn._props.get("color") == "wc-control", (
+                    "mode button must reflect hardware mode after an MCP switch"
+                )
+                if playback.speed_fab is not None:
+                    assert playback.speed_fab.visible is True
+                    assert playback._speed_2x.visible is False
+        finally:
+            simulation_state.remove_change_listener(_on_change)
+            active.dry_run.playback.is_playing = False
+            active.dry_run.playback.is_active = False
+            active.dry_run.commanded = None
+            active.dry_run.path_segments = []
+            active.dry_run.total_steps = 0
+            playback.invalidate_timeline()
+            waldoctl.commander.status.simulator_active = True
+            control_lease.reset()
+
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
 

@@ -68,14 +68,6 @@ class TestCameraTools:
         screen = camera_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)
         at_start(screen)
-        screen.selenium.execute_cdp_cmd(
-            "Emulation.setEmulatedMedia",
-            {
-                "features": [
-                    {"name": "prefers-reduced-motion", "value": "no-preference"}
-                ]
-            },
-        )
         scene = ui_state.urdf_scene
         live = waldoctl.commander.status.joints.angles.rad.copy()
         with viewport(screen, 1920, 1080), program_previewed(EDIT_PROGRAM) as targets:
@@ -122,7 +114,16 @@ class TestCameraTools:
                 )
                 evidence.capture("05-restored-1920")
                 # From the right, with the front face only just on the cube, a
-                # press on it turns the camera a long way round its target.
+                # press on it turns the camera a long way round its target: a
+                # turn that is animated, so the orbit is watched frame by frame.
+                screen.selenium.execute_cdp_cmd(
+                    "Emulation.setEmulatedMedia",
+                    {
+                        "features": [
+                            {"name": "prefers-reduced-motion", "value": "no-preference"}
+                        ]
+                    },
+                )
                 scene_js(
                     screen,
                     """
@@ -144,6 +145,14 @@ class TestCameraTools:
                     screen, "window.__watchOrbit=false; return window.__orbitDistances"
                 )
                 assert min(distances) == pytest.approx(max(distances), rel=1e-5)
+                screen.selenium.execute_cdp_cmd(
+                    "Emulation.setEmulatedMedia",
+                    {
+                        "features": [
+                            {"name": "prefers-reduced-motion", "value": "reduce"}
+                        ]
+                    },
+                )
                 evidence.capture("05b-front-alignment-1920")
                 evidence.stop()
 
@@ -292,7 +301,7 @@ class TestCameraTools:
                 )
                 evidence.capture("02-corner-view-touch-1024")
                 evidence.stop()
-                scene_js(screen, "S.renderer.forceContextLoss()")
+                scene_js(screen, "S.restoreWaitMs = 200; S.renderer.forceContextLoss()")
 
                 def offered():
                     """The lost-context notice once it offers a remount; the

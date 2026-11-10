@@ -42,11 +42,6 @@ def _pulse_input_1() -> None:
     waldoctl.commander.status.io.inputs[0] = 1
 
 
-async def _settle(seconds: float = 0.5) -> None:
-    """Window for negative assertions — long enough for several status ticks."""
-    await asyncio.sleep(seconds)
-
-
 async def _wait_for(condition, timeout: float = 10.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -54,6 +49,24 @@ async def _wait_for(condition, timeout: float = 10.0) -> bool:
             return True
         await asyncio.sleep(0.02)
     return False
+
+
+async def _next_tick() -> None:
+    """Window for negative assertions: the watchers act once per status tick,
+    and a launch they start is marked running before the next one."""
+    st = waldoctl.commander.status
+    tick = st.last_update
+    assert await _wait_for(lambda: st.last_update != tick), "the status loop stalled"
+    await asyncio.sleep(0)
+
+
+async def _pulse_read() -> None:
+    """The watcher read the pulse, then the low after it, so the next pulse
+    is a fresh rising edge."""
+    assert await _wait_for(lambda: waldoctl.commander.status.io.inputs[0] == 0), (
+        "no status tick read the pulse"
+    )
+    await _next_tick()
 
 
 def _ran_cleanly() -> bool:
@@ -80,7 +93,7 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
 
     # Disabled (the default): a pulse must not start anything.
     _pulse_input_1()
-    await _settle()
+    await _pulse_read()
     assert not is_any_program_running()
     assert script_exec.last_exit_code is None
 
@@ -95,7 +108,7 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     right_click(user, ui_state.urdf_scene.scene, [], [0.3, 0.1, 0.0])
     user.find(marker="scene-target-at-robot").click()
     _pulse_input_1()
-    await _settle()
+    await _pulse_read()
     assert not is_any_program_running()
     assert script_exec.last_exit_code is None
     # The placement went into the program; Ctrl+Z takes it back out.
@@ -106,7 +119,7 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     # consumed with the pulse on the same tick, then re-published clear.
     waldoctl.commander.status.io.estop = 0
     _pulse_input_1()
-    await _settle()
+    await _pulse_read()
     assert not is_any_program_running()
     assert script_exec.last_exit_code is None
 
@@ -120,24 +133,19 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     automation_state._cycle_last_fire = time.monotonic() + 5.0
     script_exec.last_exit_code = None
     _pulse_input_1()
-    await _settle()
+    await _pulse_read()
     assert not is_any_program_running()
     assert script_exec.last_exit_code is None
 
-    # Once the window has passed, the input is re-armed and fires again.
-    automation_state._cycle_last_fire = time.monotonic() - 2.0
-    _pulse_input_1()
-    assert await _wait_for(_ran_cleanly, timeout=15.0)
-
-    # An AI/MCP control holder does not block the hardware trigger — the
-    # cell input starts the program regardless of who holds the lease.
+    # Once the window has passed, the input is re-armed and fires again. An
+    # AI/MCP control holder does not block the hardware trigger — the cell
+    # input starts the program regardless of who holds the lease.
     control_lease.seize(MCP, "test-ai", "Test AI")
     try:
         automation_state._cycle_last_fire = time.monotonic() - 2.0
-        script_exec.last_exit_code = None
         _pulse_input_1()
         assert await _wait_for(_ran_cleanly, timeout=15.0), (
-            "cycle start must fire even while an MCP session holds control"
+            "the re-armed input must fire even while an MCP session holds control"
         )
     finally:
         control_lease.reset()
@@ -152,6 +160,7 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     automation_state._cycle_last_fire = time.monotonic() - 2.0
     _pulse_input_1()
     assert await _wait_for(is_any_program_running, timeout=15.0)
+    await _pulse_read()
     automation_state._cycle_last_fire = time.monotonic() - 2.0
     _pulse_input_1()
     assert await _wait_for(
@@ -160,7 +169,8 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     assert is_any_program_running()
     user.find(marker="editor-stop-btn").click()
     assert await _wait_for(lambda: not is_any_program_running(), timeout=15.0)
-    await _settle()
+    await _next_tick()
+    await _next_tick()
     assert not is_any_program_running(), "consumed mid-run pulse must not queue a run"
 
 
@@ -215,7 +225,8 @@ async def test_home_output_tracks_home_pose(
         near[0] += tol + 0.3
         await client.teleport(near)
         assert await _wait_for(lambda: abs(angles.deg[0] - near[0]) < 0.1)
-        await _settle()
+        await _next_tick()
+        await _next_tick()
         assert io.outputs[1] == 1, "output should hold inside the hysteresis band"
         assert writes == [(1, 1)]
 
@@ -226,7 +237,8 @@ async def test_home_output_tracks_home_pose(
         assert await _wait_for(lambda: io.outputs[1] == 0), (
             "Output 2 should turn off away from home"
         )
-        await _settle()
+        await _next_tick()
+        await _next_tick()
         assert writes == [(1, 1), (1, 0)], "no writes while sitting away from home"
 
         # Back at home: on again.

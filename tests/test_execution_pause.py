@@ -48,16 +48,25 @@ def test_step_ack_cannot_erase_a_newer_pause():
 
 
 @pytest.mark.integration
-async def test_editor_pause_holds_native_motion_and_managed_program(
-    user: User, monkeypatch
+async def test_pauses_and_failed_runs_leave_no_motion_running(
+    user: User, tmp_path, monkeypatch, caplog
 ):
     """Pause holds the controller and the program, the speed menu shows the
     live run's selection, and a Pause the controller does not confirm still
-    redraws the button: pressing it again would resume a held program."""
+    redraws the button: pressing it again would resume a held program.
+
+    A program that fails while its Stop goes unacknowledged stays tracked,
+    with Stop offered, until the controller confirms one. A step watcher that
+    can no longer read the program stops it and its native queue. Starting a
+    program resumes the controller: it refuses while a native pause holds a
+    move the run did not queue, and a launch that fails after resuming stops
+    what it released."""
+    from waldo_commander.components import script_execution
     from waldo_commander.components.playback import playback
     from waldo_commander.components.script_execution import script_exec
     from waldo_commander.components.simulation_engine import simulation
     from waldo_commander.services.programs import is_any_program_running
+    from waldo_commander.services.script_runner import stop_script
     from waldo_commander.state import ui_state
 
     await user.open("/")
@@ -121,7 +130,7 @@ async def test_editor_pause_holds_native_motion_and_managed_program(
         )
         assert "50% selected" in playback._speed_tooltip.text
         held_progress = slider.value
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(0.4)
         assert slider.value == pytest.approx(held_progress, abs=0.03), (
             "editor progress continued through a paused motion"
         )
@@ -156,6 +165,162 @@ async def test_editor_pause_holds_native_motion_and_managed_program(
             await script_exec.stop()
         await client.resume()
         await client.set_execution_speed(1)
+
+    start = await client.angles()
+    assert start is not None
+    target = list(start)
+    target[0] += 8
+    release = tmp_path / "fail-program"
+    assert ui_state.active_textarea is not None
+    ui_state.active_textarea.value = (
+        "import os, time\nfrom pathlib import Path\nfrom parol6 import RobotClient\n"
+        "with RobotClient() as rbt:\n"
+        f"    rbt.move_j({target!r}, duration=6, r=1, timeout=15)\n"
+        "    if os.environ.get('WALDO_STEP_SESSION'):\n"
+        f"        while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+        "        raise RuntimeError('test program failed with queued motion')\n"
+    )
+    real_stop = client.stop
+
+    async def unavailable_stop():
+        raise ConnectionError("test stop acknowledgement unavailable")
+
+    handle = None
+    try:
+        # A Run pressed while the controller still holds a queued command
+        # waits for it to drain instead of refusing.
+        assert await client.delay(0.5) >= 0
+        await script_exec.start()
+        handle = script_exec.script_handle
+        assert handle is not None
+        assert await client.wait_status(
+            lambda s: s.angles[0] > start[0] + 0.2, timeout=10
+        )
+        monkeypatch.setattr(client, "stop", unavailable_stop)
+        release.touch()
+        async with asyncio.timeout(5):
+            while script_exec.last_exit_code is None:
+                await asyncio.sleep(0.01)
+        assert is_any_program_running(), "failed stop discarded execution tracking"
+        await user.should_see("Controller stop is unconfirmed", retries=50)
+        assert script_exec.script_handle is handle
+        monkeypatch.setattr(client, "stop", real_stop)
+        await script_exec.stop()
+        assert not is_any_program_running()
+        # The stop discarded the program's 6 s move; the page may still be
+        # fitting its tool through the queue, which drains at once.
+        async with asyncio.timeout(2):
+            while await client.queue():
+                await asyncio.sleep(0.05)
+        assert await client.wait_status(lambda s: not s.action_current, timeout=3)
+        records = caplog.get_records("call")
+        # The controller's failure is logged where the stop was sent; the run
+        # reports the stop it could not confirm.
+        assert any(
+            "test stop acknowledgement unavailable" in r.getMessage() for r in records
+        )
+        expected = [
+            r for r in records if "Controller stop is unconfirmed" in r.getMessage()
+        ]
+        assert expected
+        records[:] = [r for r in records if r not in expected]
+    finally:
+        release.touch()
+        monkeypatch.setattr(client, "stop", real_stop)
+        if is_any_program_running():
+            await script_exec.stop()
+        await client.stop()
+
+    assert ui_state.active_textarea is not None
+    ui_state.active_textarea.value = (
+        "from parol6 import RobotClient\n"
+        "with RobotClient() as rbt:\n"
+        "    rbt.delay(20)\n"
+        "    print('UNEXPECTED CONTINUATION', flush=True)\n"
+    )
+    handles = []
+    try:
+        await script_exec.start()
+        handle = script_exec.script_handle
+        assert handle is not None
+        handles.append(handle)
+        assert await client.wait_status(lambda s: bool(s.action_current), timeout=10)
+
+        def unreadable_events(_client):
+            raise OSError("test: event channel became unreadable")
+
+        with monkeypatch.context() as patched:
+            patched.setattr(script_exec, "_consume_script_events", unreadable_events)
+            async with asyncio.timeout(5):
+                while is_any_program_running():
+                    await asyncio.sleep(0.02)
+        assert handle["proc"].returncode is not None, "watcher left the program running"
+        assert await client.queue() == []
+        assert await client.wait_status(lambda s: not s.action_current, timeout=3)
+        expected = "Error in event watcher: test: event channel became unreadable"
+        records = caplog.get_records("call")
+        assert any(r.getMessage() == expected for r in records)
+        records[:] = [r for r in records if r.getMessage() != expected]
+
+        start = await client.angles()
+        assert start is not None
+        target = list(start)
+        target[0] += 8
+        ui_state.active_textarea.value = (
+            "from parol6 import RobotClient\n"
+            "with RobotClient() as rbt:\n"
+            f"    rbt.move_j({target!r}, duration=4, timeout=15)\n"
+        )
+        real_run_script = script_execution.run_script
+
+        async def run_script_then_fail(*args, **kwargs):
+            handle = await real_run_script(*args, **kwargs)
+            handles.append(handle)
+            assert await client.wait_status(
+                lambda s: bool(s.action_current), timeout=10
+            )
+            raise RuntimeError("test: launch failed after the program moved")
+
+        assert await client.pause() == 1
+        assert await client.move_j(target, duration=1) >= 0
+        assert await client.wait_status(lambda s: s.queued_duration > 0, timeout=3)
+        # The paused move never drains, so a shorter wait refuses the same way.
+        with monkeypatch.context() as patched:
+            patched.setattr(script_execution, "_QUEUE_DRAIN_S", 0.2)
+            await script_exec.start()
+        assert not is_any_program_running()
+        assert (await client.execution_speed()).target_scale == 0, (
+            "starting a program released a move it did not queue"
+        )
+        assert await client.wait_status(lambda s: s.queued_duration > 0, timeout=1)
+        await client.stop()
+        await client.resume()
+        assert await client.wait_status(lambda s: not s.action_current, timeout=3)
+
+        monkeypatch.setattr(script_execution, "run_script", run_script_then_fail)
+        await script_exec.start()
+        assert len(handles) == 2, "the program was never spawned"
+        assert not is_any_program_running()
+        assert await client.wait_status(
+            lambda s: s.queued_duration < 1e-3 and not s.action_current, timeout=1
+        ), "a failed launch left its motion running"
+        expected = [
+            r
+            for r in caplog.get_records("call")
+            if r.getMessage().startswith("Failed to start script")
+        ]
+        assert len(expected) == 2
+        records = caplog.get_records("call")
+        records[:] = [r for r in records if r not in expected]
+    finally:
+        for handle in handles:
+            if handle["proc"].returncode is None:
+                await stop_script(handle)
+        if is_any_program_running():
+            await script_exec.stop()
+        await client.stop()
+        await client.resume()
+        script_exec._reset_state()
 
 
 @pytest.mark.integration
@@ -320,190 +485,3 @@ async def test_managed_completion_preserves_remaining_budget_during_pause(
         await client.resume()
         await client.close()
         controller.cleanup()
-
-
-@pytest.mark.integration
-async def test_watcher_or_launch_failure_leaves_no_motion_running(
-    user: User, monkeypatch, caplog
-):
-    """A step watcher that can no longer read the program stops it and its
-    native queue. Starting a program resumes the controller: it refuses while
-    a native pause holds a move the run did not queue, and a launch that
-    fails after resuming stops what it released."""
-    from waldo_commander.components import script_execution
-    from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.services.programs import is_any_program_running
-    from waldo_commander.services.script_runner import stop_script
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    client = waldoctl.commander.client
-    assert ui_state.active_textarea is not None
-    ui_state.active_textarea.value = (
-        "from parol6 import RobotClient\n"
-        "with RobotClient() as rbt:\n"
-        "    rbt.delay(20)\n"
-        "    print('UNEXPECTED CONTINUATION', flush=True)\n"
-    )
-    handles = []
-    try:
-        await script_exec.start()
-        handle = script_exec.script_handle
-        assert handle is not None
-        handles.append(handle)
-        assert await client.wait_status(lambda s: bool(s.action_current), timeout=10)
-
-        def unreadable_events(_client):
-            raise OSError("test: event channel became unreadable")
-
-        with monkeypatch.context() as patched:
-            patched.setattr(script_exec, "_consume_script_events", unreadable_events)
-            async with asyncio.timeout(5):
-                while is_any_program_running():
-                    await asyncio.sleep(0.02)
-        assert handle["proc"].returncode is not None, "watcher left the program running"
-        assert await client.queue() == []
-        assert await client.wait_status(lambda s: not s.action_current, timeout=3)
-        expected = "Error in event watcher: test: event channel became unreadable"
-        records = caplog.get_records("call")
-        assert any(r.getMessage() == expected for r in records)
-        records[:] = [r for r in records if r.getMessage() != expected]
-
-        start = await client.angles()
-        assert start is not None
-        target = list(start)
-        target[0] += 8
-        ui_state.active_textarea.value = (
-            "from parol6 import RobotClient\n"
-            "with RobotClient() as rbt:\n"
-            f"    rbt.move_j({target!r}, duration=4, timeout=15)\n"
-        )
-        real_run_script = script_execution.run_script
-
-        async def run_script_then_fail(*args, **kwargs):
-            handle = await real_run_script(*args, **kwargs)
-            handles.append(handle)
-            assert await client.wait_status(
-                lambda s: bool(s.action_current), timeout=10
-            )
-            raise RuntimeError("test: launch failed after the program moved")
-
-        assert await client.pause() == 1
-        assert await client.move_j(target, duration=1) >= 0
-        assert await client.wait_status(lambda s: s.queued_duration > 0, timeout=3)
-        await script_exec.start()
-        assert not is_any_program_running()
-        assert (await client.execution_speed()).target_scale == 0, (
-            "starting a program released a move it did not queue"
-        )
-        assert await client.wait_status(lambda s: s.queued_duration > 0, timeout=1)
-        await client.stop()
-        await client.resume()
-        assert await client.wait_status(lambda s: not s.action_current, timeout=3)
-
-        monkeypatch.setattr(script_execution, "run_script", run_script_then_fail)
-        await script_exec.start()
-        assert len(handles) == 2, "the program was never spawned"
-        assert not is_any_program_running()
-        assert await client.wait_status(
-            lambda s: s.queued_duration < 1e-3 and not s.action_current, timeout=1
-        ), "a failed launch left its motion running"
-        expected = [
-            r
-            for r in caplog.get_records("call")
-            if r.getMessage().startswith("Failed to start script")
-        ]
-        assert len(expected) == 2
-        records = caplog.get_records("call")
-        records[:] = [r for r in records if r not in expected]
-    finally:
-        for handle in handles:
-            if handle["proc"].returncode is None:
-                await stop_script(handle)
-        if is_any_program_running():
-            await script_exec.stop()
-        await client.stop()
-        await client.resume()
-        script_exec._reset_state()
-
-
-@pytest.mark.integration
-async def test_failed_program_keeps_stop_available_until_controller_confirms(
-    user: User, tmp_path, monkeypatch, caplog
-):
-    from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.services.programs import is_any_program_running
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    client = waldoctl.commander.client
-    start = await client.angles()
-    assert start is not None
-    target = list(start)
-    target[0] += 8
-    release = tmp_path / "fail-program"
-    assert ui_state.active_textarea is not None
-    ui_state.active_textarea.value = (
-        "import os, time\nfrom pathlib import Path\nfrom parol6 import RobotClient\n"
-        "with RobotClient() as rbt:\n"
-        f"    rbt.move_j({target!r}, duration=6, r=1, timeout=15)\n"
-        "    if os.environ.get('WALDO_STEP_SESSION'):\n"
-        f"        while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
-        "        raise RuntimeError('test program failed with queued motion')\n"
-    )
-    real_stop = client.stop
-
-    async def unavailable_stop():
-        raise ConnectionError("test stop acknowledgement unavailable")
-
-    handle = None
-    try:
-        # A Run pressed while the controller still holds a queued command
-        # waits for it to drain instead of refusing.
-        assert await client.delay(0.5) >= 0
-        await script_exec.start()
-        handle = script_exec.script_handle
-        assert handle is not None
-        assert await client.wait_status(
-            lambda s: s.angles[0] > start[0] + 0.2, timeout=10
-        )
-        monkeypatch.setattr(client, "stop", unavailable_stop)
-        release.touch()
-        async with asyncio.timeout(5):
-            while script_exec.last_exit_code is None:
-                await asyncio.sleep(0.01)
-        assert is_any_program_running(), "failed stop discarded execution tracking"
-        await user.should_see("Controller stop is unconfirmed", retries=50)
-        assert script_exec.script_handle is handle
-        monkeypatch.setattr(client, "stop", real_stop)
-        await script_exec.stop()
-        assert not is_any_program_running()
-        # The stop discarded the program's 6 s move; the page may still be
-        # fitting its tool through the queue, which drains at once.
-        async with asyncio.timeout(2):
-            while await client.queue():
-                await asyncio.sleep(0.05)
-        assert await client.wait_status(lambda s: not s.action_current, timeout=3)
-        records = caplog.get_records("call")
-        # The controller's failure is logged where the stop was sent; the run
-        # reports the stop it could not confirm.
-        assert any(
-            "test stop acknowledgement unavailable" in r.getMessage() for r in records
-        )
-        expected = [
-            r for r in records if "Controller stop is unconfirmed" in r.getMessage()
-        ]
-        assert expected
-        records[:] = [r for r in records if r not in expected]
-    finally:
-        release.touch()
-        monkeypatch.setattr(client, "stop", real_stop)
-        if is_any_program_running():
-            await script_exec.stop()
-        await client.stop()

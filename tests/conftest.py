@@ -1,6 +1,9 @@
 """Pytest configuration and shared fixtures for Waldo Commander tests."""
 
 import errno
+import functools
+import gc
+import importlib.metadata
 import logging
 import os
 import subprocess
@@ -31,6 +34,7 @@ from nicegui.testing.screen_plugin import (
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
 import waldoctl
+import waldoctl.skills
 import parol6.config as _parol6_config
 from parol6 import Robot
 from parol6.config import HOME_ANGLES_DEG
@@ -57,6 +61,14 @@ if not os.environ.get("HEADED") and os.environ.get("DISPLAY", "").startswith(
 
 if TYPE_CHECKING:
     from parol6 import AsyncRobotClient
+
+# What is installed does not change during a session, and each entry-point
+# scan reads every installed distribution's metadata: every app start and
+# every test's Commander scanned several times. Tests that add entry points
+# patch over this.
+_scan_entry_points = functools.cache(importlib.metadata.entry_points)
+importlib.metadata.entry_points = _scan_entry_points
+waldoctl.skills.entry_points = _scan_entry_points
 
 # NiceGUI's nicegui_reset_globals teardown pops every module that owns a page
 # route from sys.modules — including "__main__", because the user/screen
@@ -471,6 +483,7 @@ def class_screen(
 
             # Stop server before exiting context
             screen_instance.stop_server()
+            _release_finished_apps()
         # NiceGUI globals reset on context exit (class teardown), which
         # clears run.process_pool and pops "__main__"
         sys.modules.setdefault("__main__", _MAIN_MODULE)
@@ -571,25 +584,35 @@ def reset_editor_singletons(
         pass
 
 
-@pytest.fixture(autouse=True)
-def remove_elements_of_finished_clients(
-    request: pytest.FixtureRequest,
-) -> Generator[None, None, None]:
-    """Detach the elements of the clients a user or screen test leaves behind.
+def _release_finished_apps() -> None:
+    """Let go of what still holds a stopped app's pages for the rest of the
+    session. Every later gc.collect() walked all of it, which made each app
+    start slower than the one before.
 
     NiceGUI's per-test reset forgets clients without deleting them, so their
-    elements stay attached; each ui.dialog's canary finalizer then holds its
-    dialog, the handlers on it, and through them the whole page, for the rest
-    of the session. Every later gc.collect() walks all of it, which made the
-    per-test reset grow with every app start before it.
+    elements stay attached, and each ui.dialog's canary finalizer holds its
+    dialog, the handlers on it, and through them the whole page. anyio keeps
+    its run variables per event loop in a WeakKeyDictionary whose values hold
+    the loop's root task, and so the loop: every closed loop stays, and with
+    it the app's globals, through the exception handler main.py installs.
     """
-    yield
-    if "class_screen" in request.fixturenames:
-        return
+    import anyio.lowlevel
     from nicegui import Client
 
     for client in list(Client.instances.values()):
         client.remove_all_elements()
+    for loop in [loop for loop in anyio.lowlevel._run_vars if loop.is_closed()]:
+        del anyio.lowlevel._run_vars[loop]
+
+
+@pytest.fixture(autouse=True)
+def release_finished_apps(
+    request: pytest.FixtureRequest,
+) -> Generator[None, None, None]:
+    """After a user or screen test; class_screen does it at class teardown."""
+    yield
+    if "class_screen" not in request.fixturenames:
+        _release_finished_apps()
 
 
 @pytest.fixture(autouse=True)
@@ -716,16 +739,18 @@ class _SessionProcessPool:
     """NiceGUI's process pool, shielded so it lives for the whole session.
 
     NiceGUI's per-test reset and the app's shutdown each discard the pool,
-    which made every test's first preview build the robot model again in a
-    fresh worker. Here the pool's shutdown is a no-op until the session ends,
-    run.reset() leaves it alone, and restore() hands it back after each test.
-    A pool that broke (a worker died) is replaced by a fresh one.
+    and each app start makes a new one, which made every test's first
+    preview build the robot model again in a fresh worker. Here the pool's
+    shutdown is a no-op until the session ends, run.reset() leaves it alone,
+    and an app start and restore() each hand it back. A pool that broke (a
+    worker died) is replaced by a fresh one.
     """
 
     def __init__(self) -> None:
         self._pool = None
         self._shutdown = None
         self._reset = nicegui_run.reset
+        self._setup = nicegui_run.setup
 
     def install(self) -> None:
         def reset_keeping_process_pool() -> None:
@@ -733,10 +758,11 @@ class _SessionProcessPool:
             self._reset()
 
         nicegui_run.reset = reset_keeping_process_pool
+        nicegui_run.setup = self.restore
         self._adopt_new_pool()
 
     def _adopt_new_pool(self) -> None:
-        nicegui_run.setup()
+        self._setup()
         pool = nicegui_run.process_pool
         assert pool is not None
         self._pool, self._shutdown = pool, pool.shutdown
@@ -750,6 +776,7 @@ class _SessionProcessPool:
 
     def close(self) -> None:
         nicegui_run.reset = self._reset
+        nicegui_run.setup = self._setup
         if self._shutdown is not None:
             self._shutdown(wait=False, cancel_futures=True)
         nicegui_run.process_pool = None
@@ -1027,6 +1054,15 @@ def warmup_jit_cache(silence_noisy_logging: None) -> None:
     from parol6.utils.warmup import warmup_jit
 
     warmup_jit()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def freeze_session_heap(session_client: "AsyncRobotClient") -> None:
+    """Take what the imports and the session's setup left behind out of the
+    collector's reach. NiceGUI's per-test reset collects twice per app start,
+    and each collection walked every object the libraries had loaded."""
+    gc.collect()
+    gc.freeze()
 
 
 @pytest.fixture(scope="session", autouse=True)

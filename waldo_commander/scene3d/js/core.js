@@ -31,7 +31,6 @@ const COVERED_FRAME_MS = 250;
 const DUE_SLACK_MS = 4;
 // Longer waits than this sleep instead of stepping through display frames.
 const SLEEP_AFTER_MS = 50;
-const RESTORE_WAIT_MS = 5000;
 
 const viewed = new THREE.Vector3();
 
@@ -48,6 +47,9 @@ export class SceneCore {
     this.config = { max_fps: 30, reach: 1 };
     this.live = false;
     this.lost = false;
+    // How long a lost context may take to come back before the notice
+    // offers to mount the view again.
+    this.restoreWaitMs = 5000;
     this.disposed = false;
     this.frameCount = 0;
     this.resets = 0;
@@ -476,7 +478,7 @@ export class SceneCore {
     this.gestures.block("context lost");
     this.root.setAttribute("data-gl", "lost");
     this.lostNotice.style.display = "grid";
-    this.restoreTimer = setTimeout(() => this.offerRemount(), RESTORE_WAIT_MS);
+    this.restoreTimer = setTimeout(() => this.offerRemount(), this.restoreWaitMs);
   }
 
   // The renderer rebuilds its GL state from the scene, which is all still

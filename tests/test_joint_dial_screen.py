@@ -320,15 +320,19 @@ class TestJointDial:
         screen_wait_for_scene_ready(screen, timeout_s=40)
         teleport_jog_pose()
         speed = waldoctl.commander.settings.jog.speed
+
+        def set_speed(value: int) -> None:
+            steps = round((waldoctl.commander.settings.jog.speed - value) / 10)
+            if steps:
+                ActionChains(screen.selenium).send_keys(
+                    ("[" if steps > 0 else "]") * abs(steps)
+                ).perform()
+            wait(screen).until(lambda _: waldoctl.commander.settings.jog.speed == value)
+
         with viewport(screen, 1366, 768), camera_kept(screen):
             evidence = VisualEvidence(screen, "joint-dial-recovery")
             try:
-                ActionChains(screen.selenium).send_keys(
-                    "[" * (int(speed / 10) - 1)
-                ).perform()
-                wait(screen).until(
-                    lambda _: waldoctl.commander.settings.jog.speed == 10
-                )
+                set_speed(10)
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
@@ -337,7 +341,7 @@ class TestJointDial:
                 wait_for_scene_idle(screen)
                 # Far enough that the arm, at 10 %, is still on its way when
                 # the target is read, on a page that delivers a move a frame.
-                drag_dial(screen, -100, duration=5, steps=3)
+                drag_dial(screen, -40, duration=5, steps=3)
                 target = urdf_to_panel(0, scene_js(screen, "return S.dial(0).q"))[1]
                 assert abs(joint_deg(0) - target) > 5
                 evidence.capture("01-target-ahead-of-robot")
@@ -351,7 +355,7 @@ class TestJointDial:
                 wait(screen).until(lambda _: abs(joint_deg(0) - target) < 0.2)
                 evidence.capture("03-release-settled")
 
-                drag_dial(screen, 100, duration=5, steps=3)
+                drag_dial(screen, 40, duration=5, steps=3)
                 cancelled = urdf_to_panel(0, scene_js(screen, "return S.dial(0).q"))[1]
                 assert abs(joint_deg(0) - cancelled) > 5
                 evidence.capture("04-before-escape")
@@ -368,6 +372,9 @@ class TestJointDial:
                 grab_ring(screen, "link:L1", 0)
                 evidence.capture("06-cancel-settled")
 
+                # The limits are what is checked now, not the lag: the arm
+                # need not crawl to them.
+                set_speed(speed)
                 for joint, start, deltas in [(0, -115, [-20, 10]), (2, 175, [10, -10])]:
                     pose = [85, -85, 135, 10, 45, 170]
                     pose[joint] = start
@@ -407,12 +414,7 @@ class TestJointDial:
             finally:
                 evidence.stop()
                 ActionChains(screen.selenium).release().perform()
-                ActionChains(screen.selenium).send_keys(
-                    "]" * (int(speed / 10) - 1)
-                ).perform()
-                wait(screen).until(
-                    lambda _: waldoctl.commander.settings.jog.speed == speed
-                )
+                set_speed(speed)
                 teleport_jog_pose()
 
     def test_joint_dial_review(self, class_screen):

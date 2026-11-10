@@ -14,6 +14,7 @@ import pytest
 from nicegui import run
 import waldoctl
 import numpy as np
+from parol6.config import HOME_ANGLES_DEG
 from waldoctl.recordings import Demonstration, RecordedSample, RecordedTool
 from waldoctl.skills import MissingCapability, SkillError
 
@@ -43,7 +44,8 @@ async def _ready_client(robot):
         await client.reset()
         assert await client.resume() == 1
         assert await client.set_execution_speed(1) == 1
-        assert await client.home(wait=True, timeout=10.0) >= 0
+        # The home pose and the homed state, without playing the homing move.
+        assert await client.teleport(list(HOME_ANGLES_DEG)) == 1
         yield client
 
 

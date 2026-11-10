@@ -181,9 +181,15 @@ async def test_target_storage_frame_rewrite_edit_undo_and_setup_relocation(
 
 
 @pytest.mark.integration
-async def test_multiline_target_edit_preserves_source_and_rejects_stale_edits(
+async def test_target_edits_keep_authored_source_motion_kind_and_blended_lines(
     user: User,
+    monkeypatch,
 ) -> None:
+    """A multiline target keeps its comments and layout and refuses a stale
+    edit; a drag keeps the motion kind and leaves the live robot still; and
+    blended and other-tool previews are not rewritten."""
+    from tests.helpers.editor_events import _fire_editor_event, _set_cursor_line
+
     urdf = await _open(user)
     source = """from parol6 import RobotClient
 rbt = RobotClient()
@@ -250,14 +256,6 @@ rbt.move_j(
     assert await wait_until(lambda: not urdf._edit_active, 5)
     assert textarea.value == external
 
-
-@pytest.mark.integration
-async def test_target_drag_keeps_motion_kind_and_live_robot_stationary(
-    user: User,
-    monkeypatch,
-) -> None:
-    urdf = await _open(user)
-    textarea = ui_state.active_textarea
     source = """from parol6 import RobotClient
 rbt = RobotClient()
 rbt.move_j([85, -85, 175, 5, 5, 175], speed=0.5)
@@ -265,7 +263,6 @@ rbt.move_l(pose=[0, 280, 250, 90, 0, 90], speed=0.5)
 """
     textarea.value = source
     await simulation.run_simulation()
-    program = waldoctl.commander.programs.active
     assert await wait_until(
         lambda: program.dry_run.commanded_revision == program.dry_run.revision, 5
     )
@@ -347,14 +344,6 @@ rbt.move_l(pose=[0, 280, 250, 90, 0, 90], speed=0.5)
     assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live, abs=0.002)
     urdf.cancel_target_edit()
 
-
-@pytest.mark.integration
-async def test_blended_and_other_tool_previews_are_not_rewritten(user: User) -> None:
-    from tests.helpers.editor_events import _fire_editor_event, _set_cursor_line
-
-    urdf = await _open(user)
-    textarea = ui_state.active_textarea
-    program = waldoctl.commander.programs.active
     prefix = "from parol6 import RobotClient\nrbt = RobotClient()\n"
     for motions, expected in (
         (

@@ -260,7 +260,9 @@ class TestPathInspection:
 
             try:
                 baseline = None
-                for cycle in range(3):
+                # The second cycle shows whether each show and hide leaves
+                # GPU resources behind.
+                for cycle in range(2):
                     toggle(moves[0], "Show swept volume")
                     sweep = wait(screen).until(lambda _: shown(moves[0]))
                     block = next(

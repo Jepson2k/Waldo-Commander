@@ -8,6 +8,7 @@ import waldoctl
 from nicegui.testing import User
 from nicegui.testing.user_interaction import UserInteraction
 from parol6 import AsyncRobotClient, RobotClient
+from parol6.config import HOME_ANGLES_DEG
 from parol6.client.dry_run_client import DryRunRobotClient
 
 from tests.conftest import _get_test_ports
@@ -354,7 +355,8 @@ def test_tool_stop_does_not_complete_a_pending_arm_blend(session_controller):
         with RobotClient(host="127.0.0.1", port=port, timeout=5) as client:
             client.simulator(True)
             client.reset()
-            client.home(wait=True, timeout=30)
+            # The home pose and the homed state, without the homing move.
+            assert client.teleport(list(HOME_ANGLES_DEG)) == 1
             selected = client.select_tool("SSG-48")
             assert client.wait_command(selected, timeout=5)
             client.tool.calibrate(wait=True)

@@ -14,6 +14,7 @@ from tests.helpers.scene_objects import confirmed, field, new_keepout, select
 from tests.helpers.wait import wait_until
 from tests.test_scene_jog_handles import _open, _start_recording
 from waldo_commander.services import world_files
+from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.state import ui_state
 
 
@@ -39,10 +40,36 @@ def robot_row(user):
     return [e.text for e in robot.descendants() if isinstance(e, ui.label)]
 
 
+async def _fresh_take(user, view):
+    """Keep the take in hand, empty the world, and start a new take."""
+    handle = waldoctl.commander.scene
+    motion_recorder.keep()
+    handle.shapes = []
+    await confirmed(view, lambda: not handle.shapes)
+    return await _start_recording(user)
+
+
 @pytest.mark.integration
 async def test_objects_record_undo_reload_and_recover_from_external_edits(
     user, tmp_path, monkeypatch
 ):
+    """Keep-outs placed and edited in the scene are written into the take and
+    confirmed by readback. An aborted drag, a non-positive size or a
+    non-finite position changes nothing; undo and redo step through moves,
+    resizes, renames, duplicates and deletes back to the program as it was,
+    and a new edit after an undo stays undoable until the take's Undo takes
+    them all out. Hiding is this view's alone, a locked object refuses every
+    edit, and Shift-click on a row extends the selection. A program edit made
+    elsewhere, during a drag or while an edit awaits its readback, clears the
+    undo history and is kept; a face offered for a keep-out on an object that
+    changed since draws nothing. The Add menu draws on the floor, the robot's
+    row names its tool, and a capture converting in the take refuses object
+    edits, clears their history and stays in the take."""
+    from nicegui import run
+    from tests.test_capture_recording import _capture
+    from waldo_commander.services import motion_recorder as module
+
+    monkeypatch.setenv("WALDO_RECORDING_DIR", str(tmp_path))
     view = await _open(user)
     handle = waldoctl.commander.scene
     await confirmed(view)
@@ -276,12 +303,171 @@ async def test_objects_record_undo_reload_and_recover_from_external_edits(
         lambda: robot_row(user) == [ui_state.active_robot.name], 5
     ), robot_row(user)
 
+    # A new edit after an undo stays undoable, and the take's Undo then
+    # takes back everything the edits wrote.
+    textarea = await _fresh_take(user, view)
+    source = textarea.value
+    new_keepout(user, view, [0.4, 0.1, 0])
+    await confirmed(view, lambda: len(handle.shapes) == 1)
+    original = handle.shapes[0]
+    field(user, "object-x", 500)
+    await confirmed(view, lambda: handle.shapes[0].pose[0] == 0.5)
+    user.find(marker="object-undo").click()
+    await confirmed(view, lambda: handle.shapes == [original])
+    user.find(marker="object-redo").click()
+    await confirmed(view, lambda: handle.shapes[0].pose[0] == 0.5)
+    user.find(marker="object-undo").click()
+    await confirmed(view, lambda: handle.shapes == [original])
+    field(user, "object-dim-x", 220)
+    await confirmed(view, lambda: handle.shapes[0].x == 0.22)
+    user.find(marker="object-undo").click()
+    await confirmed(view, lambda: handle.shapes == [original])
+    user.find(marker="staged-undo").click()
+    assert await wait_until(lambda: textarea.value == source, 3)
+
+    # An edit stays pending until the real readback lands, and a program edit
+    # made meanwhile is kept.
+    textarea = await _fresh_take(user, view)
+    source_before = textarea.value
+    actual_readback = client.shapes
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def held_readback():
+        world = await actual_readback()
+        entered.set()
+        await release.wait()
+        return world
+
+    with monkeypatch.context() as held:
+        held.setattr(client, "shapes", held_readback)
+        try:
+            new_keepout(user, view, [0.45, 0, 0])
+            await asyncio.wait_for(entered.wait(), 5)
+            assert view.object_history.busy
+            assert not handle.confirmed
+            assert textarea.value == source_before
+            assert (await actual_readback()).program == tuple(handle.shapes)
+            external = source_before + "# newer program edit\n"
+            textarea.value = external
+            release.set()
+            await confirmed(view)
+            assert textarea.value == external
+            assert not view.object_history.undo_stack
+            assert not view.object_history.feedback
+            assert not user.find(marker="object-undo").elements.pop().enabled
+            assert user.find(marker="object-undo-tooltip").elements.pop().text == (
+                "Undo history cleared — the world or program changed elsewhere"
+            )
+            await user.should_not_see(marker="object-feedback")
+            await user.should_not_see(marker="scene-feedback")
+        finally:
+            release.set()
+
+    # A capture converting in the take: last, as its move leaves the arm
+    # away from home.
+    textarea = await _fresh_take(user, view)
+    recorder = module.motion_recorder
+    target = list(await client.angles())
+    target[0] += 12
+    target[2] -= 8
+    index = await client.move_j(target, duration=1.2)
+    assert await client.wait_command(index, timeout=10)
+    assert await wait_until(lambda: _capture(recorder.session) is not None, 20)
+    block = _capture(recorder.session)
+
+    new_keepout(user, view, [0.45, 0, 0])
+    await confirmed(view, lambda: bool(view.object_history.undo_stack))
+    shapes = list(waldoctl.commander.scene.shapes)
+    real_io_bound = run.io_bound
+    converting, release_conversion = asyncio.Event(), asyncio.Event()
+
+    async def hold_conversion(function, *args, **kwargs):
+        result = await real_io_bound(function, *args, **kwargs)
+        if function is module.span_to_lines:
+            converting.set()
+            await release_conversion.wait()
+        return result
+
+    monkeypatch.setattr(run, "io_bound", hold_conversion)
+    try:
+        user.find(marker="staged-capture-mode").elements.pop().set_value("raw")
+        await asyncio.wait_for(converting.wait(), 20)
+        field(user, "object-x", 550)
+        await asyncio.sleep(0)
+        assert waldoctl.commander.scene.shapes == shapes
+        assert not view.object_history.undo_stack
+        release_conversion.set()
+        assert await wait_until(lambda: block.mode == "raw" and not block.busy, 5)
+        assert block in recorder.session.blocks
+        assert "replay_demonstration" in textarea.value
+    finally:
+        release_conversion.set()
+
 
 @pytest.mark.integration
-async def test_the_scene_panel_leaves_alone_what_a_press_does_not_change(user):
+async def test_the_scene_panel_offers_to_carry_targets_and_leaves_the_rest_alone(
+    user,
+):
+    """A target written in world coordinates stays put when the object it
+    sat on moves. The scene panel says so, and carries it along on request,
+    in the same undo step as the move. The panel's mode buttons and isolation
+    item change in place, keeping the focus they were pressed with; the group
+    eye and the tab show what is hidden; toggling a row leaves a drawing in
+    hand alone; a panel the user closed stays closed through an undo of a
+    move, and restoring a deleted object selects it and opens the panel.
+    Multi-select mode, Shift-click in the view and row clicks add to the
+    selection and take from it."""
+    from waldo_commander.components.simulation_engine import simulation
+
     view = await _open(user)
-    handle = waldoctl.commander.scene
     await confirmed(view)
+    handle = waldoctl.commander.scene
+    # A workpiece standing under the first target, 2 cm below it; the
+    # second target is clear of it.
+    new_keepout(user, view, [0.0, 0.28, 0])
+    await confirmed(view, lambda: len(handle.shapes) == 1)
+    user.find(marker="object-collision").elements.pop().set_value(False)
+    await confirmed(view, lambda: not handle.shapes[0].collision)
+    field(user, "object-dim-z", 230)
+    await confirmed(view, lambda: handle.shapes[0].z == pytest.approx(0.23))
+    field(user, "object-z", 115)
+    await confirmed(view, lambda: handle.shapes[0].pose[2] == pytest.approx(0.115))
+    name = handle.shapes[0].name
+    textarea = ui_state.active_textarea
+    source = (
+        "from parol6 import RobotClient\n"
+        "rbt = RobotClient()\n"
+        "rbt.move_l(pose=[0, 280, 250, 90, 0, 90], speed=0.5)\n"
+        "rbt.move_l(pose=[100, 280, 250, 90, 0, 90], speed=0.5)\n"
+    )
+    textarea.value = source
+    await simulation.run_simulation()
+    program = waldoctl.commander.programs.active
+    assert await wait_until(lambda: len(program.dry_run.targets) == 2, 5)
+
+    field(user, "object-x", 50)
+    await confirmed(view, lambda: handle.shapes[0].pose[0] == pytest.approx(0.05))
+    await user.should_see(f"1 target on {name} stayed where it was")
+    assert textarea.value == source
+    user.find(marker="stranded-show").click()
+    user.find(marker="stranded-move").click()
+    assert await wait_until(lambda: textarea.value != source, 3)
+    moved, kept = (
+        ast.literal_eval(call.value.keywords[0].value)
+        for call in ast.parse(textarea.value).body[2:]
+    )
+    assert moved == pytest.approx([50, 280, 250, 90, 0, 90], abs=1e-6)
+    assert kept == [100, 280, 250, 90, 0, 90]
+    await user.should_not_see(marker="stranded-text")
+
+    # One undo takes back the move and what it carried.
+    user.find(marker="object-undo").click()
+    await confirmed(view, lambda: handle.shapes[0].pose[0] == pytest.approx(0.0))
+    assert await wait_until(lambda: textarea.value == source, 3)
+
+    # The presses below count keep-outs from an empty world.
+    handle.shapes = []
+    await confirmed(view, lambda: not handle.shapes)
     panel = ui_state.scene_panel
     for count, point in enumerate(([0.4, 0.1, 0], [0.4, -0.15, 0]), 1):
         new_keepout(user, view, point)
@@ -371,178 +557,3 @@ async def test_the_scene_panel_leaves_alone_what_a_press_does_not_change(user):
     assert view._selected_objects == [f"shape:{third}", f"shape:{first}"]
     select(user, view)
     assert view._selected_objects == []
-
-
-@pytest.mark.integration
-async def test_object_edit_stays_pending_until_real_readback_and_preserves_new_source(
-    user, monkeypatch
-):
-    view = await _open(user)
-    await confirmed(view)
-    handle = waldoctl.commander.scene
-    textarea = await _start_recording(user)
-    source_before = textarea.value
-    client = waldoctl.commander.client
-    actual_readback = client.shapes
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def held_readback():
-        world = await actual_readback()
-        entered.set()
-        await release.wait()
-        return world
-
-    monkeypatch.setattr(client, "shapes", held_readback)
-    try:
-        new_keepout(user, view, [0.45, 0, 0])
-        await asyncio.wait_for(entered.wait(), 5)
-        assert view.object_history.busy
-        assert not handle.confirmed
-        assert textarea.value == source_before
-        assert (await actual_readback()).program == tuple(handle.shapes)
-        external = source_before + "# newer program edit\n"
-        textarea.value = external
-        release.set()
-        await confirmed(view)
-        assert textarea.value == external
-        assert not view.object_history.undo_stack
-        assert not view.object_history.feedback
-        assert not user.find(marker="object-undo").elements.pop().enabled
-        assert user.find(marker="object-undo-tooltip").elements.pop().text == (
-            "Undo history cleared — the world or program changed elsewhere"
-        )
-        await user.should_not_see(marker="object-feedback")
-        await user.should_not_see(marker="scene-feedback")
-    finally:
-        release.set()
-
-
-@pytest.mark.integration
-async def test_scene_undo_redo_and_new_edits_remain_undoable_as_a_recording_take(user):
-    view = await _open(user)
-    await confirmed(view)
-    handle = waldoctl.commander.scene
-    textarea = await _start_recording(user)
-    source = textarea.value
-    new_keepout(user, view, [0.4, 0.1, 0])
-    await confirmed(view, lambda: len(handle.shapes) == 1)
-    original = handle.shapes[0]
-    field(user, "object-x", 500)
-    await confirmed(view, lambda: handle.shapes[0].pose[0] == 0.5)
-    user.find(marker="object-undo").click()
-    await confirmed(view, lambda: handle.shapes == [original])
-    user.find(marker="object-redo").click()
-    await confirmed(view, lambda: handle.shapes[0].pose[0] == 0.5)
-    user.find(marker="object-undo").click()
-    await confirmed(view, lambda: handle.shapes == [original])
-    field(user, "object-dim-x", 220)
-    await confirmed(view, lambda: handle.shapes[0].x == 0.22)
-    user.find(marker="object-undo").click()
-    await confirmed(view, lambda: handle.shapes == [original])
-    user.find(marker="staged-undo").click()
-    assert await wait_until(lambda: textarea.value == source, 3)
-
-
-@pytest.mark.integration
-async def test_capture_conversion_invalidates_object_history_and_keeps_live_blocks(
-    user, monkeypatch, tmp_path
-):
-    from nicegui import run
-    from tests.test_capture_recording import _capture
-    from waldo_commander.services import motion_recorder as module
-
-    monkeypatch.setenv("WALDO_RECORDING_DIR", str(tmp_path))
-    view = await _open(user)
-    await confirmed(view)
-    textarea = await _start_recording(user)
-    recorder = module.motion_recorder
-    client = waldoctl.commander.client
-    target = list(await client.angles())
-    target[0] += 12
-    target[2] -= 8
-    index = await client.move_j(target, duration=1.2)
-    assert await client.wait_command(index, timeout=10)
-    assert await wait_until(lambda: _capture(recorder.session) is not None, 20)
-    block = _capture(recorder.session)
-
-    new_keepout(user, view, [0.45, 0, 0])
-    await confirmed(view, lambda: bool(view.object_history.undo_stack))
-    shapes = list(waldoctl.commander.scene.shapes)
-    real_io_bound = run.io_bound
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def hold_conversion(function, *args, **kwargs):
-        result = await real_io_bound(function, *args, **kwargs)
-        if function is module.span_to_lines:
-            entered.set()
-            await release.wait()
-        return result
-
-    monkeypatch.setattr(run, "io_bound", hold_conversion)
-    try:
-        user.find(marker="staged-capture-mode").elements.pop().set_value("raw")
-        await asyncio.wait_for(entered.wait(), 20)
-        field(user, "object-x", 550)
-        await asyncio.sleep(0)
-        assert waldoctl.commander.scene.shapes == shapes
-        assert not view.object_history.undo_stack
-        release.set()
-        assert await wait_until(lambda: block.mode == "raw" and not block.busy, 5)
-        assert block in recorder.session.blocks
-        assert "replay_demonstration" in textarea.value
-    finally:
-        release.set()
-
-
-@pytest.mark.integration
-async def test_moving_an_object_offers_to_carry_the_targets_left_on_it(user):
-    """A target written in world coordinates stays put when the object it
-    sat on moves. The scene panel says so, and carries it along on request,
-    in the same undo step as the move."""
-    from waldo_commander.components.simulation_engine import simulation
-
-    view = await _open(user)
-    await confirmed(view)
-    handle = waldoctl.commander.scene
-    # A workpiece standing under the first target, 2 cm below it; the
-    # second target is clear of it.
-    new_keepout(user, view, [0.0, 0.28, 0])
-    await confirmed(view, lambda: len(handle.shapes) == 1)
-    user.find(marker="object-collision").elements.pop().set_value(False)
-    await confirmed(view, lambda: not handle.shapes[0].collision)
-    field(user, "object-dim-z", 230)
-    await confirmed(view, lambda: handle.shapes[0].z == pytest.approx(0.23))
-    field(user, "object-z", 115)
-    await confirmed(view, lambda: handle.shapes[0].pose[2] == pytest.approx(0.115))
-    name = handle.shapes[0].name
-    textarea = ui_state.active_textarea
-    source = (
-        "from parol6 import RobotClient\n"
-        "rbt = RobotClient()\n"
-        "rbt.move_l(pose=[0, 280, 250, 90, 0, 90], speed=0.5)\n"
-        "rbt.move_l(pose=[100, 280, 250, 90, 0, 90], speed=0.5)\n"
-    )
-    textarea.value = source
-    await simulation.run_simulation()
-    program = waldoctl.commander.programs.active
-    assert await wait_until(lambda: len(program.dry_run.targets) == 2, 5)
-
-    field(user, "object-x", 50)
-    await confirmed(view, lambda: handle.shapes[0].pose[0] == pytest.approx(0.05))
-    await user.should_see(f"1 target on {name} stayed where it was")
-    assert textarea.value == source
-    user.find(marker="stranded-show").click()
-    user.find(marker="stranded-move").click()
-    assert await wait_until(lambda: textarea.value != source, 3)
-    moved, kept = (
-        ast.literal_eval(call.value.keywords[0].value)
-        for call in ast.parse(textarea.value).body[2:]
-    )
-    assert moved == pytest.approx([50, 280, 250, 90, 0, 90], abs=1e-6)
-    assert kept == [100, 280, 250, 90, 0, 90]
-    await user.should_not_see(marker="stranded-text")
-
-    # One undo takes back the move and what it carried.
-    user.find(marker="object-undo").click()
-    await confirmed(view, lambda: handle.shapes[0].pose[0] == pytest.approx(0.0))
-    assert await wait_until(lambda: textarea.value == source, 3)

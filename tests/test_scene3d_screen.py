@@ -632,7 +632,7 @@ class TestSceneElement:
 
         # Not restored, it offers a click that mounts the view again, which
         # asks for the whole scene.
-        scene_js(page, "S.renderer.forceContextLoss()")
+        scene_js(page, "S.restoreWaitMs = 200; S.renderer.forceContextLoss()")
         notice = page.selenium.find_element("css selector", ".wc-scene-lost")
         wait(page, 10).until(
             lambda _: notice.value_of_css_property("cursor") == "pointer"

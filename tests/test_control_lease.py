@@ -105,12 +105,57 @@ def test_lease_state_machine_and_browser_gate(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.integration
-async def test_mcp_and_browser_trade_control(user: User) -> None:
+async def test_browser_tabs_and_mcp_sessions_share_one_lease(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The active tab holds control by default; a live browser holder blocks
     MCP actuation until ``take_control`` seizes it, and reads are never
     blocked. The human reclaims by just driving. A reconnected MCP session
     inherits a lease a previous MCP session held, but never one a browser
-    holds."""
+    holds.
+
+    A dismissed consent prompt re-prompts instead of wedging. The
+    ``wc-mode-*`` class is the single theming source of truth: ``_apply_mode``
+    stamps it on the glow's scope and the status chip. The approval card
+    stays app-styled (no mode class). The chip carries the AI session — its
+    mode beside the connection while a client is around, handed over with
+    Take control while it drives — and the glow is faint, then breathing, in
+    step. The approval card switches to the amber hardware variant only for
+    the session-consent kind. The human's mode choice survives an app
+    restart.
+
+    A page (re)load claims the lease only when it's free or held by a prior
+    browser tab — never from a live MCP holder. Only human *actuation* soft-
+    reclaims; a mere refresh must not silently take control from the AI.
+
+    The lease must stay alive for the whole of a single in-flight tool call
+    (e.g. one ``wait_motion`` spanning a long move) — the TTL measures session
+    absence, not motion duration.
+
+    Clicking TAKE CONTROL halts whatever the AI started, but must hand the
+    human a live robot: pre-fix, the halt latched the controller disabled and
+    every subsequent human move was silently rejected.
+
+    A page that never connects, such as one a second reload cut short, is
+    dropped without a disconnect. The tab waiting behind it then takes the
+    session instead of showing "Session active in another tab" for good."""
+    import time
+
+    import waldoctl
+    from nicegui import app as ng_app
+    from parol6 import MotionError
+
+    from waldo_commander.services.control_lease import (
+        ControlMode,
+        arm_action_prompt,
+        arm_consent_prompt,
+        control_mode,
+        mcp_touch,
+        pending_consents,
+        restore_control_mode,
+        set_control_mode,
+    )
+
     await user.open("/")
     await wait_for_app_ready()
 
@@ -188,178 +233,6 @@ async def test_mcp_and_browser_trade_control(user: User) -> None:
                 await client.call_tool("execution.stop_active")
     finally:
         control_lease.reset()
-
-
-@pytest.mark.integration
-async def test_a_waiting_tab_takes_a_session_whose_tab_is_gone(user: User) -> None:
-    """A page that never connects, such as one a second reload cut short, is
-    dropped without a disconnect. The tab waiting behind it then takes the
-    session instead of showing "Session active in another tab" for good."""
-    await user.open("/")
-    await wait_for_app_ready()
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(core.app), base_url="http://test"
-    ) as http:
-        waiting = User(http)
-        await waiting.open("/")
-        await waiting.should_see("Session active in another tab")
-        vanished = user.client
-        assert ui_state.active_client_id == vanished.id
-        vanished.delete()
-        assert await wait_until(
-            lambda: ui_state.active_client_id == waiting.client.id, 5.0
-        ), "the waiting tab never took the session"
-        await wait_for_app_ready()
-
-
-@pytest.mark.integration
-async def test_page_reload_does_not_steal_lease_from_live_mcp_holder(
-    user: User,
-) -> None:
-    """A page (re)load claims the lease only when it's free or held by a prior
-    browser tab — never from a live MCP holder. Only human *actuation* soft-
-    reclaims; a mere refresh must not silently take control from the AI."""
-    await user.open("/")
-    await wait_for_app_ready()
-
-    mcp = get_mcp()
-    try:
-        async with Client(mcp) as client:
-            took = _payload(await client.call_tool("control.take_control"))
-            assert took["you_hold_it"] is True
-            footer = ui_state._readout_panel
-            assert footer is not None
-            assert await wait_until(
-                lambda: footer.take_control_btn and footer.take_control_btn.visible
-            ), "the chip never offered Take control while the AI drove"
-
-            await reload_page(user)
-
-            controller = _payload(await client.call_tool("control.get_controller"))
-            assert controller["you_hold_it"] is True, (
-                "page reload must not steal the lease from a live MCP holder"
-            )
-            # The reloaded page's chip carries the session the old one showed.
-            assert await wait_until(
-                lambda: footer.take_control_btn and footer.take_control_btn.visible
-            ), "the reloaded chip lost Take control while the AI still drives"
-
-        # Once the MCP holder has aged out, a reload claims as usual.
-        assert control_lease._holder is not None
-        control_lease._holder.last_seen -= MCP_TTL_SECONDS + 1
-        await reload_page(user)
-        assert control_lease.held_by(BROWSER, ui_state.active_client_id or "")
-    finally:
-        control_lease.reset()
-
-
-@pytest.mark.integration
-async def test_lease_survives_single_long_tool_call(
-    user: User, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The lease must stay alive for the whole of a single in-flight tool call
-    (e.g. one ``wait_motion`` spanning a long move) — the TTL measures session
-    absence, not motion duration."""
-    from waldo_commander.services.control_lease import ControlMode, set_control_mode
-
-    await user.open("/")
-    await wait_for_app_ready()
-
-    monkeypatch.setattr(cl, "MCP_TTL_SECONDS", 0.3)
-    set_control_mode(ControlMode.AUTOPILOT)  # subject is the TTL, not the gate
-    mcp = get_mcp()
-    try:
-        async with Client(mcp) as client:
-            await client.call_tool("control.take_control")
-            # A real jog ~4x the TTL, then block in ONE wait_motion call.
-            await client.call_tool(
-                "motion.jog_j", {"joint": 0, "speed": 0.3, "duration": 1.2}
-            )
-            await client.call_tool("motion.wait_motion", {"timeout": 5.0})
-            controller = _payload(await client.call_tool("control.get_controller"))
-            assert controller["you_hold_it"] is True, (
-                "lease must survive a single tool call longer than the TTL"
-            )
-    finally:
-        control_lease.reset()
-
-
-@pytest.mark.integration
-async def test_hard_reclaim_leaves_robot_drivable(user: User) -> None:
-    """Clicking TAKE CONTROL halts whatever the AI started, but must hand the
-    human a live robot: pre-fix, the halt latched the controller disabled and
-    every subsequent human move was silently rejected."""
-    import time
-
-    import waldoctl
-    from parol6 import MotionError
-
-    await user.open("/")
-    await wait_for_app_ready()
-    browser_id = ui_state.active_client_id
-    assert browser_id
-
-    mcp = get_mcp()
-    panel = ui_state.control_panel
-    assert panel is not None
-    ng_client = cl.Client.instances[browser_id]
-    try:
-        async with Client(mcp) as client:
-            await client.call_tool("control.take_control")
-        assert not control_lease.held_by(BROWSER, browser_id)
-        # Reveal the TAKE CONTROL button (normally the 1 Hz ping's job).
-        with ng_client:
-            panel.refresh_control_indicator()
-
-        user.find(marker="btn-take-control").click()
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and not control_lease.held_by(
-            BROWSER, browser_id
-        ):
-            await asyncio.sleep(0.02)
-        assert control_lease.held_by(BROWSER, browser_id)
-
-        # The reclaim's halt/resume round-trips race this first move; poll
-        # until the controller accepts motion again (home is valid in any
-        # referencing state).
-        deadline = time.monotonic() + 3.0
-        while True:
-            try:
-                assert await waldoctl.commander.client.home() >= 0
-                break
-            except MotionError as e:
-                if time.monotonic() >= deadline:
-                    pytest.fail(f"robot still rejects motion after hard reclaim: {e}")
-                await asyncio.sleep(0.05)
-    finally:
-        control_lease.reset()
-
-
-@pytest.mark.integration
-async def test_mode_theme_approval_cards_and_persisted_mode(user: User) -> None:
-    """A dismissed consent prompt re-prompts instead of wedging. The
-    ``wc-mode-*`` class is the single theming source of truth: ``_apply_mode``
-    stamps it on the glow's scope and the status chip. The approval card
-    stays app-styled (no mode class). The chip carries the AI session — its
-    mode beside the connection while a client is around, handed over with
-    Take control while it drives — and the glow is faint, then breathing, in
-    step. The approval card switches to the amber hardware variant only for
-    the session-consent kind. The human's mode choice survives an app
-    restart."""
-    from nicegui import app as ng_app
-
-    from waldo_commander.services.control_lease import (
-        ControlMode,
-        arm_action_prompt,
-        arm_consent_prompt,
-        control_mode,
-        mcp_touch,
-        pending_consents,
-        restore_control_mode,
-    )
-
-    await user.open("/")
-    await wait_for_app_ready()
 
     panel = ui_state.control_panel
     ng_client = cl.Client.instances[ui_state.active_client_id]
@@ -461,3 +334,103 @@ async def test_mode_theme_approval_cards_and_persisted_mode(user: User) -> None:
         panel._approval_sid = None
         if panel._consent_dialog is not None:
             panel._consent_dialog.close()
+
+    try:
+        async with Client(mcp) as client:
+            took = _payload(await client.call_tool("control.take_control"))
+            assert took["you_hold_it"] is True
+            footer = ui_state._readout_panel
+            assert footer is not None
+            assert await wait_until(
+                lambda: footer.take_control_btn and footer.take_control_btn.visible
+            ), "the chip never offered Take control while the AI drove"
+
+            await reload_page(user)
+
+            controller = _payload(await client.call_tool("control.get_controller"))
+            assert controller["you_hold_it"] is True, (
+                "page reload must not steal the lease from a live MCP holder"
+            )
+            # The reloaded page's chip carries the session the old one showed.
+            assert await wait_until(
+                lambda: footer.take_control_btn and footer.take_control_btn.visible
+            ), "the reloaded chip lost Take control while the AI still drives"
+
+        # Once the MCP holder has aged out, a reload claims as usual.
+        assert control_lease._holder is not None
+        control_lease._holder.last_seen -= MCP_TTL_SECONDS + 1
+        await reload_page(user)
+        assert control_lease.held_by(BROWSER, ui_state.active_client_id or "")
+    finally:
+        control_lease.reset()
+
+    # Scoped: the reclaim below needs an MCP holder that outlives a few UI
+    # round-trips.
+    with monkeypatch.context() as mp:
+        mp.setattr(cl, "MCP_TTL_SECONDS", 0.3)
+        set_control_mode(ControlMode.AUTOPILOT)  # subject is the TTL, not the gate
+        try:
+            async with Client(mcp) as client:
+                await client.call_tool("control.take_control")
+                # A real jog ~4x the TTL, then block in ONE wait_motion call.
+                await client.call_tool(
+                    "motion.jog_j", {"joint": 0, "speed": 0.3, "duration": 1.2}
+                )
+                await client.call_tool("motion.wait_motion", {"timeout": 5.0})
+                controller = _payload(await client.call_tool("control.get_controller"))
+                assert controller["you_hold_it"] is True, (
+                    "lease must survive a single tool call longer than the TTL"
+                )
+        finally:
+            control_lease.reset()
+
+    browser_id = ui_state.active_client_id
+    assert browser_id
+
+    panel = ui_state.control_panel
+    assert panel is not None
+    ng_client = cl.Client.instances[browser_id]
+    try:
+        async with Client(mcp) as client:
+            await client.call_tool("control.take_control")
+        assert not control_lease.held_by(BROWSER, browser_id)
+        # Reveal the TAKE CONTROL button (normally the 1 Hz ping's job).
+        with ng_client:
+            panel.refresh_control_indicator()
+
+        user.find(marker="btn-take-control").click()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not control_lease.held_by(
+            BROWSER, browser_id
+        ):
+            await asyncio.sleep(0.02)
+        assert control_lease.held_by(BROWSER, browser_id)
+
+        # The reclaim's halt/resume round-trips race this first move; poll
+        # until the controller accepts motion again (home is valid in any
+        # referencing state).
+        deadline = time.monotonic() + 3.0
+        while True:
+            try:
+                assert await waldoctl.commander.client.home() >= 0
+                break
+            except MotionError as e:
+                if time.monotonic() >= deadline:
+                    pytest.fail(f"robot still rejects motion after hard reclaim: {e}")
+                await asyncio.sleep(0.05)
+    finally:
+        control_lease.reset()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(core.app), base_url="http://test"
+    ) as http:
+        waiting = User(http)
+        await waiting.open("/")
+        await waiting.should_see("Session active in another tab")
+        vanished = user.client
+        assert ui_state.active_client_id == vanished.id
+        vanished.delete()
+        assert await wait_until(
+            lambda: ui_state.active_client_id == waiting.client.id, 5.0
+        ), "the waiting tab never took the session"
+        await wait_for_app_ready()

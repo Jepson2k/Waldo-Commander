@@ -11,10 +11,10 @@ from waldoctl.signals import DigitalSignal
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
+    teleport_to_jog_pose,
     wait_for_app_ready,
 )
 from tests.test_editor_integration import _set_cursor_line, _set_selection
-from tests.test_skill_library import START
 from waldo_commander.patterns import (
     PatternProgress,
     grid_poses,
@@ -45,8 +45,7 @@ async def test_tray_loop_progress_cancellation_and_generated_signal_transfer(
     await enable_sim(user)
     await ensure_robot_ready_for_motion()
     rbt = waldoctl.commander.client
-    index = await rbt.move_j(START, speed=1)
-    assert await rbt.wait_command(index, timeout=20)
+    await teleport_to_jog_pose(rbt)
     index = await rbt.select_tool("PNEUMATIC")
     assert await rbt.wait_command(index, timeout=5)
     await gripper_close.async_call(rbt)

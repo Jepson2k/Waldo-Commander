@@ -241,7 +241,9 @@ def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
 def tap(screen: "Screen", x: float, y: float) -> None:
     """A touch tap at viewport point (x, y)."""
     actions = ActionBuilder(
-        screen.selenium, mouse=PointerInput(interaction.POINTER_TOUCH, "finger")
+        screen.selenium,
+        mouse=PointerInput(interaction.POINTER_TOUCH, "finger"),
+        duration=0,
     )
     actions.pointer_action.move_to_location(round(x), round(y)).pointer_down()
     actions.pointer_action.pointer_up()

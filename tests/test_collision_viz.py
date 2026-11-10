@@ -26,28 +26,535 @@ async def _until(cond, message: str) -> None:
 
 
 @pytest.mark.integration
-async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
-    user: User,
+async def test_the_scene_confirms_edits_proposes_plays_back_and_tints_its_world(
+    user: User, tmp_path, monkeypatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Reported collisions tint links, shapes and the tool and then restore;
-    shapes draw per layer, re-render as a diff and keep their layer or draft
-    colour through repaints; ``commander.scene.shapes`` feeds the local
-    checker for EDITING and the preview, and is redrawn after a page reload."""
+    """The program layer travels through the REAL client to the REAL
+    (fake-serial) controller: a world a program sets reaches the display via
+    the epoch readback, an edit is a draft until acked and read back, a lost
+    ack is reconciled by readback, and no delayed readback or push can bring
+    back a world a newer edit replaced. The viewer's keep-out editor, end to
+    end from its context menu, places a box at a right-clicked floor point,
+    drags it by its arrows, resizes it (bad input refused) and deletes it,
+    with the request path (``commander.scene.shapes``) and the rendered scene
+    object asserted at every step. A keep-out proposed for the installation
+    layer leaves the enforced program layer, is drawn in its own colour,
+    exports as the robot config's TOML, and clears itself once readback shows
+    the backend enforcing it. A tracked object follows the preview's pose
+    during playback as a pose-only move of the drawn shape, a guessed track is
+    drawn as a ghost, scrubbing the dry run moves it along its track, and
+    clearing the override or dropping the timeline puts it back where the
+    program says. Reported collisions tint links, shapes and the tool and then
+    restore; shapes draw per layer, re-render as a diff and keep their layer
+    or draft colour through repaints; ``commander.scene.shapes`` feeds the
+    local checker for EDITING and the preview, and is redrawn after a page
+    reload."""
     from dataclasses import replace
     from unittest.mock import patch
 
     import numpy as np
     import waldoctl
-    from waldoctl import Box, Cylinder, Physical
+    from waldoctl import Box, Cylinder, Physical, ShapeWorld
 
+    from waldo_commander import constants
     from waldo_commander.common.theme import SceneColors
+    from waldo_commander.components.playback import playback
     from waldo_commander.services.path_visualizer import _mark_colliding_commands
+    from waldo_commander.services.preview_segments import segments_from_record
+    from waldo_commander.services.timeline import ObjectSample
+    from waldo_commander.services.urdf_scene.urdf_scene import (
+        _Y_TO_Z_UP,
+        SHAPE_OPACITY,
+    )
     from waldo_commander.state import simulation_state, ui_state
 
     await user.open("/")
     await wait_for_urdf_ready()
     scene = ui_state.urdf_scene
-    assert scene is not None
+    handle = waldoctl.commander.scene
+    client = waldoctl.commander.client
+    assert scene is not None and handle is not None
+    real_set_shapes = client.set_shapes
+    real_shapes = client.shapes
+    held_readback, release_readback = asyncio.Event(), asyncio.Event()
+    held_clear, release_clear = asyncio.Event(), asyncio.Event()
+    held_edit, release_edit = asyncio.Event(), asyncio.Event()
+
+    def _box(name: str) -> Box:
+        return Box(name=name, x=0.1, y=0.1, z=0.1, pose=(0.9, 0.9, 0.9, 0, 0, 0))
+
+    try:
+        # A world WC did NOT initiate (straight to the controller; scene_handle
+        # never sees the push): epoch bump → status broadcast → readback → render.
+        assert await client.set_shapes([_box("prog")]) == 1
+        await _until(
+            lambda: [s.name for s in handle.shapes] == ["prog"] and handle.confirmed,
+            "epoch-driven readback never adopted the program's world",
+        )
+        assert "shape:prog" in scene._shape_objects
+        assert await client.set_shapes([]) == 1
+        await _until(lambda: handle.shapes == [], "clear never reached display")
+        assert "shape:prog" not in scene._shape_objects
+
+        # An edit renders as a draft and flips to confirmed only once the
+        # readback returns the applied world.
+        handle.shapes = [_box("rb")]
+        assert handle.confirmed is False
+        assert scene._shape_objects["shape:rb"].color == SceneColors.SHAPE_DRAFT_HEX
+        await _until(lambda: handle.confirmed, "edit never confirmed")
+        assert [s.name for s in handle.shapes] == ["rb"]
+        assert scene._shape_objects["shape:rb"].color == SceneColors.SHAPE_HEX
+        handle.shapes = []
+        await _until(lambda: handle.confirmed, "clear never confirmed")
+        assert "shape:rb" not in scene._shape_objects
+
+        # Readback remains authoritative after an unacknowledged request.
+        async def _unacked(shapes):
+            client.set_shapes = real_set_shapes
+            return 0
+
+        client.set_shapes = _unacked
+        handle.shapes = [_box("lost")]
+        async with asyncio.timeout(5):
+            while handle._pushes_inflight:
+                await asyncio.sleep(0)
+        assert handle.confirmed is True
+        assert handle.shapes == []
+        assert "shape:lost" not in scene._shape_objects
+        records = caplog.get_records("call")
+        assert any("not acknowledged" in r.getMessage() for r in records)
+        handle.shapes = []
+        await _until(
+            lambda: handle.confirmed and not handle._pushes_inflight,
+            "clear after the lost ack never confirmed",
+        )
+
+        # A readback captured before a clear, delivered after it, is discarded
+        # instead of re-adopting a world the controller no longer enforces.
+        handle.shapes = [_box("rb")]
+        await _until(lambda: handle.confirmed, "edit never confirmed")
+
+        async def _delayed_once():
+            client.shapes = real_shapes  # delay only this one response
+            world = await real_shapes()
+            held_readback.set()
+            await release_readback.wait()
+            return world
+
+        client.shapes = _delayed_once
+        # Same entry the app uses for epoch-moved readbacks (main.py).
+        stale = asyncio.create_task(handle.refresh_from_backend())
+        await asyncio.wait_for(held_readback.wait(), timeout=5.0)
+        handle.shapes = []
+        await _until(lambda: handle.confirmed, "clear never confirmed")
+        assert "shape:rb" not in scene._shape_objects
+        release_readback.set()
+        await stale
+        assert [s.name for s in handle.shapes] == []
+        assert "shape:rb" not in scene._shape_objects
+
+        # A readback that *starts* after a clear's local apply but before its
+        # ack queries the pre-clear world; epoch-driven refreshes must wait
+        # out in-flight pushes (the push adopts readback itself once acked).
+        handle.shapes = [_box("ep")]
+        await _until(lambda: handle.confirmed, "edit never confirmed")
+
+        async def _held_once(shapes):
+            client.set_shapes = real_set_shapes  # hold only this one push's ack
+            held_clear.set()
+            await release_clear.wait()
+            return await real_set_shapes(shapes)
+
+        client.set_shapes = _held_once
+        # The refresh task is created BEFORE the clear, so it runs before the
+        # clear's push coroutine even starts — the exact CI interleaving.
+        epoch_refresh = asyncio.create_task(handle.refresh_from_backend())
+        handle.shapes = []  # local clear renders immediately; ack held
+        await asyncio.wait_for(epoch_refresh, timeout=5.0)
+        await asyncio.wait_for(held_clear.wait(), timeout=5.0)
+        assert "shape:ep" not in scene._shape_objects, (
+            "a readback during an un-acked clear resurrected the cleared shape"
+        )
+        release_clear.set()
+        await _until(
+            lambda: handle.confirmed and not handle.shapes, "clear never confirmed"
+        )
+        assert "shape:ep" not in scene._shape_objects
+
+        # An edit whose push is delayed must not overwrite a newer clear on
+        # the controller.
+        async def _delayed_edit(shapes):
+            if shapes and shapes[0].name == "delayed":
+                held_edit.set()
+                await release_edit.wait()
+            return await real_set_shapes(shapes)
+
+        client.set_shapes = _delayed_edit
+        handle.shapes = [_box("delayed")]
+        await asyncio.wait_for(held_edit.wait(), 5)
+        handle.shapes = []
+        # The clear parks on the lock the held edit owns; wait for it to be
+        # there rather than for a fixed time.
+        await _until(
+            lambda: handle._pushes_inflight >= 2,
+            "the overlapping clear never reached the push lock",
+        )
+        release_edit.set()
+        await _until(
+            lambda: handle._pushes_inflight == 0, "shape requests did not drain"
+        )
+        world = await real_shapes()
+        assert world is not None and not world.program, "older edit overwrote the clear"
+    finally:
+        client.set_shapes = real_set_shapes
+        client.shapes = real_shapes
+        for release in (release_readback, release_clear, release_edit):
+            release.set()
+        handle.shapes = []
+        await _until(
+            lambda: handle.confirmed
+            and not handle.shapes
+            and handle._pushes_inflight == 0,
+            "cleanup never confirmed",
+        )
+
+    def menu(hits: list[str], item: str, ground: list[float] | None = None) -> None:
+        right_click(user, scene.scene, hits, ground)
+        user.find(marker=item).click()
+
+    # Placed at once with a default size from the scene panel's card, then
+    # named in its inspector.
+    menu([], "scene-create-keepout", [0.4, 0.1, 0.0])
+    user.find(marker="keepout-place").click()
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and len(handle.shapes) == 1
+        and scene._selected_objects == [f"shape:{handle.shapes[0].name}"],
+        "creation was not confirmed",
+    )
+    name_el = list(user.find(marker="object-name").elements)[-1]
+    name_el.set_value("bench")
+    user.find(marker="object-name").trigger("blur")
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and any(s.name == "bench" for s in handle.shapes),
+        "the rename was not confirmed",
+    )
+
+    bench = next(s for s in handle.shapes if s.name == "bench")
+    assert bench.kind == "box"
+    # Birth pose sits the box ON the clicked floor point, not half inside it.
+    assert bench.pose[:3] == pytest.approx((0.4, 0.1, 0.05))
+    assert "shape:bench" in scene._shape_objects
+
+    # Drag — its arrows, as the browser reports the drag let go. A click on
+    # empty space in the view puts the selection away first.
+    UserInteraction(user, {scene.scene}, None).trigger(
+        "select", {"revision": handle.revision, "hits": [], "extend": False}
+    )
+    assert not scene._selected_objects
+    menu(["shape:bench"], "shape-menu-move")
+    arrows = scene.scene.interaction["shapeMove"]
+    assert arrows["node"] == scene._shape_objects["shape:bench"].id
+    Drag(user, scene.scene, "shape").begin(**arrows).release(
+        **arrows, x=0.25, y=-0.1, z=0.05
+    )
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and handle.shapes[0].pose[0] == 0.25,
+        "movement was not confirmed",
+    )
+    bench = next(s for s in handle.shapes if s.name == "bench")
+    assert bench.pose[:3] == pytest.approx((0.25, -0.1, 0.05))
+    # The setter re-rendered the layer as a diff: the arrows stay on the
+    # same object, now drawn where it was let go.
+    obj = scene._shape_objects["shape:bench"]
+    assert scene.scene.interaction["shapeMove"]["node"] == obj.id
+    assert (obj.x, obj.y, obj.z) == pytest.approx((0.25, -0.1, 0.05))
+    menu(["shape:bench"], "shape-menu-stop-move")
+    assert scene.scene.interaction["shapeMove"] is None
+
+    menu(["shape:bench"], "shape-menu-edit")
+    await asyncio.sleep(0)
+    assert scene._selected_objects == ["shape:bench"]
+    dim_x = list(user.find(marker="object-dim-x").elements)[-1]
+    dim_x.set_value(-50)
+    user.find(marker="object-dim-x").trigger("blur")
+    await asyncio.sleep(0)
+    assert next(s for s in handle.shapes if s.name == "bench").x == pytest.approx(0.1)
+    dim_x.set_value(300)
+    user.find(marker="object-dim-x").trigger("blur")
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and handle.shapes[0].x == 0.3,
+        "dimension edit was not confirmed",
+    )
+    assert next(s for s in handle.shapes if s.name == "bench").x == pytest.approx(0.3)
+
+    # Delete — at once; undo brings it back.
+    menu(["shape:bench"], "shape-menu-delete")
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and not handle.shapes,
+        "deletion was not confirmed",
+    )
+    assert all(s.name != "bench" for s in handle.shapes)
+    assert "shape:bench" not in scene._shape_objects
+    await _until(
+        lambda: handle.confirmed and handle._pushes_inflight == 0,
+        "deletion was not confirmed by the controller",
+    )
+    world = await waldoctl.commander.client.shapes()
+    assert world is not None and not world.program
+
+    monkeypatch.setattr(constants, "default_program_dir", lambda: tmp_path)
+    wall = Box(name="wall", x=0.1, y=0.1, z=0.3, pose=(0.3, 0.0, 0.15, 0, 0, 0))
+    handle.shapes = [wall]
+    handle.propose_installation(["wall"])
+    assert handle.shapes == [] and handle.installation_draft == (wall,)
+    assert "shape:wall" not in scene._shape_objects
+
+    def ghost_color(sc):
+        return sc._shape_objects["draft:wall"].color
+
+    proposal = scene._shape_objects["draft:wall"]
+    assert proposal.color == SceneColors.SHAPE_PROPOSED_HEX
+    assert proposal.opacity == pytest.approx(SHAPE_OPACITY)
+    with pytest.raises(ValueError, match="proposed for the installation layer"):
+        handle.shapes = [wall]
+    with pytest.raises(ValueError, match="no program-layer shape"):
+        handle.propose_installation(["nothing"])
+
+    with scene.scene.client:
+        scene._show_installation_toml_dialog()
+    await user.should_see(marker="installation-toml-dialog")
+    user.find(marker="installation-toml-save").click()
+    await user.should_see("Saved to")
+    saved = (tmp_path / "installation_shapes.toml").read_text()
+    assert "[[installation_shapes]]" in saved and 'name = "wall"' in saved
+
+    # A proposal is enforced by this process even though no backend enforces
+    # it yet — that is what makes it possible to design against.
+    encasing = Box(name="cage", x=0.6, y=0.6, z=0.6, pose=(0.0, 0.0, 0.1, 0, 0, 0))
+    handle.shapes = [*handle.shapes, encasing]
+    handle.propose_installation(["cage"])
+    q = waldoctl.commander.status.joints.angles.rad
+    assert ui_state.active_robot.in_collision(q), (
+        "the proposal must reach this process's collision world"
+    )
+    handle.discard_installation_draft(["cage"])
+    assert not ui_state.active_robot.in_collision(q)
+
+    # An appearance-mode repaint must not turn the proposal into a keep-out.
+    scene.set_appearance_mode(RobotAppearanceMode.EDITING)
+    assert ghost_color(scene) == SceneColors.SHAPE_PROPOSED_HEX
+    scene.set_appearance_mode(RobotAppearanceMode.LIVE)
+    assert ghost_color(scene) == SceneColors.SHAPE_PROPOSED_HEX
+
+    # The backend's next boot enforces it: readback adopts the proposal. A
+    # refresh is skipped while the proposal's own push awaits its ack, so
+    # wait for that readback to land first.
+    for _ in range(200):
+        if handle.confirmed:
+            break
+        await asyncio.sleep(0.05)
+    assert handle.confirmed, "the program-layer push never confirmed"
+
+    # The config is authored by hand from the exported TOML, so what comes
+    # back is the same shape by name, not field for field.
+    enforced_wall = Box(
+        name="wall", x=0.1, y=0.1, z=0.3, pose=(0.3, 0.0, 0.15, 0, 0, 0), margin=0.01
+    )
+
+    async def _enforced() -> ShapeWorld:
+        return ShapeWorld(installation=(enforced_wall,), program=())
+
+    real_shapes = waldoctl.commander.client.shapes
+    monkeypatch.setattr(waldoctl.commander.client, "shapes", _enforced)
+    await handle.refresh_from_backend()
+    assert handle.installation_draft == ()
+    assert "draft:wall" not in scene._shape_objects
+    assert scene._shape_objects["install:wall"].color == SceneColors.SHAPE_INSTALL_HEX
+
+    # A withdrawn proposal is a program keep-out again; its commit reads back
+    # what the controller now holds.
+    monkeypatch.setattr(waldoctl.commander.client, "shapes", real_shapes)
+    post = Box(name="post", x=0.05, y=0.05, z=0.2, pose=(0.4, 0.0, 0.1, 0, 0, 0))
+    handle.shapes = [post]
+    handle.propose_installation(["post"])
+    for _ in range(200):
+        if handle.confirmed:
+            break
+        await asyncio.sleep(0.05)
+    await scene._withdraw_proposal("post")
+    assert handle.installation_draft == () and [s.name for s in handle.shapes] == [
+        "post"
+    ]
+
+    # A PROGRAM shape arriving under a drafted name is the same collision:
+    # readback is truth and is adopted wholesale, so the draft has to lose
+    # the name or both layers hold it and `_assign`'s clash check refuses
+    # every later edit, including from handlers that do not catch it.
+    handle.shapes = [post]
+    handle.propose_installation(["post"])
+    assert [s.name for s in handle.installation_draft] == ["post"]
+    # A readback is skipped while a push awaits its ack (it would query the
+    # pre-edit world), so let the proposal's own push land first.
+    for _ in range(200):
+        if not handle._pushes_inflight:
+            break
+        await asyncio.sleep(0.05)
+    assert not handle._pushes_inflight, "the proposal's push never acked"
+
+    async def _program_post() -> ShapeWorld:
+        return ShapeWorld(installation=(), program=(post,))
+
+    monkeypatch.setattr(waldoctl.commander.client, "shapes", _program_post)
+    await handle.refresh_from_backend()
+    assert handle.installation_draft == ()
+    enforced = [s.name for s in handle.enforced_locally]
+    assert enforced.count("post") == 1, f"one layer only, got {enforced}"
+    handle.shapes = [post]  # an edit still goes through rather than clashing
+
+    # The monkeypatched readback put `wall` into this process's installation
+    # checker; the real backend's readback has to take it back out, or a
+    # phantom keep-out sits in the middle of every later test's workspace.
+    monkeypatch.undo()
+    handle.shapes = []
+    for _ in range(200):
+        if handle.confirmed:
+            break
+        await asyncio.sleep(0.05)
+    assert handle.confirmed and handle.installation == ()
+
+    scene.render_shapes(
+        [
+            Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.3, 0.0, 0.04, 0, 0, 0)),
+            Cylinder(
+                name="can", radius=0.03, length=0.1, pose=(0.4, 0.0, 0.05, 0, 0, 0)
+            ),
+        ]
+    )
+    block = scene._shape_objects["shape:block"]
+    can = scene._shape_objects["shape:can"]
+    assert (block.x, block.z) == (0.3, 0.04)
+
+    scene.set_object_poses(
+        {
+            "block": ObjectSample((0.5, 0.1, 0.2, 1.0, 0.0, 0.0, 0.0), physics=False),
+            "can": ObjectSample((0.4, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0), physics=True),
+        }
+    )
+    assert (block.x, block.y, block.z) == (0.5, 0.1, 0.2)
+    assert block.opacity == pytest.approx(SHAPE_OPACITY * 0.5), (
+        "a guessed track is a ghost"
+    )
+    assert can.z == 0.3 and can.opacity == pytest.approx(SHAPE_OPACITY)
+    assert can.R == _Y_TO_Z_UP.tolist(), (
+        "a cylinder keeps its Y-up correction while carried"
+    )
+
+    # A body leaving the record must not strand its previous override.
+    scene.set_object_poses(
+        {"block": ObjectSample((0.5, 0.1, 0.2, 1.0, 0.0, 0.0, 0.0), physics=False)}
+    )
+    assert can.z == 0.05
+    assert block.z == 0.2 and block.opacity == pytest.approx(SHAPE_OPACITY * 0.5)
+
+    scene.set_object_poses(None)
+    assert (block.x, block.y, block.z) == (0.3, 0.0, 0.04)
+    assert block.opacity == pytest.approx(SHAPE_OPACITY)
+    assert can.z == 0.05
+
+    # A re-render that moves an object to a new declared pose ends the
+    # override, so the ghost look must end with it rather than stranding
+    # the object at half opacity nothing will restore.
+    scene.set_object_poses(
+        {"block": ObjectSample((0.5, 0.1, 0.2, 1.0, 0.0, 0.0, 0.0), physics=False)}
+    )
+    assert block.opacity == pytest.approx(SHAPE_OPACITY * 0.5)
+    scene.render_shapes(
+        [
+            Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.2, 0.0, 0.04, 0, 0, 0)),
+            Cylinder(
+                name="can", radius=0.03, length=0.1, pose=(0.4, 0.0, 0.05, 0, 0, 0)
+            ),
+        ]
+    )
+    assert (block.x, block.z) == (0.2, 0.04)
+    assert block.opacity == pytest.approx(SHAPE_OPACITY)
+
+    # Playback time drives the same objects through the predicted record.
+    scene.render_shapes(
+        [Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.3, 0.0, 0.04, 0, 0, 0))]
+    )
+    block = scene._shape_objects["shape:block"]
+    # Two seconds of lift at the record's rate; the predicted record is the
+    # one that knows where the carried block went.
+    rows = 101
+    tcp = np.zeros((rows, 6), dtype=np.float32)
+    tcp[:, 0] = 0.3
+    tcp[:, 2] = np.linspace(0.3, 0.5, rows)
+    poses = np.zeros((rows, 7), dtype=np.float32)
+    poses[:, 0] = 0.3
+    poses[:, 2] = np.linspace(0.04, 0.24, rows)
+    poses[:, 3] = 1.0
+
+    def lift(digest: bytes, objects=()) -> waldoctl.TickIndex:
+        return waldoctl.TickIndex(
+            row_dt_s=0.02,
+            joints_rad=np.zeros((rows, 6), dtype=np.float32),
+            tcp=tcp,
+            tool_closed=np.zeros(rows, dtype=np.float32),
+            tool_gripping=np.zeros(rows, dtype=np.bool_),
+            blocks=(
+                waldoctl.TickBlock(
+                    command=0,
+                    start_row=0,
+                    rows=rows,
+                    line_number=1,
+                    move_type="cartesian",
+                ),
+            ),
+            objects=objects,
+            digest=digest,
+        )
+
+    active = waldoctl.commander.programs.active
+    assert active is not None
+    commanded = lift(b"commanded")
+    active.dry_run.commanded = commanded
+    active.dry_run.commanded_revision = 1
+    active.dry_run.predicted = lift(
+        b"predicted", (waldoctl.ObjectTicks(name="block", poses=poses),)
+    )
+    active.dry_run.predicted_revision = 1
+    active.dry_run.path_segments = segments_from_record(commanded, [])
+    active.dry_run.total_steps = 1
+    try:
+        playback.invalidate_timeline()
+        assert playback._ensure_timeline() is not None
+        playback._apply_time(1.0)
+        assert block.z == pytest.approx(0.14), "half way through the lift"
+        playback._apply_time(2.0)
+        assert block.z == pytest.approx(0.24)
+
+        playback.invalidate_timeline()
+        assert block.z == 0.04, "declared pose restored once the timeline is dropped"
+    finally:
+        active.dry_run.commanded = None
+        active.dry_run.predicted = None
+        active.dry_run.path_segments = []
+        active.dry_run.total_steps = 0
+        playback.invalidate_timeline()
+
+    # Last: the tool tint at the end leaves SSG-48 on the robot model's
+    # collision checker.
     coll = waldoctl.commander.status.collision
 
     # Controller reports pairs in the display vocabulary: plain URDF link names.
@@ -147,19 +654,27 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
     # throughout. The page's view mounts first: before it does, nothing is
     # sent at all.
     group = scene._shapes_group
+
+    def scene_messages(sent) -> int:
+        # The page's dials draw through the same client.
+        return sum(
+            str(call.args[0]).startswith(f"runMethod({scene.scene.id},")
+            for call in sent.call_args_list
+        )
+
     UserInteraction(user, {scene.scene}, None).trigger("init")
     await asyncio.sleep(0)
     with patch.object(scene.scene.client, "run_javascript") as sent:
         scene.render_shapes([wall, post], installation=[bench])
         await asyncio.sleep(0)
-    assert sent.call_count == 0, "an unchanged world must not be re-sent"
+    assert scene_messages(sent) == 0, "an unchanged world must not be re-sent"
     assert scene._shape_objects["shape:wall"] is wall_obj
     assert scene._shapes_group is group
     moved = replace(wall, pose=(0.5, 0.0, 0.3, 0, 0, 0))
     with patch.object(scene.scene.client, "run_javascript") as sent:
         scene.render_shapes([moved, post], installation=[bench])
         await asyncio.sleep(0)
-    assert sent.call_count == 1, "a moved shape goes out in one message"
+    assert scene_messages(sent) == 1, "a moved shape goes out in one message"
     assert scene._shape_objects["shape:wall"] is wall_obj, "pose-only: same object"
     assert wall_obj.x == pytest.approx(0.5)
     bigger = Box(name="wall", x=0.2, y=0.1, z=0.1, pose=moved.pose)
@@ -299,295 +814,6 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
     coll.pairs = []
     scene.update_from_robot_state()
     assert mesh.color != SceneColors.COLLISION_HEX  # restored, not stuck red
-
-
-@pytest.mark.integration
-async def test_playback_moves_world_objects_and_restores_their_declared_pose(
-    user: User,
-) -> None:
-    """A tracked object follows the preview's pose during playback as a
-    pose-only move of the drawn shape, a guessed track is drawn as a ghost,
-    scrubbing the dry run moves it along its track, and clearing the override
-    or dropping the timeline puts it back where the program says."""
-    import numpy as np
-    import waldoctl
-    from waldoctl import Box, Cylinder
-
-    from waldo_commander.components.playback import playback
-    from waldo_commander.services.preview_segments import segments_from_record
-    from waldo_commander.services.timeline import ObjectSample
-    from waldo_commander.services.urdf_scene.urdf_scene import (
-        _Y_TO_Z_UP,
-        SHAPE_OPACITY,
-    )
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-    scene = ui_state.urdf_scene
-    assert scene is not None
-    scene.render_shapes(
-        [
-            Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.3, 0.0, 0.04, 0, 0, 0)),
-            Cylinder(
-                name="can", radius=0.03, length=0.1, pose=(0.4, 0.0, 0.05, 0, 0, 0)
-            ),
-        ]
-    )
-    block = scene._shape_objects["shape:block"]
-    can = scene._shape_objects["shape:can"]
-    assert (block.x, block.z) == (0.3, 0.04)
-
-    scene.set_object_poses(
-        {
-            "block": ObjectSample((0.5, 0.1, 0.2, 1.0, 0.0, 0.0, 0.0), physics=False),
-            "can": ObjectSample((0.4, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0), physics=True),
-        }
-    )
-    assert (block.x, block.y, block.z) == (0.5, 0.1, 0.2)
-    assert block.opacity == pytest.approx(SHAPE_OPACITY * 0.5), (
-        "a guessed track is a ghost"
-    )
-    assert can.z == 0.3 and can.opacity == pytest.approx(SHAPE_OPACITY)
-    assert can.R == _Y_TO_Z_UP.tolist(), (
-        "a cylinder keeps its Y-up correction while carried"
-    )
-
-    # A body leaving the record must not strand its previous override.
-    scene.set_object_poses(
-        {"block": ObjectSample((0.5, 0.1, 0.2, 1.0, 0.0, 0.0, 0.0), physics=False)}
-    )
-    assert can.z == 0.05
-    assert block.z == 0.2 and block.opacity == pytest.approx(SHAPE_OPACITY * 0.5)
-
-    scene.set_object_poses(None)
-    assert (block.x, block.y, block.z) == (0.3, 0.0, 0.04)
-    assert block.opacity == pytest.approx(SHAPE_OPACITY)
-    assert can.z == 0.05
-
-    # A re-render that moves an object to a new declared pose ends the
-    # override, so the ghost look must end with it rather than stranding
-    # the object at half opacity nothing will restore.
-    scene.set_object_poses(
-        {"block": ObjectSample((0.5, 0.1, 0.2, 1.0, 0.0, 0.0, 0.0), physics=False)}
-    )
-    assert block.opacity == pytest.approx(SHAPE_OPACITY * 0.5)
-    scene.render_shapes(
-        [
-            Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.2, 0.0, 0.04, 0, 0, 0)),
-            Cylinder(
-                name="can", radius=0.03, length=0.1, pose=(0.4, 0.0, 0.05, 0, 0, 0)
-            ),
-        ]
-    )
-    assert (block.x, block.z) == (0.2, 0.04)
-    assert block.opacity == pytest.approx(SHAPE_OPACITY)
-
-    # Playback time drives the same objects through the predicted record.
-    scene.render_shapes(
-        [Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.3, 0.0, 0.04, 0, 0, 0))]
-    )
-    block = scene._shape_objects["shape:block"]
-    # Two seconds of lift at the record's rate; the predicted record is the
-    # one that knows where the carried block went.
-    rows = 101
-    tcp = np.zeros((rows, 6), dtype=np.float32)
-    tcp[:, 0] = 0.3
-    tcp[:, 2] = np.linspace(0.3, 0.5, rows)
-    poses = np.zeros((rows, 7), dtype=np.float32)
-    poses[:, 0] = 0.3
-    poses[:, 2] = np.linspace(0.04, 0.24, rows)
-    poses[:, 3] = 1.0
-
-    def record(digest: bytes, objects=()) -> waldoctl.TickIndex:
-        return waldoctl.TickIndex(
-            row_dt_s=0.02,
-            joints_rad=np.zeros((rows, 6), dtype=np.float32),
-            tcp=tcp,
-            tool_closed=np.zeros(rows, dtype=np.float32),
-            tool_gripping=np.zeros(rows, dtype=np.bool_),
-            blocks=(
-                waldoctl.TickBlock(
-                    command=0,
-                    start_row=0,
-                    rows=rows,
-                    line_number=1,
-                    move_type="cartesian",
-                ),
-            ),
-            objects=objects,
-            digest=digest,
-        )
-
-    active = waldoctl.commander.programs.active
-    assert active is not None
-    commanded = record(b"commanded")
-    active.dry_run.commanded = commanded
-    active.dry_run.commanded_revision = 1
-    active.dry_run.predicted = record(
-        b"predicted", (waldoctl.ObjectTicks(name="block", poses=poses),)
-    )
-    active.dry_run.predicted_revision = 1
-    active.dry_run.path_segments = segments_from_record(commanded, [])
-    active.dry_run.total_steps = 1
-    try:
-        playback.invalidate_timeline()
-        assert playback._ensure_timeline() is not None
-        playback._apply_time(1.0)
-        assert block.z == pytest.approx(0.14), "half way through the lift"
-        playback._apply_time(2.0)
-        assert block.z == pytest.approx(0.24)
-
-        playback.invalidate_timeline()
-        assert block.z == 0.04, "declared pose restored once the timeline is dropped"
-    finally:
-        active.dry_run.commanded = None
-        active.dry_run.predicted = None
-        active.dry_run.path_segments = []
-        active.dry_run.total_steps = 0
-        playback.invalidate_timeline()
-
-
-@pytest.mark.integration
-async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
-    user: User, tmp_path, monkeypatch
-) -> None:
-    """A keep-out proposed for the installation layer leaves the enforced
-    program layer, is drawn in its own colour, exports as the robot config's
-    TOML, and clears itself once readback shows the backend enforcing it."""
-    import waldoctl
-    from waldoctl import Box, ShapeWorld
-
-    from waldo_commander import constants
-    from waldo_commander.common.theme import SceneColors
-    from waldo_commander.services.urdf_scene.urdf_scene import SHAPE_OPACITY
-    from waldo_commander.state import ui_state
-
-    monkeypatch.setattr(constants, "default_program_dir", lambda: tmp_path)
-    await user.open("/")
-    await wait_for_urdf_ready()
-    scene = ui_state.urdf_scene
-    handle = waldoctl.commander.scene
-    assert scene is not None and handle is not None
-
-    wall = Box(name="wall", x=0.1, y=0.1, z=0.3, pose=(0.3, 0.0, 0.15, 0, 0, 0))
-    handle.shapes = [wall]
-    handle.propose_installation(["wall"])
-    assert handle.shapes == [] and handle.installation_draft == (wall,)
-    assert "shape:wall" not in scene._shape_objects
-
-    def ghost_color(sc):
-        return sc._shape_objects["draft:wall"].color
-
-    proposal = scene._shape_objects["draft:wall"]
-    assert proposal.color == SceneColors.SHAPE_PROPOSED_HEX
-    assert proposal.opacity == pytest.approx(SHAPE_OPACITY)
-    with pytest.raises(ValueError, match="proposed for the installation layer"):
-        handle.shapes = [wall]
-    with pytest.raises(ValueError, match="no program-layer shape"):
-        handle.propose_installation(["nothing"])
-
-    with scene.scene.client:
-        scene._show_installation_toml_dialog()
-    await user.should_see(marker="installation-toml-dialog")
-    user.find(marker="installation-toml-save").click()
-    await user.should_see("Saved to")
-    saved = (tmp_path / "installation_shapes.toml").read_text()
-    assert "[[installation_shapes]]" in saved and 'name = "wall"' in saved
-
-    # A proposal is enforced by this process even though no backend enforces
-    # it yet — that is what makes it possible to design against.
-    encasing = Box(name="cage", x=0.6, y=0.6, z=0.6, pose=(0.0, 0.0, 0.1, 0, 0, 0))
-    handle.shapes = [*handle.shapes, encasing]
-    handle.propose_installation(["cage"])
-    q = waldoctl.commander.status.joints.angles.rad
-    assert ui_state.active_robot.in_collision(q), (
-        "the proposal must reach this process's collision world"
-    )
-    handle.discard_installation_draft(["cage"])
-    assert not ui_state.active_robot.in_collision(q)
-
-    # An appearance-mode repaint must not turn the proposal into a keep-out.
-    scene.set_appearance_mode(RobotAppearanceMode.EDITING)
-    assert ghost_color(scene) == SceneColors.SHAPE_PROPOSED_HEX
-    scene.set_appearance_mode(RobotAppearanceMode.LIVE)
-    assert ghost_color(scene) == SceneColors.SHAPE_PROPOSED_HEX
-
-    # The backend's next boot enforces it: readback adopts the proposal. A
-    # refresh is skipped while the proposal's own push awaits its ack, so
-    # wait for that readback to land first.
-    for _ in range(200):
-        if handle.confirmed:
-            break
-        await asyncio.sleep(0.05)
-    assert handle.confirmed, "the program-layer push never confirmed"
-
-    # The config is authored by hand from the exported TOML, so what comes
-    # back is the same shape by name, not field for field.
-    enforced_wall = Box(
-        name="wall", x=0.1, y=0.1, z=0.3, pose=(0.3, 0.0, 0.15, 0, 0, 0), margin=0.01
-    )
-
-    async def _enforced() -> ShapeWorld:
-        return ShapeWorld(installation=(enforced_wall,), program=())
-
-    real_shapes = waldoctl.commander.client.shapes
-    monkeypatch.setattr(waldoctl.commander.client, "shapes", _enforced)
-    await handle.refresh_from_backend()
-    assert handle.installation_draft == ()
-    assert "draft:wall" not in scene._shape_objects
-    assert scene._shape_objects["install:wall"].color == SceneColors.SHAPE_INSTALL_HEX
-
-    # A withdrawn proposal is a program keep-out again; its commit reads back
-    # what the controller now holds.
-    monkeypatch.setattr(waldoctl.commander.client, "shapes", real_shapes)
-    post = Box(name="post", x=0.05, y=0.05, z=0.2, pose=(0.4, 0.0, 0.1, 0, 0, 0))
-    handle.shapes = [post]
-    handle.propose_installation(["post"])
-    for _ in range(200):
-        if handle.confirmed:
-            break
-        await asyncio.sleep(0.05)
-    await scene._withdraw_proposal("post")
-    assert handle.installation_draft == () and [s.name for s in handle.shapes] == [
-        "post"
-    ]
-
-    # A PROGRAM shape arriving under a drafted name is the same collision:
-    # readback is truth and is adopted wholesale, so the draft has to lose
-    # the name or both layers hold it and `_assign`'s clash check refuses
-    # every later edit, including from handlers that do not catch it.
-    handle.shapes = [post]
-    handle.propose_installation(["post"])
-    assert [s.name for s in handle.installation_draft] == ["post"]
-    # A readback is skipped while a push awaits its ack (it would query the
-    # pre-edit world), so let the proposal's own push land first.
-    for _ in range(200):
-        if not handle._pushes_inflight:
-            break
-        await asyncio.sleep(0.05)
-    assert not handle._pushes_inflight, "the proposal's push never acked"
-
-    async def _program_post() -> ShapeWorld:
-        return ShapeWorld(installation=(), program=(post,))
-
-    monkeypatch.setattr(waldoctl.commander.client, "shapes", _program_post)
-    await handle.refresh_from_backend()
-    assert handle.installation_draft == ()
-    enforced = [s.name for s in handle.enforced_locally]
-    assert enforced.count("post") == 1, f"one layer only, got {enforced}"
-    handle.shapes = [post]  # an edit still goes through rather than clashing
-
-    # The monkeypatched readback put `wall` into this process's installation
-    # checker; the real backend's readback has to take it back out, or a
-    # phantom keep-out sits in the middle of every later test's workspace.
-    monkeypatch.undo()
-    handle.shapes = []
-    for _ in range(200):
-        if handle.confirmed:
-            break
-        await asyncio.sleep(0.05)
-    assert handle.confirmed and handle.installation == ()
 
 
 def _one_row_record(commands: int):
@@ -747,283 +973,3 @@ def test_preview_script_set_shapes_real_dispatch_no_stale_world() -> None:
                 setattr(mod, name, val)
         # The backend's checker is shared in-process — leave it clean.
         waldoctl.commander.robot.apply_shapes([])
-
-
-@pytest.mark.integration
-async def test_shape_pushes_confirm_by_readback_and_never_restore_an_older_world(
-    user: User, caplog: pytest.LogCaptureFixture
-) -> None:
-    """The program layer travels through the REAL client to the REAL
-    (fake-serial) controller: a world a program sets reaches the display via
-    the epoch readback, an edit is a draft until acked and read back, a lost
-    lost ack is reconciled by readback, and no delayed readback or push can bring back a
-    world a newer edit replaced."""
-    import waldoctl
-    from waldoctl import Box
-
-    from waldo_commander.common.theme import SceneColors
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-    scene = ui_state.urdf_scene
-    handle = waldoctl.commander.scene
-    client = waldoctl.commander.client
-    assert scene is not None and handle is not None
-    real_set_shapes = client.set_shapes
-    real_shapes = client.shapes
-    held_readback, release_readback = asyncio.Event(), asyncio.Event()
-    held_clear, release_clear = asyncio.Event(), asyncio.Event()
-    held_edit, release_edit = asyncio.Event(), asyncio.Event()
-
-    def _box(name: str) -> Box:
-        return Box(name=name, x=0.1, y=0.1, z=0.1, pose=(0.9, 0.9, 0.9, 0, 0, 0))
-
-    try:
-        # A world WC did NOT initiate (straight to the controller; scene_handle
-        # never sees the push): epoch bump → status broadcast → readback → render.
-        assert await client.set_shapes([_box("prog")]) == 1
-        await _until(
-            lambda: [s.name for s in handle.shapes] == ["prog"] and handle.confirmed,
-            "epoch-driven readback never adopted the program's world",
-        )
-        assert "shape:prog" in scene._shape_objects
-        assert await client.set_shapes([]) == 1
-        await _until(lambda: handle.shapes == [], "clear never reached display")
-        assert "shape:prog" not in scene._shape_objects
-
-        # An edit renders as a draft and flips to confirmed only once the
-        # readback returns the applied world.
-        handle.shapes = [_box("rb")]
-        assert handle.confirmed is False
-        assert scene._shape_objects["shape:rb"].color == SceneColors.SHAPE_DRAFT_HEX
-        await _until(lambda: handle.confirmed, "edit never confirmed")
-        assert [s.name for s in handle.shapes] == ["rb"]
-        assert scene._shape_objects["shape:rb"].color == SceneColors.SHAPE_HEX
-        handle.shapes = []
-        await _until(lambda: handle.confirmed, "clear never confirmed")
-        assert "shape:rb" not in scene._shape_objects
-
-        # Readback remains authoritative after an unacknowledged request.
-        async def _unacked(shapes):
-            client.set_shapes = real_set_shapes
-            return 0
-
-        client.set_shapes = _unacked
-        handle.shapes = [_box("lost")]
-        async with asyncio.timeout(5):
-            while handle._pushes_inflight:
-                await asyncio.sleep(0)
-        assert handle.confirmed is True
-        assert handle.shapes == []
-        assert "shape:lost" not in scene._shape_objects
-        records = caplog.get_records("call")
-        assert any("not acknowledged" in r.getMessage() for r in records)
-        handle.shapes = []
-        await _until(
-            lambda: handle.confirmed and not handle._pushes_inflight,
-            "clear after the lost ack never confirmed",
-        )
-
-        # A readback captured before a clear, delivered after it, is discarded
-        # instead of re-adopting a world the controller no longer enforces.
-        handle.shapes = [_box("rb")]
-        await _until(lambda: handle.confirmed, "edit never confirmed")
-
-        async def _delayed_once():
-            client.shapes = real_shapes  # delay only this one response
-            world = await real_shapes()
-            held_readback.set()
-            await release_readback.wait()
-            return world
-
-        client.shapes = _delayed_once
-        # Same entry the app uses for epoch-moved readbacks (main.py).
-        stale = asyncio.create_task(handle.refresh_from_backend())
-        await asyncio.wait_for(held_readback.wait(), timeout=5.0)
-        handle.shapes = []
-        await _until(lambda: handle.confirmed, "clear never confirmed")
-        assert "shape:rb" not in scene._shape_objects
-        release_readback.set()
-        await stale
-        assert [s.name for s in handle.shapes] == []
-        assert "shape:rb" not in scene._shape_objects
-
-        # A readback that *starts* after a clear's local apply but before its
-        # ack queries the pre-clear world; epoch-driven refreshes must wait
-        # out in-flight pushes (the push adopts readback itself once acked).
-        handle.shapes = [_box("ep")]
-        await _until(lambda: handle.confirmed, "edit never confirmed")
-
-        async def _held_once(shapes):
-            client.set_shapes = real_set_shapes  # hold only this one push's ack
-            held_clear.set()
-            await release_clear.wait()
-            return await real_set_shapes(shapes)
-
-        client.set_shapes = _held_once
-        # The refresh task is created BEFORE the clear, so it runs before the
-        # clear's push coroutine even starts — the exact CI interleaving.
-        epoch_refresh = asyncio.create_task(handle.refresh_from_backend())
-        handle.shapes = []  # local clear renders immediately; ack held
-        await asyncio.wait_for(epoch_refresh, timeout=5.0)
-        await asyncio.wait_for(held_clear.wait(), timeout=5.0)
-        assert "shape:ep" not in scene._shape_objects, (
-            "a readback during an un-acked clear resurrected the cleared shape"
-        )
-        release_clear.set()
-        await _until(
-            lambda: handle.confirmed and not handle.shapes, "clear never confirmed"
-        )
-        assert "shape:ep" not in scene._shape_objects
-
-        # An edit whose push is delayed must not overwrite a newer clear on
-        # the controller.
-        async def _delayed_edit(shapes):
-            if shapes and shapes[0].name == "delayed":
-                held_edit.set()
-                await release_edit.wait()
-            return await real_set_shapes(shapes)
-
-        client.set_shapes = _delayed_edit
-        handle.shapes = [_box("delayed")]
-        await asyncio.wait_for(held_edit.wait(), 5)
-        handle.shapes = []
-        # The clear parks on the lock the held edit owns; wait for it to be
-        # there rather than for a fixed time.
-        await _until(
-            lambda: handle._pushes_inflight >= 2,
-            "the overlapping clear never reached the push lock",
-        )
-        release_edit.set()
-        await _until(
-            lambda: handle._pushes_inflight == 0, "shape requests did not drain"
-        )
-        world = await real_shapes()
-        assert world is not None and not world.program, "older edit overwrote the clear"
-    finally:
-        client.set_shapes = real_set_shapes
-        client.shapes = real_shapes
-        for release in (release_readback, release_clear, release_edit):
-            release.set()
-        handle.shapes = []
-        await _until(
-            lambda: handle.confirmed
-            and not handle.shapes
-            and handle._pushes_inflight == 0,
-            "cleanup never confirmed",
-        )
-
-
-@pytest.mark.integration
-async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None:
-    """The viewer's keep-out editor, end to end from its context menu: place a
-    box at a right-clicked floor point through the dialog, drag it by its
-    arrows, resize it through the edit dialog (bad input refused), delete it
-    with confirmation — asserting the request path (``commander.scene.shapes``)
-    and the rendered scene object at every step."""
-    import asyncio
-
-    import waldoctl
-
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-    scene = ui_state.urdf_scene
-    handle = waldoctl.commander.scene
-    assert scene is not None and handle is not None
-
-    def menu(hits: list[str], item: str, ground: list[float] | None = None) -> None:
-        right_click(user, scene.scene, hits, ground)
-        user.find(marker=item).click()
-
-    # Placed at once with a default size from the scene panel's card, then
-    # named in its inspector.
-    menu([], "scene-create-keepout", [0.4, 0.1, 0.0])
-    user.find(marker="keepout-place").click()
-    await _until(
-        lambda: handle.confirmed
-        and not scene.object_history.busy
-        and len(handle.shapes) == 1
-        and scene._selected_objects == [f"shape:{handle.shapes[0].name}"],
-        "creation was not confirmed",
-    )
-    name_el = list(user.find(marker="object-name").elements)[-1]
-    name_el.set_value("bench")
-    user.find(marker="object-name").trigger("blur")
-    await _until(
-        lambda: handle.confirmed
-        and not scene.object_history.busy
-        and any(s.name == "bench" for s in handle.shapes),
-        "the rename was not confirmed",
-    )
-
-    bench = next(s for s in handle.shapes if s.name == "bench")
-    assert bench.kind == "box"
-    # Birth pose sits the box ON the clicked floor point, not half inside it.
-    assert bench.pose[:3] == pytest.approx((0.4, 0.1, 0.05))
-    assert "shape:bench" in scene._shape_objects
-
-    # Drag — its arrows, as the browser reports the drag let go. A click on
-    # empty space in the view puts the selection away first.
-    UserInteraction(user, {scene.scene}, None).trigger(
-        "select", {"revision": handle.revision, "hits": [], "extend": False}
-    )
-    assert not scene._selected_objects
-    menu(["shape:bench"], "shape-menu-move")
-    arrows = scene.scene.interaction["shapeMove"]
-    assert arrows["node"] == scene._shape_objects["shape:bench"].id
-    Drag(user, scene.scene, "shape").begin(**arrows).release(
-        **arrows, x=0.25, y=-0.1, z=0.05
-    )
-    await _until(
-        lambda: handle.confirmed
-        and not scene.object_history.busy
-        and handle.shapes[0].pose[0] == 0.25,
-        "movement was not confirmed",
-    )
-    bench = next(s for s in handle.shapes if s.name == "bench")
-    assert bench.pose[:3] == pytest.approx((0.25, -0.1, 0.05))
-    # The setter re-rendered the layer as a diff: the arrows stay on the
-    # same object, now drawn where it was let go.
-    obj = scene._shape_objects["shape:bench"]
-    assert scene.scene.interaction["shapeMove"]["node"] == obj.id
-    assert (obj.x, obj.y, obj.z) == pytest.approx((0.25, -0.1, 0.05))
-    menu(["shape:bench"], "shape-menu-stop-move")
-    assert scene.scene.interaction["shapeMove"] is None
-
-    menu(["shape:bench"], "shape-menu-edit")
-    await asyncio.sleep(0)
-    assert scene._selected_objects == ["shape:bench"]
-    dim_x = list(user.find(marker="object-dim-x").elements)[-1]
-    dim_x.set_value(-50)
-    user.find(marker="object-dim-x").trigger("blur")
-    await asyncio.sleep(0)
-    assert next(s for s in handle.shapes if s.name == "bench").x == pytest.approx(0.1)
-    dim_x.set_value(300)
-    user.find(marker="object-dim-x").trigger("blur")
-    await _until(
-        lambda: handle.confirmed
-        and not scene.object_history.busy
-        and handle.shapes[0].x == 0.3,
-        "dimension edit was not confirmed",
-    )
-    assert next(s for s in handle.shapes if s.name == "bench").x == pytest.approx(0.3)
-
-    # Delete — at once; undo brings it back.
-    menu(["shape:bench"], "shape-menu-delete")
-    await _until(
-        lambda: handle.confirmed
-        and not scene.object_history.busy
-        and not handle.shapes,
-        "deletion was not confirmed",
-    )
-    assert all(s.name != "bench" for s in handle.shapes)
-    assert "shape:bench" not in scene._shape_objects
-    await _until(
-        lambda: handle.confirmed and handle._pushes_inflight == 0,
-        "deletion was not confirmed by the controller",
-    )
-    world = await waldoctl.commander.client.shapes()
-    assert world is not None and not world.program

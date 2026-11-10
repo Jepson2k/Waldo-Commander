@@ -115,10 +115,12 @@ class SimulationEngine:
 
         The commanded preview has already landed by the time this fires;
         this answers it with what the arm would do. Nothing waits on it:
-        the scrub bar plays the commanded record meanwhile. The visualizer
-        decides whether the backend has anything to add.
+        the scrub bar plays the commanded record meanwhile. A backend whose
+        prediction is known to be its plan gets no pass.
         """
         self._cancel_physics()
+        if not path_visualizer.adds_prediction():
+            return
         if tab_id is None:
             tab_id = waldoctl.commander.programs.active_id
         if not tab_id:

@@ -141,13 +141,16 @@ def joint_deg(i: int) -> float:
 
 
 def joint_settled(i: int, timeout: float = 20.0) -> float:
-    """The joint's value once it has stopped moving."""
+    """The joint's value once it has stopped moving: unchanged over two
+    status ticks in a row."""
     deadline = time.monotonic() + timeout
     last = joint_deg(i)
+    still = 0
     while time.monotonic() < deadline:
-        time.sleep(0.3)
+        time.sleep(0.1)
         now = joint_deg(i)
-        if abs(now - last) < 0.005:
+        still = still + 1 if abs(now - last) < 0.005 else 0
+        if still == 2:
             return now
         last = now
     raise AssertionError(f"J{i + 1} never settled")
@@ -229,7 +232,12 @@ def program_previewed(source: str) -> Iterator[list[str]]:
     from waldo_commander.components.simulation_engine import simulation
 
     def edit(text: str) -> None:
-        ui_state.active_textarea.value = text  # schedules the preview
+        # A whole program at once: no typing pause to wait out.
+        delay, simulation._debounce_delay = simulation._debounce_delay, 0.15
+        try:
+            ui_state.active_textarea.value = text  # schedules the preview
+        finally:
+            simulation._debounce_delay = delay
 
     def previewing() -> bool:
         return (
@@ -349,7 +357,7 @@ def gizmo_choice(screen, choice, *, at=None) -> None:
     if at is None:
         screen.selenium.find_element(By.CSS_SELECTOR, ".wc-gizmo-frame").click()
     else:
-        action = ActionChains(screen.selenium)
+        action = ActionChains(screen.selenium, duration=0)
         pointer_to(screen, at[0], at[1], action)
         action.context_click().perform()
     click_marked(screen, f"scene-gizmo-{choice}")
@@ -408,7 +416,7 @@ def grab_ring(screen: Screen, link: str, u: int) -> tuple[dict, float]:
         time.sleep(0.2)
 
 
-def drag_dial(screen, degrees, joint=0, duration=60, at_knob=False, steps=12):
+def drag_dial(screen, degrees, joint=0, duration=30, at_knob=False, steps=6):
     """Drag joint ``joint``'s dial ``degrees`` in ``steps`` pointer moves from
     a free grip (or its knob), still held. A page delivers a move a frame, so
     a fling that must outrun the arm takes few."""
@@ -640,7 +648,7 @@ def fill(screen, marker, value):
 def click_object(screen, name, *, shift=False):
     """Click the scene object ``name`` where it is hit first."""
     x, y = scene_object_pixel(screen, name)
-    actions = ActionChains(screen.selenium)
+    actions = ActionChains(screen.selenium, duration=0)
     if shift:
         actions.key_down(Keys.SHIFT)
     pointer_to(screen, x, y, actions)
@@ -699,15 +707,33 @@ def place_shape(screen, kind, x, y, name=None):
 
 
 def create_shape(screen, kind, name):
-    """Place a ``kind`` keep-out named ``name`` on the floor, turn it and
-    open its resize handles."""
+    """Add a ``kind`` keep-out named ``name`` at Place here's default size,
+    standing on open floor and turned 30° about Z, then select it and open
+    its resize handles. Placing through the card is tested on its own."""
+    from waldoctl.shapes import Box, Cylinder, Sphere
+
+    from waldo_commander.services.urdf_scene.shape_drawing_mixin import (
+        _DEFAULT_DIMS,
+    )
+
     # An earlier object left selected keeps its handles out over the floor.
     clear_selection(screen)
-    point = wait(screen).until(lambda _: probe(screen, "floorSpot"))
-    place_shape(screen, kind, *point[:2], name)
-    object_mode(screen, "Move")
-    fill(screen, "object-rz", 30)
-    confirmed(screen, lambda: waldoctl.commander.scene.shapes[-1].pose[5] > 0.5)
+    _, _, x, y = wait(screen).until(lambda _: probe(screen, "floorSpot"))
+    dims = _DEFAULT_DIMS[kind]
+    height = dims.get("z") or dims.get("length") or 2 * dims["radius"]
+    shape = {"box": Box, "sphere": Sphere, "cylinder": Cylinder}[kind](
+        name=name,
+        pose=(round(x, 3), round(y, 3), height / 2, 0.0, 0.0, math.radians(30)),
+        **dims,
+    )
+    handle = waldoctl.commander.scene
+    run_in_app(lambda: setattr(handle, "shapes", [*handle.shapes, shape]))
+    confirmed(screen, lambda: shape in handle.shapes)
+    key = f"shape:{name}"
+    click_object(screen, key)
+    wait(screen).until(
+        lambda _: run_in_app(lambda: ui_state.urdf_scene._selected_objects == [key])
+    )
     object_mode(screen, "Resize")
     wait(screen).until(
         lambda _: scene_js(screen, "return !!S.byName('shape:resize')?.visible")
@@ -784,7 +810,7 @@ def clear_selection(screen):
     # A menu still closing takes the click meant for the view.
     wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
     x, y = wait(screen).until(lambda _: probe(screen, "emptySpot"))[:2]
-    action = ActionChains(screen.selenium)
+    action = ActionChains(screen.selenium, duration=0)
     pointer_to(screen, x, y, action)
     action.click().perform()
     wait(screen).until(
@@ -831,7 +857,7 @@ def cube_view(screen, direction):
     x, y, _ = wait(screen).until(
         lambda _: scene_js(screen, "return S.cubeSpot(arguments[0])", direction)
     )
-    action = ActionChains(screen.selenium)
+    action = ActionChains(screen.selenium, duration=0)
     pointer_to(screen, x, y, action)
     action.click().perform()
 
