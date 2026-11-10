@@ -1031,10 +1031,11 @@ class PathVisualizer:
                 logger.error("Subprocess simulation failed (sim_id=%d): %s", sim_id, e)
                 return f"Simulation failed: {e}"
 
-            # A None result can happen during shutdown/test teardown.
+            # run.cpu_bound swallows a cancellation and returns nothing, as it
+            # does once the app is stopping: there is no result to act on.
             if result is None:
-                logger.warning("Simulation returned None result (sim_id=%d)", sim_id)
-                return "Simulation returned no result"
+                logger.debug("Simulation cancelled (sim_id=%d)", sim_id)
+                raise asyncio.CancelledError
 
             if result.get("error"):
                 report = logger.warning if result.get("unresolved") else logger.error

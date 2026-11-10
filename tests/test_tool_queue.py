@@ -309,6 +309,34 @@ async def test_tool_state_reaches_the_preview_and_the_scrubbed_arm(user: User):
             what="the arm scrubbed to the program's end",
         )
 
+        # An edit landing while a preview runs retires that preview: it
+        # reports nothing, and the tool an earlier preview started from does
+        # not go back on the arm.
+        fitted: list[str] = []
+
+        async def watch_tool() -> None:
+            async for status in client.stream_status():
+                fitted.append(status.tool_status.key)
+
+        watching = asyncio.create_task(watch_tool())
+        delay, simulation._debounce_delay = simulation._debounce_delay, 0.05
+        try:
+            textarea.value += "    rbt.delay(0.1)\n"
+            with textarea:
+                simulation.schedule_debounced_simulation(program.id)
+            running = playback.sim_loading_progress
+            assert running is not None
+            assert await wait_until(lambda: running.visible, 5, interval=0.005)
+            with textarea:
+                simulation.schedule_debounced_simulation(program.id)
+            retired = len(fitted)
+            assert await wait_until(lambda: len(fitted) >= retired + 6, 5, 0.02)
+        finally:
+            simulation._debounce_delay = delay
+            watching.cancel()
+        assert set(fitted) == {"NONE"}, set(fitted)
+        assert not any("[SIM ERROR]" in entry.text for entry in program.log.entries)
+
         waldoctl.commander.status.simulator_active = False
         with user.client:
             await ui_state.control_panel.on_toggle_sim()
