@@ -92,6 +92,9 @@ def par6_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @requires_par6
 @pytest.mark.integration
+# A whole session against a live runtime: about 90 s on the Pi, the global
+# limit itself.
+@pytest.mark.timeout(180)
 async def test_commander_runs_on_the_par6_runtime(
     par6_env: None, user: User, monkeypatch, tmp_path
 ) -> None:
@@ -274,20 +277,51 @@ async def test_commander_runs_on_the_par6_runtime(
         def _text(marker: str) -> str:
             return next(iter(user.find(marker=marker).elements)).text
 
+        # The table's cells are built once and rewritten in place, so they are
+        # looked up once rather than searched for on every read.
+        cells = {
+            m: e
+            for e in user.client.elements.values()
+            for m in e._markers
+            if m.startswith("diag-drive-")
+        }
+
+        def cell(kind: str, row: int) -> str:
+            return cells[f"diag-drive-{kind}-{row}"].text
+
+        arm = robot.joints.count
         temps = await poll_until(
-            lambda: [_text(f"diag-drive-temp-{j}") for j in range(1, 7)],
+            lambda: [cell("temp", j) for j in range(1, arm + 1)],
             lambda t: all(v != "—" for v in t),
             timeout_s=10.0,
-            what=lambda: (
-                f"drive temperatures on STATUS (note: {_text('diag-drives-note')!r})"
-            ),
+            what="drive temperatures on STATUS",
         )
         assert all(float(t) > 0 for t in temps), f"drive temperatures read {temps}"
+
+        # Each current shows what the runtime sent: its reading, or "—" for a
+        # register that drive left unanswered — whichever drives answer it.
+        def currents() -> list[tuple[float, str]]:
+            sent = list(status.drive_health.currents_ma)
+            return [(v, cell("current", j)) for j, v in enumerate(sent, start=1)]
+
+        shown = await poll_until(
+            currents,
+            lambda rows: bool(rows)
+            and all((text == "—") == math.isnan(v) for v, text in rows),
+            timeout_s=10.0,
+            what="drive currents as STATUS sent them",
+        )
+        # The arm's drives that report a current hold the arm against gravity:
+        # all of them reading zero is a reading lost, not a reading.
+        held = [float(text) for _, text in shown[:arm] if text != "—"]
+        assert not held or any(r != 0 for r in held), f"drive currents read {shown}"
+        # And shown: a cell's text is written whether or not it shows, and the
+        # tool's row shows only when the runtime reports more drives than the
+        # arm has.
+        await user.should_see(marker="diag-drive-temp-1")
+        await user.should_see(marker=f"diag-drive-current-{len(shown)}")
         assert status.drive_health.bus_voltage_v is not None
         assert _text("diag-drive-supply").endswith(" V")
-        # The tool drive answers a temperature but no current, and an
-        # unanswered register must read as unknown rather than as zero.
-        assert _text("diag-drive-current-7") == "—"
 
         await poll_until(
             lambda: _text("diag-loop-p99"),
