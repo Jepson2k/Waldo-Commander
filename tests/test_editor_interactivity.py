@@ -145,7 +145,7 @@ class TestEditorInteractivity:
         script = """
             const [icon, token] = arguments;
             const btn = document.evaluate(
-                `//button[.//i[text()='${icon}']]`, document, null,
+                `//button[.//i[normalize-space()='${icon}']]`, document, null,
                 XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
             if (!btn) return `no button with icon ${icon}`;
             const probe = document.createElement('span');
@@ -166,7 +166,7 @@ class TestEditorInteractivity:
                 "on-fill"
                 if "recording"
                 in class_screen.selenium.find_element(
-                    By.XPATH, "//button[.//i[text()='fiber_manual_record']]"
+                    By.XPATH, "//button[.//i[normalize-space()='fiber_manual_record']]"
                 ).get_attribute("class")
                 else "record"
             ),

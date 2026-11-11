@@ -299,7 +299,9 @@ def close_panel(screen: "Screen", panel_class: str) -> None:
     """
     panel = screen.selenium.find_element(By.CSS_SELECTOR, f".{panel_class}")
     # Find all close buttons and click the last one (panel close, not tab close)
-    close_buttons = panel.find_elements(By.XPATH, ".//button[.//i[text()='close']]")
+    close_buttons = panel.find_elements(
+        By.XPATH, ".//button[.//i[normalize-space()='close']]"
+    )
     if not close_buttons:
         raise AssertionError(f"No close button found in .{panel_class}")
     close_buttons[-1].click()
