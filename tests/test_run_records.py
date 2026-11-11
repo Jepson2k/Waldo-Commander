@@ -168,7 +168,12 @@ print("console-secret-123")
 if os.environ.get("WALDO_STEP_SESSION"):
     raise RuntimeError("error-secret-123")
 """
-    ui_state.active_textarea.value = source
+    # A whole program at once: no typing pause to wait out.
+    delay, simulation._debounce_delay = simulation._debounce_delay, 0.15
+    try:
+        ui_state.active_textarea.value = source
+    finally:
+        simulation._debounce_delay = delay
     user.find(marker="editor-more-btn").click()
     user.find(marker="editor-records-btn").click()
     await user.should_see("Record future program runs")
@@ -295,13 +300,12 @@ if os.environ.get("WALDO_STEP_SESSION"):
     assert any('"offset": 2.0' in text for text in detail), detail
 
     # The next run is not captured, even if the subprocess inherited a flag.
+    # A record is opened as the run launches, so the launch is enough to tell.
     script_exec.record_runs = False
     ui_state.active_textarea.value = "print('uncaptured')"
-    await script_exec.start()
-    async with asyncio.timeout(15):
-        while is_any_program_running():
-            await asyncio.sleep(0.05)
+    assert await script_exec.start()
     assert len(list((tmp_path / "records").glob("*.jsonl"))) == 2
+    await script_exec.stop()
 
     script_exec.record_runs = True
     ui_state.active_textarea.value = "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    rbt.delay(30)\n"

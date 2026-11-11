@@ -153,6 +153,12 @@ async def test_pauses_and_failed_runs_leave_no_motion_running(
             "a held program still shows Pause after an unconfirmed pause"
         )
         monkeypatch.setattr(client, "pause", real_pause)
+        # Back to full speed for the rest of the move: nothing below is
+        # about how fast it finishes.
+        user.find(marker="editor-speed-normal").click()
+        async with asyncio.timeout(3):
+            while (await client.execution_speed()).resume_scale != 1:
+                await asyncio.sleep(0.02)
         user.find(marker="editor-play-btn").click()
         async with asyncio.timeout(20):
             while is_any_program_running():
@@ -329,8 +335,8 @@ async def test_managed_waits_are_sized_by_the_plan_not_a_default_deadline(
 ):
     """A managed move or blend group runs as long as it was planned: the
     client's standalone 10 s default is not a deadline under the wrapper.
-    Each case plans just over 10 s; r=1 keeps blending from shortening the
-    group below it."""
+    Each case plans just over 10 s; every blend member plans under it, so
+    only the group as a whole outlasts the default."""
     from waldo_commander.components.script_execution import script_exec
     from waldo_commander.services.programs import is_any_program_running
     from waldo_commander.state import ui_state
@@ -350,8 +356,8 @@ async def test_managed_waits_are_sized_by_the_plan_not_a_default_deadline(
         "from parol6 import RobotClient\n"
         "with RobotClient() as rbt:\n"
         f"    rbt.move_j({target!r}, duration=10.5)\n"
-        "    for i in range(5):\n"
-        f"        rbt.move_j({target!r} if i % 2 else {start!r}, duration=2.3, r=1, wait=False)\n"
+        "    for i in range(3):\n"
+        f"        rbt.move_j({target!r} if i % 2 else {start!r}, duration=3.5, r=1, wait=False)\n"
         f"    rbt.move_j({start!r}, duration=1)\n"
         "    print('FINISHED', flush=True)\n"
     )

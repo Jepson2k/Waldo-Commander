@@ -6,27 +6,11 @@ from contextlib import suppress
 import multiprocessing
 import os
 from pathlib import Path
-import time
 
 import pytest
 
+from tests.helpers.physics_jobs import blocked_job, dying_job, pid_job
 from waldo_commander.services.path_visualizer import _PhysicsPool
-
-
-def _blocked_job(paths: tuple[str, str]) -> int:
-    marker, release = map(Path, paths)
-    marker.write_text(str(os.getpid()))
-    while not release.exists():
-        time.sleep(0.01)
-    return os.getpid()
-
-
-def _worker_pid(_args: tuple) -> int:
-    return os.getpid()
-
-
-def _dying_job(_args: tuple) -> int:
-    os._exit(1)
 
 
 async def test_a_cancelled_or_dead_physics_worker_leaves_the_next_job_a_fresh_one(
@@ -41,7 +25,7 @@ async def test_a_cancelled_or_dead_physics_worker_leaves_the_next_job_a_fresh_on
             tmp_path / f"started-{cancel_via}",
             tmp_path / f"release-{cancel_via}",
         )
-        task = asyncio.create_task(pool.run(_blocked_job, (str(marker), str(release))))
+        task = asyncio.create_task(pool.run(blocked_job, (str(marker), str(release))))
         try:
             async with asyncio.timeout(20):
                 while not marker.exists() or not marker.read_text():
@@ -64,9 +48,9 @@ async def test_a_cancelled_or_dead_physics_worker_leaves_the_next_job_a_fresh_on
             if cancel_via == "caller":
                 async with asyncio.timeout(20):
                     with pytest.raises(BrokenProcessPool):
-                        await pool.run(_dying_job, ())
+                        await pool.run(dying_job, ())
             async with asyncio.timeout(20):
-                successor = await pool.run(_worker_pid, ())
+                successor = await pool.run(pid_job, ())
             assert successor not in (worker_pid, os.getpid())
         finally:
             release.touch()

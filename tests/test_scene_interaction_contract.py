@@ -115,7 +115,7 @@ async def test_gestures_begun_before_a_stop_a_switch_or_a_takeover_move_nothing(
         control_lease.seize(BROWSER, ui_state.active_client_id, "Browser")
         await panel.jog_tick()
         await panel.cart_jog_tick()
-        assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+        assert await panel.client.wait_motion(timeout=10, settle_window=0.25)
         assert np.array(await panel.client.angles()) == pytest.approx(start, abs=0.1), (
             interrupt.__name__
         )
@@ -159,7 +159,7 @@ async def test_gestures_begun_before_a_stop_a_switch_or_a_takeover_move_nothing(
         ), "tab B's drag was cut off"
         await held_until(b_drag, lambda: False, 0.8)
         b_drag.release(delta=5.0)
-        assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+        assert await panel.client.wait_motion(timeout=10, settle_window=0.25)
         end = np.array(await panel.client.angles())
         assert end[0] == pytest.approx(start[0], abs=0.1), "tab A moved J1"
         assert end[1] == pytest.approx(start[1] + 5.0, abs=0.1)
@@ -193,12 +193,12 @@ async def test_a_drag_gone_quiet_ends_and_a_frame_the_arm_has_left_is_refused(
         # The watch looks every 0.1 s and gives a check that ran late one
         # more round.
         assert time.monotonic() - went_quiet < LIVENESS_S + 0.4
-        assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+        assert await panel.client.wait_motion(timeout=10, settle_window=0.25)
         stopped = np.array(await panel.client.angles())
         assert stopped[0] < start[0] + 20.0, "the arm went on to the target"
         quiet.move(delta=30.0).release(delta=30.0)
         await panel.jog_tick()
-        assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+        assert await panel.client.wait_motion(timeout=10, settle_window=0.25)
         assert np.array(await panel.client.angles()) == pytest.approx(stopped, abs=0.1)
         assert str(textarea.value).count("move_j(") == before, textarea.value
 
@@ -209,7 +209,7 @@ async def test_a_drag_gone_quiet_ends_and_a_frame_the_arm_has_left_is_refused(
         assert scene.gestures.open, "a slow browser's drag ended between its frames"
         assert await wait_until(lambda: not scene.gestures.open, 2.0)
         assert 2.0 <= time.monotonic() - went_quiet < 2.0 + 0.4
-        assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+        assert await panel.client.wait_motion(timeout=10, settle_window=0.25)
         assert str(textarea.value).count("move_j(") == before, textarea.value
 
         unmoved = Drag(user, scene, "ring").begin(joint=0)
@@ -238,7 +238,7 @@ async def test_a_drag_gone_quiet_ends_and_a_frame_the_arm_has_left_is_refused(
     assert scene._tcp_rev > placed, "the frame was not placed again"
     behind.move(**ball(x=0.02)).release(**ball(x=0.02))
     await panel.cart_jog_tick()
-    assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+    assert await panel.client.wait_motion(timeout=10, settle_window=0.25)
     assert np.array(await panel.client.angles()) == pytest.approx(start, abs=0.1)
     assert angles.deg[0] == pytest.approx(moved[0], abs=0.1)
 

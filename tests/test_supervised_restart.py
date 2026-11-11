@@ -139,8 +139,12 @@ if __name__ == '__main__':
     program = waldoctl.commander.programs.active
     assert program is not None
     script_exec.record_runs = True
-    assert await script_exec.start()
-    await finished()
+    # Ordinary Start runs the main sequence, ignoring even an inherited
+    # entry setting.
+    with monkeypatch.context() as patched:
+        patched.setenv("WALDO_RESTART_ENTRY", "after_pick")
+        assert await script_exec.start()
+        await finished()
     assert script_exec.last_exit_code == 1
     assert not marker.exists()
     before = await client.angles()
@@ -259,15 +263,6 @@ if __name__ == '__main__':
         patched.setattr(client, "queue", AsyncMock(return_value=None))
         with pytest.raises(ConnectionError):
             await fresh_state(client)
-
-    # Ordinary Start ignores even an inherited entry setting.
-    with monkeypatch.context() as patched:
-        patched.setenv("WALDO_RESTART_ENTRY", "after_pick")
-        ui_state.active_textarea.value = "print('ordinary beginning')"
-        await ensure_robot_ready_for_motion()
-        assert await script_exec.start()
-        await finished()
-    assert script_exec.last_exit_code == 0
 
     source = (
         "from parol6 import RobotClient\n\n"

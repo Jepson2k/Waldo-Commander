@@ -115,7 +115,10 @@ async def test_joint_jog_steps_numeric_entry_and_editing(user: User) -> None:
     client = waldoctl.commander.client
     q = list(await client.angles())
     q[0] = round(q[0], 1) + 0.04
-    assert await client.wait_command(await client.move_j(q, duration=0.5), timeout=10)
+    assert await client.teleport(q) == 1
+    assert await wait_until(lambda: abs(_j1() - q[0]) < 0.01), (
+        "J1 never showed the teleported angle"
+    )
     off_tenth = await settled(_j1, tolerance=0.005)
     user.find(marker="joint-readout-0").trigger("focus").trigger("blur")
     assert not await wait_until(lambda: abs(_j1() - off_tenth) > 0.02, timeout_s=0.5), (
@@ -149,7 +152,10 @@ async def test_joint_jog_steps_numeric_entry_and_editing(user: User) -> None:
     )
     q = list(await client.angles())
     q[0] = retyped + 1.5
-    assert await client.wait_command(await client.move_j(q, duration=0.5), timeout=10)
+    assert await client.teleport(q) == 1
+    assert await wait_until(lambda: abs(_j1() - q[0]) < 0.01), (
+        "J1 never showed the teleported angle"
+    )
     away = await settled(_j1)
     readout_field.trigger("keydown.enter")
     await wait_moved(

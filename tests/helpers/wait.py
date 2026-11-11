@@ -38,7 +38,7 @@ async def simulate_click(user: User, marker: str, hold_ms: float = 50) -> None:
 async def wait_until(
     predicate: Callable[[], object],
     timeout_s: float = 5.0,
-    interval: float = 0.1,
+    interval: float = 0.02,
 ) -> bool:
     """Poll ``predicate`` until it is truthy, or the timeout runs out.
 
@@ -150,13 +150,12 @@ async def enable_sim(user: User, timeout_s: float = 5.0) -> None:
     # Toggle simulator if needed
     if not waldoctl.commander.status.simulator_active:
         user.find(marker="btn-robot-toggle").click()
-        await asyncio.sleep(0.1)
 
     # Wait for simulator_active flag to be set by the toggle handler
-    for _ in range(int(timeout_s / 0.1)):
+    for _ in range(int(timeout_s / 0.02)):
         if waldoctl.commander.status.simulator_active and _has_valid_angles():
             return
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.02)
 
     if not _has_valid_angles():
         raise TimeoutError(
@@ -337,7 +336,7 @@ async def poll_until(
     read: Callable[[], Any],
     accept: Callable[[Any], bool],
     timeout_s: float = 5.0,
-    interval: float = 0.1,
+    interval: float = 0.02,
     what: str | Callable[[], str] = "the value",
 ) -> Any:
     """Poll ``read`` until ``accept`` is happy with what it returns.
@@ -435,13 +434,13 @@ async def teleport_to_jog_pose(client, timeout_s: float = 10.0) -> None:
     """
     await client.teleport(JOG_SAFE_POSE_DEG)
     angles: list[float] = []
-    for _ in range(int(timeout_s / 0.1)):
+    for _ in range(int(timeout_s / 0.02)):
         angles = [float(a) for a in waldoctl.commander.status.joints.angles.deg]
         if len(angles) >= 6 and all(
             abs(a - t) < 1.0 for a, t in zip(angles, JOG_SAFE_POSE_DEG)
         ):
             return
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.02)
     raise TimeoutError(f"teleport to jog pose did not settle: {angles}")
 
 

@@ -238,6 +238,7 @@ async def test_handeye_calibration(
     monkeypatch.setattr(hp, "AUTO_MIN_MOVE_S", 0.3)
     monkeypatch.setattr(hp, "AUTO_DEG_PER_S", 240.0)
     monkeypatch.setattr(hp, "AUTO_SETTLE_S", 0.25)
+    monkeypatch.setattr(hp, "AUTO_CAPTURE_RETRY_S", 0.1)
     monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
     _LiveBoardBackend.reset()
     ui_state.plugin_panels = []
@@ -542,8 +543,8 @@ async def test_handeye_calibration(
             what="the arm back at the start pose",
         )
 
-        # From here each run is two views long and is interrupted while it
-        # captures the second one, away from its start pose.
+        # From here each run is one view long, away from its start pose, and
+        # is interrupted while it captures it.
         real_capture = panel._capture_sample
         hold: dict[str, Any] = {}
 
@@ -568,13 +569,11 @@ async def test_handeye_calibration(
                 and panel._result.n_views == len(panel._samples)
             ) or panel._solve_error is not None
 
-        async def interrupt_second_view(
+        async def interrupt_the_view(
             roll_deg: float, interrupt: Callable[[], Awaitable[None]]
         ) -> None:
             monkeypatch.setattr(
-                hp,
-                "AUTO_VIEW_DELTAS_DEG",
-                ((0.0,) * 6, (0.0, 0.0, 0.0, 0.0, 0.0, roll_deg)),
+                hp, "AUTO_VIEW_DELTAS_DEG", ((0.0, 0.0, 0.0, 0.0, 0.0, roll_deg),)
             )
             angles = await client.angles()
             assert angles is not None
@@ -606,14 +605,14 @@ async def test_handeye_calibration(
             async with McpClient(get_mcp()) as mcp:
                 await mcp.call_tool("motion.stop")
 
-        await interrupt_second_view(35.0, mcp_stop)
+        await interrupt_the_view(12.0, mcp_stop)
         await user.should_see("Auto-calibration aborted: the robot was stopped")
 
         async def mcp_take_control() -> None:
             async with McpClient(get_mcp()) as mcp:
                 await mcp.call_tool("control.take_control")
 
-        await interrupt_second_view(-35.0, mcp_take_control)
+        await interrupt_the_view(-12.0, mcp_take_control)
         await user.should_see("Auto-calibration aborted: another client took control")
         # Let the re-solve an aborted run may trigger land first.
         await _wait_for(
@@ -627,7 +626,7 @@ async def test_handeye_calibration(
         async def disconnect_and_reopen() -> None:
             await reload_page(user)
 
-        await interrupt_second_view(35.0, disconnect_and_reopen)
+        await interrupt_the_view(12.0, disconnect_and_reopen)
         await user.should_see(marker="handeye-auto")
         # A page rebuild (reload, second tab) must not restart the camera: a
         # new capture session would refuse every later capture as "changed".

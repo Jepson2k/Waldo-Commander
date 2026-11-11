@@ -71,7 +71,7 @@ class TestPrecisionGizmo:
         ],
         ids=lambda m: m.value,
     )
-    def test_translation_rotation_and_exact_entry(self, class_screen, mode):
+    def test_translation_step_and_exact_entry(self, class_screen, mode):
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)
         at_start(screen)
@@ -203,28 +203,31 @@ class TestPrecisionGizmo:
                 wait(screen, 15).until(lambda _: np.linalg.norm(tcp_mm() - after) > 2.7)
                 assert np.linalg.norm(tcp_mm() - after) < 3.5
 
-                at_start(screen)
-                _reveal(screen)
-                spot = wait(screen).until(
-                    lambda _: next(
-                        (s for a in "ZXY" if (s := probe(screen, "ringSpot", a))), None
-                    )
-                )
-                hold(screen, spot, 15)
-                wait_for_scene_idle(screen)
-                assert gizmo_field(screen)["unit"] == "°", gizmo_field(screen)
-                evidence.capture("05-rotation-drag-1920")
+                # A ring drag on the arm is tested in
+                # test_axis_rotation_keeps_its_sign; here it stages captures.
                 if evidence.enabled:
+                    at_start(screen)
+                    _reveal(screen)
+                    spot = wait(screen).until(
+                        lambda _: next(
+                            (s for a in "ZXY" if (s := probe(screen, "ringSpot", a))),
+                            None,
+                        )
+                    )
+                    hold(screen, spot, 15)
+                    wait_for_scene_idle(screen)
+                    assert gizmo_field(screen)["unit"] == "°", gizmo_field(screen)
+                    evidence.capture("05-rotation-drag-1920")
                     with viewport(screen, 1366, 768):
                         wait_for_scene_idle(screen)
                         evidence.capture("06-rotation-drag-1366")
-                wait_for_scene_idle(screen)
-                ActionChains(screen.selenium).release().perform()
-                wait(screen).until(
-                    lambda _: not scene_js(screen, "return !!S.byName('tcp:ticks')")
-                )
-                wait_for_scene_idle(screen)
-                evidence.capture("07-released-1920")
+                    wait_for_scene_idle(screen)
+                    ActionChains(screen.selenium).release().perform()
+                    wait(screen).until(
+                        lambda _: not scene_js(screen, "return !!S.byName('tcp:ticks')")
+                    )
+                    wait_for_scene_idle(screen)
+                    evidence.capture("07-released-1920")
                 evidence.finish()
             finally:
                 evidence.stop()

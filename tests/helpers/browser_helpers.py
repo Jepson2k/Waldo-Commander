@@ -175,6 +175,22 @@ _SHELL_BUTTONS = {
 }
 
 
+# The first tab on screen whose first icon is ``arguments[0]``, and active
+# too if ``arguments[1]``: one script, as a lookup per tab is a round trip.
+_SHOWN_TAB = """
+const [name, active] = arguments;
+return [...document.querySelectorAll('.q-tab')].find((tab) => {
+  const icon = tab.querySelector('.q-icon');
+  return !!icon && icon.textContent.trim() === name
+    && icon.checkVisibility({
+      opacityProperty: true, visibilityProperty: true,
+      checkOpacity: true, checkVisibilityCSS: true,
+    })
+    && (!active || tab.classList.contains('q-tab--active'));
+}) || null;
+"""
+
+
 def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
     """Open a panel by name and wait for it to be on screen.
 
@@ -205,37 +221,17 @@ def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
             f"Unknown tab: {tab_name}. Valid: {list(tab_icons) + list(_SHELL_BUTTONS)}"
         )
 
-    # Find tab by looking for the icon within a q-tab
-    tabs = screen.selenium.find_elements(By.CSS_SELECTOR, ".q-tab")
-    target_tab = None
-    for tab in tabs:
-        try:
-            icon = tab.find_element(By.CSS_SELECTOR, ".q-icon")
-            if icon.text == icon_name:
-                target_tab = tab
-                break
-        except Exception:
-            continue
+    def tab(active: bool) -> WebElement | None:
+        return screen.selenium.execute_script(_SHOWN_TAB, icon_name, active)
 
+    target_tab = tab(False)
     if not target_tab:
         raise AssertionError(f"Tab with icon '{icon_name}' not found")
 
     target_tab.click()
-
-    # Wait for tab to become active (re-find element to avoid stale reference)
-    def tab_is_active(driver):
-        for tab in driver.find_elements(By.CSS_SELECTOR, ".q-tab"):
-            try:
-                icon = tab.find_element(By.CSS_SELECTOR, ".q-icon")
-                if icon.text == icon_name and "q-tab--active" in (
-                    tab.get_attribute("class") or ""
-                ):
-                    return True
-            except Exception:
-                continue
-        return False
-
-    WebDriverWait(screen.selenium, timeout, poll_frequency=0.05).until(tab_is_active)
+    WebDriverWait(screen.selenium, timeout, poll_frequency=0.05).until(
+        lambda _: tab(True) is not None
+    )
 
 
 def tap(screen: "Screen", x: float, y: float) -> None:

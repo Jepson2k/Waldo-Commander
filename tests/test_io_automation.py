@@ -124,10 +124,17 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     assert script_exec.last_exit_code is None
 
     # All guards pass: the pulse starts the program and it runs to completion.
-    _pulse_input_1()
-    assert await _wait_for(_ran_cleanly, timeout=15.0), (
-        "rising edge on Input 1 should run the active program to completion"
-    )
+    # An AI/MCP control holder does not block the hardware trigger — the cell
+    # input starts the program regardless of who holds the lease.
+    control_lease.seize(MCP, "test-ai", "Test AI")
+    try:
+        _pulse_input_1()
+        assert await _wait_for(_ran_cleanly, timeout=15.0), (
+            "rising edge on Input 1 should run the active program to completion, "
+            "even while an MCP session holds control"
+        )
+    finally:
+        control_lease.reset()
 
     # Debounce: a fresh pulse within the re-arm window must not re-fire.
     automation_state._cycle_last_fire = time.monotonic() + 5.0
@@ -137,29 +144,17 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     assert not is_any_program_running()
     assert script_exec.last_exit_code is None
 
-    # Once the window has passed, the input is re-armed and fires again. An
-    # AI/MCP control holder does not block the hardware trigger — the cell
-    # input starts the program regardless of who holds the lease.
-    control_lease.seize(MCP, "test-ai", "Test AI")
-    try:
-        automation_state._cycle_last_fire = time.monotonic() - 2.0
-        _pulse_input_1()
-        assert await _wait_for(_ran_cleanly, timeout=15.0), (
-            "the re-armed input must fire even while an MCP session holds control"
-        )
-    finally:
-        control_lease.reset()
-    # The exit code lands before the run lets go of the program.
-    assert await _wait_for(lambda: not is_any_program_running(), timeout=15.0)
-
-    # Guard: a pulse while a program is running neither starts nor queues one.
+    # Once the window has passed, the input is re-armed and fires again.
+    # Guard: a pulse while that program runs neither starts nor queues one.
     # The program outlasts any status stall, so the pulse is read mid-run.
     slow_script = "import time\ntime.sleep(60)\n"
     ui_state.active_textarea.value = slow_script
     tab.source = slow_script
     automation_state._cycle_last_fire = time.monotonic() - 2.0
     _pulse_input_1()
-    assert await _wait_for(is_any_program_running, timeout=15.0)
+    assert await _wait_for(is_any_program_running, timeout=15.0), (
+        "the re-armed input did not fire"
+    )
     await _pulse_read()
     automation_state._cycle_last_fire = time.monotonic() - 2.0
     _pulse_input_1()

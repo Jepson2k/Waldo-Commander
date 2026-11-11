@@ -479,7 +479,7 @@ async def test_a_take_selects_the_tool_captures_motion_and_its_pauses_run(
         assert start is not None
         target = list(start)
         target[0] -= 12.0
-        index = await client.move_j(target, duration=2.0)
+        index = await client.move_j(target, duration=1.4)
         assert await client.wait_status(
             lambda s: s.angles[0] < start[0] - 3.0, timeout=10
         )
@@ -503,7 +503,7 @@ async def test_a_take_selects_the_tool_captures_motion_and_its_pauses_run(
         assert start is not None
         target = list(start)
         target[0] += 12.0
-        index = await client.move_j(target, duration=2.0)
+        index = await client.move_j(target, duration=1.4)
         assert await client.wait_status(
             lambda s: s.angles[0] > start[0] + 3.0, timeout=10
         )

@@ -613,92 +613,97 @@ async def test_the_scene_confirms_edits_proposes_plays_back_and_tints_its_world(
     assert "install:floor" not in scene._shape_objects
     assert scene._floor.visible_
 
-    # Each layer renders under its own namespace and colour.
-    wall = Box(name="wall", x=0.1, y=0.1, z=0.1, pose=(0.3, 0.0, 0.3, 0, 0, 0))
-    post = Cylinder(name="post", radius=0.05, length=0.5)
-    bench = Box(name="bench", x=0.4, y=0.4, z=0.05)
-    scene.render_shapes([wall, post], installation=[bench])
-    bench_obj = scene._shape_objects["install:bench"]
-    assert bench_obj.color == SceneColors.SHAPE_INSTALL_HEX
-    wall_obj = scene._shape_objects["shape:wall"]
-    assert wall_obj.color == SceneColors.SHAPE_HEX
-    # Render wiring applies the Z-up axis correction (three.js is Y-up).
-    assert scene._shape_objects["shape:post"].R == [
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, -1.0],
-        [0.0, 1.0, 0.0],
-    ]
-    coll.pairs = [(a, "shape:wall"), (a, "install:bench")]
-    coll.active = True
-    scene.update_from_robot_state()
-    assert wall_obj.color == SceneColors.COLLISION_HEX
-    assert bench_obj.color == SceneColors.COLLISION_HEX
-    assert scene._link_to_meshes[a][0].color == SceneColors.COLLISION_HEX
-    # Mode toggle mid-collision: the arm/tool repaint loops don't touch shape
-    # objects, so set_appearance_mode must repaint them itself — otherwise the
-    # next tick re-snapshots red as the shape's base and it sticks red forever.
-    scene.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
-    assert wall_obj.color == SceneColors.SHAPE_HEX
-    assert bench_obj.color == SceneColors.SHAPE_INSTALL_HEX
-    scene.update_from_robot_state()  # still colliding — re-tints from clean base
-    assert wall_obj.color == SceneColors.COLLISION_HEX
-    coll.active = False
-    coll.pairs = []
-    scene.update_from_robot_state()
-    assert wall_obj.color == SceneColors.SHAPE_HEX
-    assert bench_obj.color == SceneColors.SHAPE_INSTALL_HEX
-
-    # Re-rendering reconciles against what is drawn: a no-op sends nothing, a
-    # pose-only change moves the same object in one message, a geometry
-    # change recreates it and a dropped shape is deleted — the group persists
-    # throughout. The page's view mounts first: before it does, nothing is
-    # sent at all.
-    group = scene._shapes_group
-
-    def scene_messages(sent) -> int:
-        # The page's dials draw through the same client.
-        return sum(
-            str(call.args[0]).startswith(f"runMethod({scene.scene.id},")
-            for call in sent.call_args_list
-        )
-
-    UserInteraction(user, {scene.scene}, None).trigger("init")
-    await asyncio.sleep(0)
-    with patch.object(scene.scene.client, "run_javascript") as sent:
+    # The renderer is driven directly here; a late redraw of the handle's
+    # own world would land in the middle of it.
+    with patch.object(handle, "render"):
+        # Each layer renders under its own namespace and colour.
+        wall = Box(name="wall", x=0.1, y=0.1, z=0.1, pose=(0.3, 0.0, 0.3, 0, 0, 0))
+        post = Cylinder(name="post", radius=0.05, length=0.5)
+        bench = Box(name="bench", x=0.4, y=0.4, z=0.05)
         scene.render_shapes([wall, post], installation=[bench])
-        await asyncio.sleep(0)
-    assert scene_messages(sent) == 0, "an unchanged world must not be re-sent"
-    assert scene._shape_objects["shape:wall"] is wall_obj
-    assert scene._shapes_group is group
-    moved = replace(wall, pose=(0.5, 0.0, 0.3, 0, 0, 0))
-    with patch.object(scene.scene.client, "run_javascript") as sent:
-        scene.render_shapes([moved, post], installation=[bench])
-        await asyncio.sleep(0)
-    assert scene_messages(sent) == 1, "a moved shape goes out in one message"
-    assert scene._shape_objects["shape:wall"] is wall_obj, "pose-only: same object"
-    assert wall_obj.x == pytest.approx(0.5)
-    bigger = Box(name="wall", x=0.2, y=0.1, z=0.1, pose=moved.pose)
-    scene.render_shapes([bigger], installation=[bench])
-    assert scene._shape_objects["shape:wall"] is not wall_obj, "geometry: recreated"
-    assert wall_obj.id not in scene.scene.objects
-    assert "shape:post" not in scene._shape_objects
-    assert scene._shapes_group is group
+        bench_obj = scene._shape_objects["install:bench"]
+        assert bench_obj.color == SceneColors.SHAPE_INSTALL_HEX
+        wall_obj = scene._shape_objects["shape:wall"]
+        assert wall_obj.color == SceneColors.SHAPE_HEX
+        # Render wiring applies the Z-up axis correction (three.js is Y-up).
+        assert scene._shape_objects["shape:post"].R == [
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+        ]
+        coll.pairs = [(a, "shape:wall"), (a, "install:bench")]
+        coll.active = True
+        scene.update_from_robot_state()
+        assert wall_obj.color == SceneColors.COLLISION_HEX
+        assert bench_obj.color == SceneColors.COLLISION_HEX
+        assert scene._link_to_meshes[a][0].color == SceneColors.COLLISION_HEX
+        # Mode toggle mid-collision: the arm/tool repaint loops don't touch shape
+        # objects, so set_appearance_mode must repaint them itself — otherwise the
+        # next tick re-snapshots red as the shape's base and it sticks red forever.
+        scene.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
+        assert wall_obj.color == SceneColors.SHAPE_HEX
+        assert bench_obj.color == SceneColors.SHAPE_INSTALL_HEX
+        scene.update_from_robot_state()  # still colliding — re-tints from clean base
+        assert wall_obj.color == SceneColors.COLLISION_HEX
+        coll.active = False
+        coll.pairs = []
+        scene.update_from_robot_state()
+        assert wall_obj.color == SceneColors.SHAPE_HEX
+        assert bench_obj.color == SceneColors.SHAPE_INSTALL_HEX
 
-    # An UNCONFIRMED program layer stays draft-amber through appearance
-    # repaints; promoting it would show an un-enforced keep-out as enforced.
-    pending = Box(name="pending", x=0.1, y=0.1, z=0.1, pose=(0.4, 0.0, 0.3, 0, 0, 0))
-    scene.render_shapes([pending], draft=True)
-    obj = scene._shape_objects["shape:pending"]
-    assert obj.color == SceneColors.SHAPE_DRAFT_HEX
-    scene.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
-    assert obj.color == SceneColors.SHAPE_DRAFT_HEX, (
-        "repaint promoted an unconfirmed keep-out to the confirmed color"
-    )
-    scene.render_shapes([pending], draft=False)
-    obj = scene._shape_objects["shape:pending"]
-    assert obj.color == SceneColors.SHAPE_HEX
-    scene.set_appearance_mode(RobotAppearanceMode.LIVE)
-    assert obj.color == SceneColors.SHAPE_HEX
+        # Re-rendering reconciles against what is drawn: a no-op sends nothing, a
+        # pose-only change moves the same object in one message, a geometry
+        # change recreates it and a dropped shape is deleted — the group persists
+        # throughout. The page's view mounts first: before it does, nothing is
+        # sent at all.
+        group = scene._shapes_group
+
+        def scene_messages(sent) -> int:
+            # The page's dials draw through the same client.
+            return sum(
+                str(call.args[0]).startswith(f"runMethod({scene.scene.id},")
+                for call in sent.call_args_list
+            )
+
+        UserInteraction(user, {scene.scene}, None).trigger("init")
+        await asyncio.sleep(0)
+        with patch.object(scene.scene.client, "run_javascript") as sent:
+            scene.render_shapes([wall, post], installation=[bench])
+            await asyncio.sleep(0)
+        assert scene_messages(sent) == 0, "an unchanged world must not be re-sent"
+        assert scene._shape_objects["shape:wall"] is wall_obj
+        assert scene._shapes_group is group
+        moved = replace(wall, pose=(0.5, 0.0, 0.3, 0, 0, 0))
+        with patch.object(scene.scene.client, "run_javascript") as sent:
+            scene.render_shapes([moved, post], installation=[bench])
+            await asyncio.sleep(0)
+        assert scene_messages(sent) == 1, "a moved shape goes out in one message"
+        assert scene._shape_objects["shape:wall"] is wall_obj, "pose-only: same object"
+        assert wall_obj.x == pytest.approx(0.5)
+        bigger = Box(name="wall", x=0.2, y=0.1, z=0.1, pose=moved.pose)
+        scene.render_shapes([bigger], installation=[bench])
+        assert scene._shape_objects["shape:wall"] is not wall_obj, "geometry: recreated"
+        assert wall_obj.id not in scene.scene.objects
+        assert "shape:post" not in scene._shape_objects
+        assert scene._shapes_group is group
+
+        # An UNCONFIRMED program layer stays draft-amber through appearance
+        # repaints; promoting it would show an un-enforced keep-out as enforced.
+        pending = Box(
+            name="pending", x=0.1, y=0.1, z=0.1, pose=(0.4, 0.0, 0.3, 0, 0, 0)
+        )
+        scene.render_shapes([pending], draft=True)
+        obj = scene._shape_objects["shape:pending"]
+        assert obj.color == SceneColors.SHAPE_DRAFT_HEX
+        scene.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
+        assert obj.color == SceneColors.SHAPE_DRAFT_HEX, (
+            "repaint promoted an unconfirmed keep-out to the confirmed color"
+        )
+        scene.render_shapes([pending], draft=False)
+        obj = scene._shape_objects["shape:pending"]
+        assert obj.color == SceneColors.SHAPE_HEX
+        scene.set_appearance_mode(RobotAppearanceMode.LIVE)
+        assert obj.color == SceneColors.SHAPE_HEX
 
     # commander.scene.shapes feeds this process's checker: the EDITING pose
     # tints colliding geometry and the preview marks colliding segments with

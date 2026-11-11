@@ -36,7 +36,7 @@ from waldo_commander.services.timeline import Timeline
 from waldo_commander.state import ui_state
 
 
-async def _gripper(user):
+async def _gripper(user, *, calibrate: bool = True):
     await user.open("/")
     await wait_for_app_ready()
     await enable_sim(user)
@@ -45,8 +45,9 @@ async def _gripper(user):
     selected = await client.select_tool("SSG-48")
     assert selected >= 0 and await client.wait_command(selected, timeout=5)
     await wait_for_tool_key("SSG-48")
-    calibrated = await client.tool.calibrate()
-    assert calibrated >= 0 and await client.wait_command(calibrated, timeout=10)
+    if calibrate:
+        calibrated = await client.tool.calibrate()
+        assert calibrated >= 0 and await client.wait_command(calibrated, timeout=10)
     waldoctl.commander.settings.gripper.current = 50
     return client
 
@@ -252,7 +253,7 @@ async def test_tool_state_reaches_the_preview_and_the_scrubbed_arm(user: User):
     from waldo_commander.services.path_visualizer import path_visualizer
     from waldo_commander.state import robot_state
 
-    client = await _gripper(user)
+    client = await _gripper(user, calibrate=False)
     try:
         # A Stop during the panel's calibration cancels it, which is what the
         # user asked for: nothing reports it as a failed action.

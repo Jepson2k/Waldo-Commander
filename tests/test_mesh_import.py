@@ -150,7 +150,8 @@ async def test_fixtures_upload_edit_undo_save_and_recover(user, tmp_path, monkey
     view = await _open(user)
     handle = waldoctl.commander.scene
     await confirmed(view)
-
+    # The scene fills in its panel's tools on its first refresh.
+    assert await wait_until(lambda: user.find(marker="scene-import-mesh").elements)
     user.find(marker="scene-import-mesh").click()
     await user.should_see(marker="mesh-import")
     assert ui_state.scene_panel.body in element(user, "mesh-import").ancestors()

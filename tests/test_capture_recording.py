@@ -134,7 +134,7 @@ async def test_motion_nobody_commanded_is_captured_into_the_take(
         target[2] -= 8.0
         # A move no UI hook sees: what another client, MCP or a hand on the
         # arm looks like to the recorder.
-        index = await client.move_j(target, duration=1.2)
+        index = await client.move_j(target, duration=0.8)
         assert await client.wait_command(index, timeout=10)
         assert await wait_until(
             lambda: _capture(motion_recorder.session) is not None, timeout_s=20
@@ -270,7 +270,11 @@ async def test_motion_nobody_commanded_is_captured_into_the_take(
         )
         assert recorded.samples[-1].joints_deg == pytest.approx(external, abs=0.1)
 
-        await asyncio.sleep(1.0)  # the operator waits before the next move
+        # The operator waits before the next move. The delay counts from where
+        # the arm came to rest, so it holds the stillness that closed the last
+        # capture too; a status period or two is the slack.
+        wait = 0.6
+        await asyncio.sleep(wait)
         back = list(external)
         back[0] -= 6.0
         await _move(client, back, 0.6)
@@ -278,7 +282,8 @@ async def test_motion_nobody_commanded_is_captured_into_the_take(
         last = captures()[2]
         above = str(textarea.value).split("\n")[last.first_line - 2].strip()
         assert above.startswith("rbt.delay("), textarea.value
-        assert float(above.removeprefix("rbt.delay(").rstrip(")")) >= 1.0, above
+        delay = float(above.removeprefix("rbt.delay(").rstrip(")"))
+        assert delay >= recorder_module.CAPTURE_STILL_S + wait - 0.1, above
     finally:
         monkeypatch.setattr(client, "move_j", real)
         if is_any_program_recording():
@@ -305,10 +310,10 @@ async def test_motion_nobody_commanded_is_captured_into_the_take(
         back[2] -= 8.0
         # The gripper closes in the instant between the two moves, far too
         # short a stop for a hold of its own.
-        index = await client.move_j(there, duration=1.2)
+        index = await client.move_j(there, duration=0.8)
         assert await client.wait_command(index, timeout=15)
         assert await client.tool.close() >= 0
-        index = await client.move_j(back, duration=1.2)
+        index = await client.move_j(back, duration=0.8)
         assert await client.wait_command(index, timeout=15)
         assert await wait_until(
             lambda: bool(_captures(motion_recorder.session)), timeout_s=30
@@ -354,7 +359,7 @@ async def test_motion_nobody_commanded_is_captured_into_the_take(
         assert start is not None
         first = list(start)
         first[0] += 8.0
-        await _move(client, first, 1.0)
+        await _move(client, first, 0.7)
         assert await wait_until(entered.is_set, timeout_s=20), (
             "the first span never started converting"
         )
@@ -392,7 +397,7 @@ async def test_motion_nobody_commanded_is_captured_into_the_take(
         release.clear()
         third = list(second)
         third[0] -= 8.0
-        await _move(client, third, 1.0)
+        await _move(client, third, 0.7)
         assert await wait_until(entered.is_set, timeout_s=20), (
             "the third span never started converting"
         )
@@ -454,7 +459,7 @@ async def test_motion_nobody_commanded_is_captured_into_the_take(
         assert start is not None
         target = list(start)
         target[0] += 8.0
-        await _move(client, target, 1.0)
+        await _move(client, target, 0.7)
         assert await wait_until(
             lambda: bool(_captures(motion_recorder.session)), timeout_s=30
         ), "motion after a stall was not captured"

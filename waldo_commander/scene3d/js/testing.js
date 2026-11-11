@@ -484,15 +484,35 @@ export function surface(core) {
           .filter((n) => view.dot(new THREE.Vector3(...n)) < 0.99)
           .sort((a, b) => view.dot(new THREE.Vector3(...b)) - view.dot(new THREE.Vector3(...a)));
     const r = cube.box.getBoundingClientRect();
+    // Every other pixel across the box, as columns i and rows j.
+    const nx = Math.max(0, Math.ceil((r.width - 1) / 2)), ny = Math.max(0, Math.ceil((r.height - 1) / 2));
     for (const d of wanted) {
       const picks = (x, y) => {
         if (document.elementFromPoint(r.left + x, r.top + y) !== cube.box) return false;
         const region = cube.regionAt(x, y);
         return !!region && region.every((v, i) => v === d[i]);
       };
-      const found = [];
-      for (let y = 1; y < r.height; y += 2) for (let x = 1; x < r.width; x += 2) if (picks(x, y)) found.push([x, y]);
-      if (!found.length) continue;
+      const seen = new Uint8Array(nx * ny), cells = [];
+      const visit = (i, j) => {
+        if (i < 0 || j < 0 || i >= nx || j >= ny || seen[j * nx + i]) return;
+        seen[j * nx + i] = 1;
+        if (picks(1 + 2 * i, 1 + 2 * j)) cells.push([i, j]);
+      };
+      // Each pixel costs raycasts: a coarse pass finds the region, which then
+      // grows to every pixel of it joined to those found.
+      for (let j = 0; j < ny; j += 3) for (let i = 0; i < nx; i += 3) visit(i, j);
+      if (cells.length) {
+        for (let k = 0; k < cells.length; k++) {
+          const [i, j] = cells[k];
+          for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) visit(i + di, j + dj);
+        }
+      } else {
+        // A region too small for the coarse pass to land on.
+        for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) visit(i, j);
+      }
+      if (!cells.length) continue;
+      cells.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+      const found = cells.map(([i, j]) => [1 + 2 * i, 1 + 2 * j]);
       // The middle of the pixels found, or the found pixel nearest it.
       const mx = found.reduce((a, [x]) => a + x, 0) / found.length;
       const my = found.reduce((a, [, y]) => a + y, 0) / found.length;

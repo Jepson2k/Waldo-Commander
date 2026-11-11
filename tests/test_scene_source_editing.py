@@ -206,12 +206,13 @@ rbt.move_j(
     textarea.value = source
     await simulation.run_simulation()
     program = waldoctl.commander.programs.active
-    assert await wait_until(lambda: bool(program.dry_run.targets), 15)
+    assert await wait_until(
+        lambda: bool(program.dry_run.targets)
+        and program.dry_run.commanded_revision == program.dry_run.revision,
+        15,
+    )
     target = program.dry_run.targets[-1]
     assert ui_state.editor_panel.target_edit_reason(target.id) is None
-    assert await wait_until(
-        lambda: program.dry_run.commanded_revision == program.dry_run.revision, 5
-    )
     right_click(user, urdf.scene, [f"target:{target.id}"])
     user.find(marker="scene-edit-target").click()
     assert await wait_until(lambda: urdf._edit_active, 5)

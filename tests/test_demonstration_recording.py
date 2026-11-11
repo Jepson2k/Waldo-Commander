@@ -60,9 +60,11 @@ async def test_observed_motion_records_cadence_gaps_and_controller_loss(
     monkeypatch.setenv("WALDO_RECORDING_DIR", str(tmp_path))
     async with _ready_client(session_controller) as client:
         first = asyncio.Event()
+        # Long enough to hold the move below and little more: replaying it
+        # further down takes longer than recording it.
         task = asyncio.create_task(
             record_demonstration(
-                client, duration_s=2, on_sample=lambda sample: first.set()
+                client, duration_s=1.2, on_sample=lambda sample: first.set()
             )
         )
         try:
@@ -268,6 +270,12 @@ async def test_gripper_recording_replays_with_its_tool_and_standalone(
                 "No continuous gripper transition was observed"
             )
             recording.require_continuous()
+            # Only the transition: the still samples either side would replay
+            # as delays, twice over.
+            positions = [sample.tool.positions[0] for sample in recording.samples]
+            closed_at = positions.index(1)
+            opened_at = max(i for i in range(closed_at) if positions[i] == 0)
+            recording = recording.select(opened_at, closed_at + 1)
 
             managed = cast(
                 waldoctl.RobotClient,

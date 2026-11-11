@@ -24,7 +24,7 @@ from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import js, run_in_app, viewport
 from tests.helpers.browser_session import no_visible, wait
-from tests.helpers.scene_surface import pointer_to, scene_js
+from tests.helpers.scene_surface import pointer_to, scene_js, wait_for_scene_idle
 from waldo_commander.common.theme import SceneColors, hex_of
 from waldo_commander.scene3d import ClipPlane, Node, WcScene
 
@@ -992,6 +992,8 @@ class TestSceneElement:
         resets = scene_js(page, "return S.resets")
         scene_js(page, "getElement(S.root).$emit('init')")
         wait(page, 5).until(lambda _: scene_js(page, "return S.resets") == resets + 1)
+        # The link has to be drawn again before a move can land on it.
+        wait_for_scene_idle(page)
         _mouse_to(page, pixel[0] + 1, pixel[1])
         wait(page, 5).until(lambda _: _handles(page) == ["ring:1"])
         _rest_pointer(page)

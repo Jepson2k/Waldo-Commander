@@ -142,104 +142,6 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         assert clearance["controlBottom"] <= clearance["footerTop"], clearance
         assert clearance["railBottom"] <= clearance["footerTop"], clearance
 
-        settings()
-        # Every category fits its panel: nothing runs off the right edge, the
-        # dialog stays inside the viewport, and a row is its name and
-        # description beside its control, not a card with a divider.
-        measure_category = """
-            const card = document.querySelector('.settings-dialog-card');
-            const e = arguments[0].closest('.q-tab-panel').querySelector('.settings-content');
-            const r = card.getBoundingClientRect();
-            const content = e.getBoundingClientRect();
-            const clipped = [...e.querySelectorAll('.settings-row > :not(.settings-text)')]
-                .filter(control => control.offsetParent !== null)
-                .map(control => control.getBoundingClientRect())
-                .filter(control => control.left < content.left - 1 || control.right > content.right + 1)
-                .map(control => ({left:control.left, right:control.right}));
-            const tall = [...e.querySelectorAll('.settings-row')]
-                .filter(row => row.offsetParent !== null && !row.querySelector('.settings-axis'))
-                .map(row => row.getBoundingClientRect().height)
-                .filter(h => h > 48);
-            return {width:e.clientWidth, content:e.scrollWidth, bottom:r.bottom, right:r.right,
-                    viewport:innerHeight, viewportWidth:innerWidth,
-                    separators: card.querySelectorAll('.q-separator').length, tall, clipped,
-                    contentRight:content.right,
-                    rows: e.scrollHeight, shown: e.clientHeight};
-        """
-        for key in categories:
-            click(f"settings-cat-{key}")
-            wait(screen, 10).until(
-                lambda d: d.execute_script(
-                    """
-                    const panel = arguments[0].closest('.q-tab-panel');
-                    const bounds = panel.getBoundingClientRect();
-                    const body = panel.closest('.settings-body').getBoundingClientRect();
-                    return panel.offsetParent !== null
-                        && Math.abs(bounds.left - body.left) < 1
-                        && Math.abs(bounds.right - body.right) < 1
-                        && !panel.getAnimations().some(a => a.playState === 'running')
-                        && !panel.parentElement.querySelector('[class*="-leave-active"]');
-                    """,
-                    marked_element(screen, f"settings-group-{key}"),
-                )
-            )
-            dimensions = screen.selenium.execute_script(
-                measure_category, marked_element(screen, f"settings-group-{key}")
-            )
-            assert dimensions["shown"] > 100, ("the category's rows are on screen", key)
-            assert dimensions["content"] <= dimensions["width"] + 1, (key, dimensions)
-            assert dimensions["bottom"] <= dimensions["viewport"] + 1, (key, dimensions)
-            assert dimensions["right"] <= dimensions["viewportWidth"] + 1, (
-                key,
-                dimensions,
-            )
-            assert dimensions["separators"] == 0, (key, dimensions)
-            assert not dimensions["tall"], (key, dimensions)
-            assert dimensions["contentRight"] <= dimensions["right"] + 1, (
-                key,
-                dimensions,
-            )
-            assert not dimensions["clipped"], (key, dimensions)
-        click("settings-cat-tool")
-        wait(screen, 10).until(
-            lambda _: marked_element(screen, "select-tool").is_displayed()
-        )
-        if height >= 941:
-            # PAROL6's gripper adds a Variant row. PAR6 only permits the
-            # gripper fitted in its daemon config, so review that tool.
-            if backend == "parol6":
-                select_tool("SSG-48")
-                wait(screen, 20).until(
-                    lambda _: marked_element(
-                        screen, "select-tool-variant"
-                    ).is_displayed()
-                )
-            grown = screen.selenium.execute_script(
-                measure_category, marked_element(screen, "settings-group-tool")
-            )
-            assert grown["rows"] <= grown["shown"] + 1, (
-                "Settings → Tool scrolls on a 1080p screen with a gripper selected",
-                grown,
-            )
-            if backend == "parol6":
-                select_tool("NONE")
-        wait(screen, 10).until(
-            lambda _: run_in_app(
-                lambda: (
-                    marked("select-tool").value == waldoctl.commander.status.tool.key
-                )
-            )
-        )
-        click("settings-cat-advanced")
-        wait(screen, 10).until(
-            lambda _: marked_element(screen, "settings-backend-select").is_displayed()
-        )
-        assert run_in_app(lambda: marked("settings-backend-select").value) == backend
-        click("settings-close")
-        wait(screen, 10).until(
-            lambda _: not run_in_app(lambda: ui_state.settings_content.dialog.value)
-        )
-
         # A skill goes in from the editor's Insert menu as its call, and the
         # strip over it, a pose field's teach controls and all, fits the
         # program column however small the window, leaving the code in view.
@@ -280,6 +182,101 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             return {width:e.clientWidth, total:e.closest('.q-tab-panel').clientWidth};
         """)
         assert dimensions["width"] >= 140, dimensions
+
+    # The Settings card is a fixed 760x560 at both sizes, so its categories
+    # are measured once, at the tighter size the loop ends on.
+    settings()
+    # Every category fits its panel: nothing runs off the right edge, the
+    # dialog stays inside the viewport, and a row is its name and
+    # description beside its control, not a card with a divider.
+    measure_category = """
+        const card = document.querySelector('.settings-dialog-card');
+        const e = arguments[0].closest('.q-tab-panel').querySelector('.settings-content');
+        const r = card.getBoundingClientRect();
+        const content = e.getBoundingClientRect();
+        const clipped = [...e.querySelectorAll('.settings-row > :not(.settings-text)')]
+            .filter(control => control.offsetParent !== null)
+            .map(control => control.getBoundingClientRect())
+            .filter(control => control.left < content.left - 1 || control.right > content.right + 1)
+            .map(control => ({left:control.left, right:control.right}));
+        const tall = [...e.querySelectorAll('.settings-row')]
+            .filter(row => row.offsetParent !== null && !row.querySelector('.settings-axis'))
+            .map(row => row.getBoundingClientRect().height)
+            .filter(h => h > 48);
+        return {width:e.clientWidth, content:e.scrollWidth, bottom:r.bottom, right:r.right,
+                viewport:innerHeight, viewportWidth:innerWidth,
+                separators: card.querySelectorAll('.q-separator').length, tall, clipped,
+                contentRight:content.right,
+                rows: e.scrollHeight, shown: e.clientHeight};
+    """
+    for key in categories:
+        click(f"settings-cat-{key}")
+        wait(screen, 10).until(
+            lambda d: d.execute_script(
+                """
+                const panel = arguments[0].closest('.q-tab-panel');
+                const bounds = panel.getBoundingClientRect();
+                const body = panel.closest('.settings-body').getBoundingClientRect();
+                return panel.offsetParent !== null
+                    && Math.abs(bounds.left - body.left) < 1
+                    && Math.abs(bounds.right - body.right) < 1
+                    && !panel.getAnimations().some(a => a.playState === 'running')
+                    && !panel.parentElement.querySelector('[class*="-leave-active"]');
+                """,
+                marked_element(screen, f"settings-group-{key}"),
+            )
+        )
+        dimensions = screen.selenium.execute_script(
+            measure_category, marked_element(screen, f"settings-group-{key}")
+        )
+        assert dimensions["shown"] > 100, ("the category's rows are on screen", key)
+        assert dimensions["content"] <= dimensions["width"] + 1, (key, dimensions)
+        assert dimensions["bottom"] <= dimensions["viewport"] + 1, (key, dimensions)
+        assert dimensions["right"] <= dimensions["viewportWidth"] + 1, (
+            key,
+            dimensions,
+        )
+        assert dimensions["separators"] == 0, (key, dimensions)
+        assert not dimensions["tall"], (key, dimensions)
+        assert dimensions["contentRight"] <= dimensions["right"] + 1, (
+            key,
+            dimensions,
+        )
+        assert not dimensions["clipped"], (key, dimensions)
+    click("settings-cat-tool")
+    wait(screen, 10).until(
+        lambda _: marked_element(screen, "select-tool").is_displayed()
+    )
+    # PAROL6's gripper adds a Variant row. PAR6 only permits the gripper
+    # fitted in its daemon config, so review that tool.
+    if backend == "parol6":
+        select_tool("SSG-48")
+        wait(screen, 20).until(
+            lambda _: marked_element(screen, "select-tool-variant").is_displayed()
+        )
+    grown = screen.selenium.execute_script(
+        measure_category, marked_element(screen, "settings-group-tool")
+    )
+    assert grown["rows"] <= grown["shown"] + 1, (
+        "Settings → Tool scrolls with a gripper selected",
+        grown,
+    )
+    if backend == "parol6":
+        select_tool("NONE")
+    wait(screen, 10).until(
+        lambda _: run_in_app(
+            lambda: (marked("select-tool").value == waldoctl.commander.status.tool.key)
+        )
+    )
+    click("settings-cat-advanced")
+    wait(screen, 10).until(
+        lambda _: marked_element(screen, "settings-backend-select").is_displayed()
+    )
+    assert run_in_app(lambda: marked("settings-backend-select").value) == backend
+    click("settings-close")
+    wait(screen, 10).until(
+        lambda _: not run_in_app(lambda: ui_state.settings_content.dialog.value)
+    )
 
     if backend == "par6":
         from nicegui import ui

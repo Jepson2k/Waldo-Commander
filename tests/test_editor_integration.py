@@ -533,7 +533,7 @@ async def test_simulated_program_previews_and_steps_one_command_per_press(
     From idle, a press launches the subprocess with the stepping IPC left
     paused: the first motion command runs, then the script blocks — running
     but not playing, not finished. A second press advances exactly one more
-    command. While the program runs, the sim Previous-step button is hidden
+    queued command. While the program runs, the sim Previous-step button is hidden
     (live stepping is forward-only); it reappears after the run stops.
     """
     import waldoctl
@@ -711,51 +711,19 @@ async def test_simulated_program_previews_and_steps_one_command_per_press(
 
     pb = tab.dry_run.playback
     moves = _move_commands(tab)
-
-    async def wait_complete(command: int) -> None:
-        async with asyncio.timeout(30):
-            while not (pb.executing_command == command and pb.executing_step_at_end):
-                await asyncio.sleep(0.05)
-
-    try:
-        user.find(marker="editor-step-program").click()
-        await wait_complete(moves[0])
-        assert pb.current_step == 0
-        assert decorations._executing_line_by_tab.get(tab.id) == 4
-
-        # The sleep runs on its own; the next grant runs the second move.
-        user.find(marker="editor-step-program").click()
-        await wait_complete(moves[1])
-        assert pb.current_step == 2, (
-            "the highlight must land on the move, not the sleep"
-        )
-        assert decorations._executing_line_by_tab.get(tab.id) == 6
-        assert editor.playback._exec_step_index == 2
-    finally:
-        if is_any_program_running():
-            await editor.playback.toggle_play()
-        async with asyncio.timeout(30):
-            while is_any_program_running():
-                await asyncio.sleep(0.1)
-    assert waldoctl.commander.programs.active is tab
-
-    await _simulate(editor, tab, _THREE_MOVE_SCRIPT)
-    prev_btn = editor.playback.prev_btn
+    prev_btn = playback.prev_btn
     assert prev_btn is not None
     assert prev_btn.visible is True, "prev button should be visible when idle"
 
-    pb = tab.dry_run.playback
-    moves = _move_commands(tab)
-
-    async def wait_step_complete(step: int, timeout_s: float) -> None:
+    async def wait_step_complete(command: int) -> None:
         interval = 0.05
-        for _ in range(int(timeout_s / interval)):
-            if pb.executing_command == step and pb.executing_step_at_end:
+        for _ in range(int(30.0 / interval)):
+            if pb.executing_command == command and pb.executing_step_at_end:
                 return
             await asyncio.sleep(interval)
         tail = [entry.text for entry in tab.log.entries[-5:]]
         raise TimeoutError(
-            f"step {step} never completed: index={pb.executing_command}, "
+            f"command {command} never completed: index={pb.executing_command}, "
             f"at_end={pb.executing_step_at_end}, running={is_any_program_running()}, "
             f"log tail={tail}"
         )
@@ -763,38 +731,44 @@ async def test_simulated_program_previews_and_steps_one_command_per_press(
     try:
         # First press from idle: subprocess starts paused, runs command #1 only.
         user.find(marker="editor-step-program").click()
-        await wait_step_complete(moves[0], timeout_s=30.0)
-
+        await wait_step_complete(moves[0])
+        assert pb.current_step == 0
+        assert decorations._executing_line_by_tab.get(tab.id) == 4
         assert pb.is_playing is False, "paused start must not enter play mode"
         assert prev_btn.visible is False, "prev button must hide during a live run"
         await _wait_j1_near(85.0)
 
         # A preview scrub must not reposition the controller while Python owns it,
         # including between steps when the native queue is idle.
-        timeline = editor.playback._timeline
+        timeline = playback._timeline
         assert timeline is not None
         slider = next(iter(user.find(marker="editor-scrub-slider").elements))
         with slider.client:
             slider.set_value(timeline.total_duration)
         await asyncio.sleep(0)
-        teleport = editor.playback._teleport_task
+        teleport = playback._teleport_task
         if teleport is not None:
             await teleport
+        # The window outlasts the program's 0.5 s sleep, so a run that went
+        # on past command #1 would have started the second move inside it.
         assert not await waldoctl.commander.client.wait_status(
             lambda s: abs(s.angles[0] - 85.0) > 1.0, timeout=1
         ), "preview scrubbing moved the controller during a paused Python run"
-        # Exactly one command: given that second to continue, the script must
-        # still be blocked on command #1.
         assert pb.executing_command == moves[0], (
             "paused start ran more than one command"
         )
         assert is_any_program_running() is True, "program must be paused, not finished"
 
-        # Second press while running-paused: exactly one more command.
+        # The sleep runs on its own; the next grant runs the second move.
         user.find(marker="editor-step-program").click()
-        await wait_step_complete(moves[1], timeout_s=15.0)
+        await wait_step_complete(moves[1])
+        assert pb.current_step == 2, (
+            "the highlight must land on the move, not the sleep"
+        )
+        assert decorations._executing_line_by_tab.get(tab.id) == 6
+        assert playback._exec_step_index == 2
         assert pb.is_playing is False
-        await _wait_j1_near(95.0)
+        await _wait_j1_near(90.0)
         assert is_any_program_running() is True, "still paused after the second step"
     finally:
         if is_any_program_running():
@@ -805,6 +779,7 @@ async def test_simulated_program_previews_and_steps_one_command_per_press(
                 await asyncio.sleep(0.1)
 
     assert is_any_program_running() is False
+    assert waldoctl.commander.programs.active is tab
     assert prev_btn.visible is True, "prev button should reappear after the run"
 
 
@@ -818,21 +793,15 @@ async def withdraw_twice(rbt: Client):
     await retract.async_call(rbt, distance_mm=2.0)
 """
 
-_WITHDRAW_SYNC = (
-    _WITHDRAW_TWICE
-    + """
-from parol6 import RobotClient
-with RobotClient() as rbt:
-    rbt.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
-    withdraw_twice(rbt)
-"""
-)
-
-_WITHDRAW_ASYNC = (
+# The same skill from a sync client, then from an async one.
+_WITHDRAW_SYNC_THEN_ASYNC = (
     _WITHDRAW_TWICE
     + """
 import asyncio
-from parol6 import AsyncRobotClient
+from parol6 import AsyncRobotClient, RobotClient
+with RobotClient() as rbt:
+    rbt.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
+    withdraw_twice(rbt)
 async def main():
     async with AsyncRobotClient() as rbt:
         await rbt.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
@@ -846,10 +815,10 @@ asyncio.run(main())
 async def test_run_button_and_nested_skill_steps(user: User) -> None:
     """Play runs the program, shows Stop and fires the program's own step
     channel (``Playback.add_step_listener``) on the start edge; a second
-    press pauses without ending the run.
+    press pauses it at the controller and offers Play again.
 
     A skill a program defines and calls steps one inner motion per press,
-    from a sync program (through the wrapper's ``run_skill``) and from an
+    from a sync client (through the wrapper's ``run_skill``) and from an
     async one alike, and its progress and completion reach the program log."""
     import numpy as np
     import waldoctl
@@ -872,6 +841,8 @@ async def test_run_button_and_nested_skill_steps(user: User) -> None:
 
     program.dry_run.playback.add_step_listener(_on_step)
     play_btn = user.find(marker="editor-play-btn")
+    play_icon = editor.playback.play_btn
+    assert play_icon is not None
     try:
         play_btn.click()
         assert await wait_until(is_any_program_running, timeout_s=10), (
@@ -881,13 +852,18 @@ async def test_run_button_and_nested_skill_steps(user: User) -> None:
         assert await wait_until(lambda: fired > 0, timeout_s=10), (
             "per-program step channel never fired during the run"
         )
+        assert await wait_until(
+            lambda: play_icon.props["icon"] == "pause", timeout_s=5
+        ), "a playing run must offer Pause"
 
-        # A second press pauses: the run goes on, held.
+        # A second press pauses: the controller holds, and the button offers
+        # Play again.
         play_btn.click()
-        await asyncio.sleep(0.2)
-        assert is_any_program_running() is True, (
-            "Script should still be running (paused)"
-        )
+        assert await wait_until(
+            lambda: play_icon.props["icon"] == "play_arrow", timeout_s=5
+        ), "the second press did not pause the run"
+        speed = await waldoctl.commander.client.execution_speed()
+        assert speed.target_scale == 0, "the pause never reached the controller"
     finally:
         program.dry_run.playback.remove_step_listener(_on_step)
         if is_any_program_running():
@@ -895,70 +871,65 @@ async def test_run_button_and_nested_skill_steps(user: User) -> None:
             await wait_until(lambda: not is_any_program_running(), timeout_s=10)
 
     pb = tab.dry_run.playback
+    client = waldoctl.commander.client
 
     async def wait_step(step: int) -> None:
         async with asyncio.timeout(30):
             while pb.executing_command != step or not pb.executing_step_at_end:
                 await asyncio.sleep(0.05)
 
-    for body in (_WITHDRAW_SYNC, _WITHDRAW_ASYNC):
-        await _simulate(editor, tab, body)
-        assert tab.dry_run.total_steps == 3
-        moves = _move_commands(tab)
-        earlier = list(tab.log.entries)
+    await _simulate(editor, tab, _WITHDRAW_SYNC_THEN_ASYNC)
+    assert tab.dry_run.total_steps == 6
+    moves = _move_commands(tab)
+    earlier = list(tab.log.entries)
 
-        def logged(text: str) -> bool:
-            return any(
-                text in entry.text
-                for entry in tab.log.entries
-                if not any(entry is seen for seen in earlier)
-            )
+    def logged(text: str) -> int:
+        return sum(
+            text in entry.text
+            for entry in tab.log.entries
+            if not any(entry is seen for seen in earlier)
+        )
 
-        # A launch refuses while the controller holds queued commands, and
-        # the preview fits the program's tool through the queue.
-        client = waldoctl.commander.client
-        async with asyncio.timeout(10):
-            while await client.queue():
-                await asyncio.sleep(0.05)
-        try:
-            user.find(marker="editor-step-program").click()
-            # The launch resets the executing command, so the last run's
-            # final step cannot be mistaken for this one's first.
-            assert await wait_until(is_any_program_running, timeout_s=30)
-            await wait_step(moves[0])
-            first = await waldoctl.commander.client.pose()
-            assert first is not None
-
-            user.find(marker="editor-step-program").click()
-            await wait_step(moves[1])
-            second = await waldoctl.commander.client.pose()
-            assert second is not None
-            assert np.linalg.norm(np.array(second[:3]) - first[:3]) == pytest.approx(
-                2.0, abs=0.3
-            )
-            assert is_any_program_running() and not pb.is_playing
-
-            user.find(marker="editor-step-program").click()
-            await wait_step(moves[2])
-            third = await waldoctl.commander.client.pose()
-            assert third is not None
-            assert np.linalg.norm(np.array(third[:3]) - second[:3]) == pytest.approx(
-                2.0, abs=0.3
-            )
-            assert is_any_program_running() and not pb.is_playing
-            assert logged("waldo.retract progress (0%): Moving along tool Z"), (
+    # A launch refuses while the controller holds queued commands, and
+    # the preview fits the program's tool through the queue.
+    async with asyncio.timeout(10):
+        while await client.queue():
+            await asyncio.sleep(0.05)
+    try:
+        user.find(marker="editor-step-program").click()
+        # The launch resets the executing command, so the last run's
+        # final step cannot be mistaken for this one's first.
+        assert await wait_until(is_any_program_running, timeout_s=30)
+        # Each client's move, then the skill's two withdrawals, one press each.
+        for calls, head in enumerate((0, 3), start=1):
+            if head:
+                user.find(marker="editor-step-program").click()
+            await wait_step(moves[head])
+            before = await client.pose()
+            assert before is not None
+            for step in (head + 1, head + 2):
+                user.find(marker="editor-step-program").click()
+                await wait_step(moves[step])
+                after = await client.pose()
+                assert after is not None
+                moved = np.linalg.norm(np.array(after[:3]) - before[:3])
+                assert moved == pytest.approx(2.0, abs=0.3)
+                assert is_any_program_running() and not pb.is_playing
+                before = after
+            progress = logged("waldo.retract progress (0%): Moving along tool Z")
+            assert progress == 2 * calls, (
                 "skill progress must reach the program log through subprocess events"
             )
-            user.find(marker="editor-play-btn").click()
-            async with asyncio.timeout(15):
+        user.find(marker="editor-play-btn").click()
+        async with asyncio.timeout(15):
+            while is_any_program_running():
+                await asyncio.sleep(0.05)
+        assert logged("test.withdraw_twice completed") == 2, (
+            "terminal skill events must survive subprocess cleanup"
+        )
+    finally:
+        if is_any_program_running():
+            user.find(marker="editor-stop-btn").click()
+            async with asyncio.timeout(10):
                 while is_any_program_running():
                     await asyncio.sleep(0.05)
-            assert logged("test.withdraw_twice completed"), (
-                "terminal skill events must survive subprocess cleanup"
-            )
-        finally:
-            if is_any_program_running():
-                user.find(marker="editor-stop-btn").click()
-                async with asyncio.timeout(10):
-                    while is_any_program_running():
-                        await asyncio.sleep(0.05)

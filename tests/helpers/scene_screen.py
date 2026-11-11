@@ -25,6 +25,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
+from tests.helpers import visual_evidence
 from tests.helpers.browser_helpers import click_marked, marked_element, run_in_app
 from tests.helpers.browser_session import no_visible, wait
 from tests.helpers.scene_surface import (
@@ -245,23 +246,35 @@ def program_previewed(source: str) -> Iterator[list[str]]:
             or simulation._physics_timer is not None
         )
 
+    def swap_physics_delay(delay: float) -> float:
+        before, simulation._physics_delay = simulation._physics_delay, delay
+        return before
+
+    def preview(text: str, what: str) -> None:
+        # No pause before the predicted pass either. It is read once the plan
+        # has landed, so it is held short until the preview is over.
+        delay = run_in_app(lambda: swap_physics_delay(0.15))
+        try:
+            run_in_app(lambda: edit(text))
+            poll(lambda: not run_in_app(previewing), 30.0, what)
+        finally:
+            run_in_app(lambda: swap_physics_delay(delay))
+
     def saved() -> tuple[str, object]:
         tab = waldoctl.commander.programs.active
         assert tab is not None
         return ui_state.active_textarea.value, tab.dry_run.last_sim_joints_deg
 
     text, sim_joints = run_in_app(saved)
-    run_in_app(lambda: edit(source))
-    poll(lambda: not run_in_app(previewing), 30.0, "the program's preview")
+    preview(source, "the program's preview")
     try:
         yield run_in_app(
             lambda: [t.id for t in waldoctl.commander.programs.active.dry_run.targets]
         )
     finally:
-        run_in_app(lambda: edit(text))
         # A preview still running when the next test injects its records
         # would overwrite them.
-        poll(lambda: not run_in_app(previewing), 30.0, "the restored preview")
+        preview(text, "the restored preview")
         # A previewed program re-previews whenever the arm moves; the program
         # that was there had not been previewed.
         run_in_app(
@@ -328,6 +341,13 @@ def gizmo_still(screen):
     )
 
 
+def drag_moves() -> int:
+    """How many pointer moves a test drag takes after its press: enough for a
+    recording to show a smooth drag; otherwise few, as the scene acts on
+    where the pointer is, not on the way it came."""
+    return 10 if visual_evidence.enabled() else 4
+
+
 def hold(screen, spot, length=20, *, kind="tcp"):
     """Press the handle at ``spot`` and drag it ``length`` px along its axis,
     still held."""
@@ -336,8 +356,11 @@ def hold(screen, spot, length=20, *, kind="tcp"):
     action = ActionChains(screen.selenium, duration=40)
     pointer_to(screen, x, y, action)
     action.click_and_hold()
-    for k in range(1, 11):
-        pointer_to(screen, x + dx * length * k / 10, y + dy * length * k / 10, action)
+    moves = drag_moves()
+    for k in range(1, moves + 1):
+        pointer_to(
+            screen, x + dx * length * k / moves, y + dy * length * k / moves, action
+        )
     action.perform()
     wait(screen).until(
         lambda _: scene_js(screen, "return !!S.byName(arguments[0])", f"{kind}:ticks")
@@ -475,6 +498,21 @@ def assert_dial_readable(screen, joint=0):
     assert not problems, problems
 
 
+# The open menus' items on screen, each with its text and whether it is
+# disabled; on screen as Selenium judges it: laid out, not hidden, not transparent.
+_SHOWN_MENU_ITEMS = """
+return [...document.querySelectorAll('.q-menu .q-item')]
+  .filter((e) => {
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && e.checkVisibility({
+      opacityProperty: true, visibilityProperty: true,
+      checkOpacity: true, checkVisibilityCSS: true,
+    });
+  })
+  .map((e) => [e, e.innerText, e.getAttribute('aria-disabled') === 'true']);
+"""
+
+
 def choose(screen: Screen, x: float, y: float, item: str) -> list[str]:
     """Right-click at (x, y), pick ``item`` from the scene's menu and return
     the items the menu offered."""
@@ -486,18 +524,15 @@ def choose(screen: Screen, x: float, y: float, item: str) -> list[str]:
     offered: list[str] = []
 
     def shown_item(driver):
-        shown = [
-            e
-            for e in driver.find_elements(By.CSS_SELECTOR, ".q-menu .q-item")
-            if e.is_displayed()
-        ]
-        texts = [e.text.strip() for e in shown]
+        # One script a poll: a lookup per item and property is a round trip each.
+        shown = driver.execute_script(_SHOWN_MENU_ITEMS)
+        texts = [text.strip() for _, text, _ in shown]
         # The menu fills in after it opens; pick from it once it stops changing.
         settled, offered[:] = texts == offered, texts
         if not settled or item not in texts:
             return False
-        choice = shown[texts.index(item)]
-        assert choice.get_attribute("aria-disabled") != "true", f"{item!r} is disabled"
+        choice, _, disabled = shown[texts.index(item)]
+        assert not disabled, f"{item!r} is disabled"
         choice.click()
         return True
 
@@ -706,10 +741,10 @@ def place_shape(screen, kind, x, y, name=None):
     return placed
 
 
-def create_shape(screen, kind, name):
+def add_shape(screen, kind, name, *, rx=0.0):
     """Add a ``kind`` keep-out named ``name`` at Place here's default size,
-    standing on open floor and turned 30° about Z, then select it and open
-    its resize handles. Placing through the card is tested on its own."""
+    standing on open floor, turned ``rx`` radians about X and 30° about Z,
+    and return it. Placing through the card is tested on its own."""
     from waldoctl.shapes import Box, Cylinder, Sphere
 
     from waldo_commander.services.urdf_scene.shape_drawing_mixin import (
@@ -723,12 +758,19 @@ def create_shape(screen, kind, name):
     height = dims.get("z") or dims.get("length") or 2 * dims["radius"]
     shape = {"box": Box, "sphere": Sphere, "cylinder": Cylinder}[kind](
         name=name,
-        pose=(round(x, 3), round(y, 3), height / 2, 0.0, 0.0, math.radians(30)),
+        pose=(round(x, 3), round(y, 3), height / 2, rx, 0.0, math.radians(30)),
         **dims,
     )
     handle = waldoctl.commander.scene
     run_in_app(lambda: setattr(handle, "shapes", [*handle.shapes, shape]))
     confirmed(screen, lambda: shape in handle.shapes)
+    return shape
+
+
+def create_shape(screen, kind, name):
+    """Add a ``kind`` keep-out named ``name`` as ``add_shape`` does, then
+    select it and open its resize handles."""
+    add_shape(screen, kind, name)
     key = f"shape:{name}"
     click_object(screen, key)
     wait(screen).until(

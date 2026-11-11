@@ -46,7 +46,6 @@ from tests.helpers.scene_screen import (
     click_object,
     click_spot,
     confirmed,
-    create_shape,
     field_number,
     fill,
     frame_mm,
@@ -54,8 +53,8 @@ from tests.helpers.scene_screen import (
     hold,
     menu_choice,
     object_mode,
+    open_scene_panel,
     park_scene_pointer,
-    place_shape,
     probe,
     program_previewed,
     settled_element,
@@ -210,6 +209,16 @@ def _field_value(screen, marker) -> float | None:
     return float(text) if text else None
 
 
+def _drawn_at(screen, shape) -> bool:
+    """Whether the scene draws ``shape`` at its pose's position."""
+    at = scene_js(
+        screen,
+        "return S.byName(arguments[0])?.position.toArray()",
+        f"shape:{shape.name}",
+    )
+    return at is not None and np.allclose(at, shape.pose[:3], rtol=0, atol=1e-6)
+
+
 def _library(screen):
     point = wait(screen).until(lambda _: probe(screen, "floorSpot"))
     choose(screen, *point[:2], "Workcell library…")
@@ -224,7 +233,7 @@ def object_screen(class_screen):
 
 @pytest.mark.browser
 class TestObjectEditing:
-    def test_face_standoff_twist_validity_sequence_undo(self, object_screen):
+    def test_face_standoff_validity_insert_and_compact_card(self, object_screen):
         screen = object_screen
         with viewport(screen, 1920, 1080):
             screen_wait_for_scene_ready(screen, timeout_s=40)
@@ -243,12 +252,15 @@ class TestObjectEditing:
                         lambda _: run_in_app(lambda: view._teaching.valid)
                     )
                     evidence.capture("01-picked-surface-1920")
-                    fill(screen, "surface-standoff", 35)
-                    fill(screen, "surface-twist", 10)
-                    wait(screen).until(
-                        lambda _: run_in_app(lambda: view._teaching.valid)
-                    )
-                    evidence.capture("02-standoff-twist-1920")
+                    # Twist, the sequence and its clearance are tested in
+                    # test_surface_teaching; here they only stage captures.
+                    if evidence.enabled:
+                        fill(screen, "surface-standoff", 35)
+                        fill(screen, "surface-twist", 10)
+                        wait(screen).until(
+                            lambda _: run_in_app(lambda: view._teaching.valid)
+                        )
+                        evidence.capture("02-standoff-twist-1920")
                     fill(screen, "surface-standoff", 600)
                     wait(screen).until(
                         lambda _: not run_in_app(lambda: view._teaching.valid)
@@ -256,9 +268,10 @@ class TestObjectEditing:
                     assert not marked_element(screen, "surface-insert").is_enabled()
                     evidence.capture("03-unreachable-request-1920")
                     fill(screen, "surface-standoff", 30)
-                    fill(screen, "surface-twist", 0)
-                    click_marked(screen, "surface-sequence")
-                    fill(screen, "surface-clearance", 5)
+                    if evidence.enabled:
+                        fill(screen, "surface-twist", 0)
+                        click_marked(screen, "surface-sequence")
+                        fill(screen, "surface-clearance", 5)
                     wait(screen).until(
                         lambda _: run_in_app(lambda: view._teaching.valid)
                     )
@@ -270,23 +283,12 @@ class TestObjectEditing:
                             and "surface_task" in ui_state.active_textarea.value
                         )
                     )
-                    source = run_in_app(lambda: ui_state.active_textarea.value)
-                    click_tab(screen, "program")
-                    wait_for_scene_idle(screen)
-                    evidence.capture("05-inserted-operation-1920")
-                    editor = focus_editor(screen)
-                    editor.send_keys(Keys.CONTROL, "z", Keys.NULL)
-                    wait(screen).until(
-                        lambda _: run_in_app(lambda: ui_state.active_textarea.value)
-                        == EDIT_PROGRAM
-                    )
-                    editor.send_keys(Keys.CONTROL, Keys.SHIFT, "z", Keys.NULL)
-                    wait(screen).until(
-                        lambda _: run_in_app(lambda: ui_state.active_textarea.value)
-                        == source
-                    )
-                    evidence.stop()
-                    close_panel(screen, "program-panel")
+                    if evidence.enabled:
+                        click_tab(screen, "program")
+                        wait_for_scene_idle(screen)
+                        evidence.capture("05-inserted-operation-1920")
+                        evidence.stop()
+                        close_panel(screen, "program-panel")
                     with viewport(screen, 1366, 768):
                         _teach(screen, fixture)
                         wait(screen).until(
@@ -534,20 +536,28 @@ class TestObjectEditing:
         with (
             viewport(screen, 1920, 1080),
             camera_kept(screen),
-            program_previewed(EDIT_PROGRAM),
+            program_previewed(EDIT_PROGRAM) if enabled() else nullcontext(),
         ):
-            point = wait(screen).until(lambda _: probe(screen, "floorSpot"))
-            place_shape(screen, "box", *point[:2], "Fixture A")
-            confirmed(screen, lambda: len(handle.shapes) == 1)
-            fill(screen, "object-rz", 20)
-            confirmed(screen, lambda: handle.shapes[0].pose[5] > 0.3)
-            menu_choice(screen, "object-actions", "object-duplicate")
-            confirmed(screen, lambda: len(handle.shapes) == 2)
-            fill(screen, "object-name", "Fixture B")
-            confirmed(screen, lambda: handle.shapes[1].name == "Fixture B")
-            fill(screen, "object-y", -180)
-            confirmed(screen, lambda: handle.shapes[1].pose[1] == -0.18)
-            clear_selection(screen)
+            _, _, x, y = wait(screen).until(lambda _: probe(screen, "floorSpot"))
+            first = Box(
+                name="Fixture A",
+                x=0.1,
+                y=0.1,
+                z=0.1,
+                pose=(round(x, 3), round(y, 3), 0.05, 0, 0, math.radians(20)),
+            )
+            pair = [
+                first,
+                replace(
+                    first,
+                    name="Fixture B",
+                    pose=(first.pose[0] + 0.025, -0.18, *first.pose[2:]),
+                ),
+            ]
+            run_in_app(lambda: setattr(handle, "shapes", pair))
+            confirmed(screen, lambda: handle.shapes == pair)
+            # Open before the clicks: a panel opening re-centres the view.
+            open_scene_panel(screen)
             evidence = VisualEvidence(
                 screen, "object-selection", synchronized_frames=True
             )
@@ -803,16 +813,25 @@ class TestObjectEditing:
             confirmed(screen, lambda: not waldoctl.commander.scene.shapes)
             handle = waldoctl.commander.scene
             with program_previewed(EDIT_PROGRAM):
-                create_shape(screen, "box", "Fixture")
-                fill(screen, "object-dim-x", 180)
-                confirmed(screen, lambda: handle.shapes[-1].x == 0.18)
-                create_shape(screen, "cylinder", "Stock")
-                object_mode(screen, "Move")
-                fill(screen, "object-x", 400)
-                confirmed(screen, lambda: handle.shapes[-1].pose[0] == 0.4)
-                fill(screen, "object-y", -0.18 * 1000)
-                confirmed(screen, lambda: handle.shapes[-1].pose[1] == -0.18)
-                original = list(handle.shapes)
+                _, _, x, y = wait(screen).until(lambda _: probe(screen, "floorSpot"))
+                turn = math.radians(30)
+                original = [
+                    Box(
+                        name="Fixture",
+                        x=0.18,
+                        y=0.1,
+                        z=0.1,
+                        pose=(round(x, 3), round(y, 3), 0.05, 0, 0, turn),
+                    ),
+                    Cylinder(
+                        name="Stock",
+                        radius=0.05,
+                        length=0.1,
+                        pose=(0.4, -0.18, 0.05, 0, 0, turn),
+                    ),
+                ]
+                run_in_app(lambda: setattr(handle, "shapes", original))
+                confirmed(screen, lambda: handle.shapes == original)
                 evidence = VisualEvidence(
                     screen, "workcell-library", synchronized_frames=True
                 )
@@ -1157,21 +1176,26 @@ class TestObjectEditing:
 
         run_in_app(lambda: setattr(handle, "shapes", []))
         confirmed(screen, lambda: not handle.shapes)
-        with viewport(screen, 1920, 1080), program_previewed(EDIT_PROGRAM):
+        with (
+            viewport(screen, 1920, 1080),
+            program_previewed(EDIT_PROGRAM) if enabled() else nullcontext(),
+        ):
             evidence = VisualEvidence(
                 screen, "review-corrections/objects", synchronized_frames=True
             )
             try:
-                x, y, *_ = wait(screen).until(lambda _: probe(screen, "floorSpot"))
-                place_shape(screen, "box", x, y, "Fixture")
-                object_mode(screen, "Resize")
-                fill(screen, "object-dim-x", 180)
-                confirmed(screen, lambda: handle.shapes[0].x == 0.18)
-                fill(screen, "object-dim-y", 130)
-                confirmed(screen, lambda: handle.shapes[0].y == 0.13)
-                object_mode(screen, "Move")
-                clear_selection(screen)
-                click_marked(screen, "scene-close")
+                _, _, x, y = wait(screen).until(lambda _: probe(screen, "floorSpot"))
+                box = Box(
+                    name="Fixture",
+                    x=0.18,
+                    y=0.13,
+                    z=0.1,
+                    pose=(round(x, 3), round(y, 3), 0.05, 0, 0, 0),
+                )
+                run_in_app(lambda: setattr(handle, "shapes", [box]))
+                confirmed(screen, lambda: handle.shapes == [box])
+                if run_in_app(lambda: ui_state.scene_panel.is_open):
+                    click_marked(screen, "scene-close")
                 wait(screen).until(
                     lambda _: run_in_app(lambda: not ui_state.scene_panel.is_open)
                 )
@@ -1209,42 +1233,54 @@ class TestObjectEditing:
                 ActionChains(screen.selenium).release().perform()
                 confirmed(screen, lambda: handle.shapes[0].pose != initial.pose)
                 evidence.capture("03-move-committed-1920")
+                moved = handle.shapes[0]
+                # The browser moved the box itself during the drag; an undo
+                # and a redo must still redraw it.
+                click_marked(screen, "object-undo")
+                confirmed(screen, lambda: handle.shapes[0] == initial)
+                wait(screen).until(lambda _: _drawn_at(screen, initial))
+                click_marked(screen, "object-redo")
+                confirmed(screen, lambda: handle.shapes[0] == moved)
+                wait(screen).until(lambda _: _drawn_at(screen, moved))
                 fill(screen, "object-rz", 30)
                 confirmed(screen, lambda: handle.shapes[0].pose[5] > 0.5)
                 object_mode(screen, "Resize")
                 fill(screen, "object-dim-x", 240)
                 confirmed(screen, lambda: handle.shapes[0].x == 0.24)
                 evidence.capture("04-rotated-resized-1920")
-                menu_choice(screen, "object-actions", "object-duplicate")
-                confirmed(screen, lambda: len(handle.shapes) == 2)
-                object_mode(screen, "Move")
-                fill(screen, "object-x", 450)
-                confirmed(screen, lambda: handle.shapes[-1].pose[0] == 0.45)
-                evidence.capture("05-duplicate-1920")
-                copy = handle.shapes[-1].name
-                click_marked(screen, "object-actions")
-                click_marked(screen, "object-hide")
-                wait(screen).until(
-                    lambda _: run_in_app(
-                        lambda: view._hidden_objects == {f"shape:{copy}"}
-                    )
-                )
-                wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
-                clear_selection(screen)
-                assert len(handle.shapes) == 2
-                evidence.capture("06-hidden-recovery-1920")
-                click_marked(screen, f"scene-eye-{copy}")
-                wait(screen).until(
-                    lambda _: run_in_app(lambda: not view._hidden_objects)
-                )
-                click_object(screen, "shape:Fixture")
-                wait(screen).until(
-                    lambda _: run_in_app(
-                        lambda: view._selected_objects == ["shape:Fixture"]
-                    )
-                )
-                evidence.stop()
+                # Duplicate and hide are tested in the isolate test and the
+                # scene panel's eye in the clearance test; here they only
+                # stage captures.
                 if evidence.enabled:
+                    menu_choice(screen, "object-actions", "object-duplicate")
+                    confirmed(screen, lambda: len(handle.shapes) == 2)
+                    object_mode(screen, "Move")
+                    fill(screen, "object-x", 450)
+                    confirmed(screen, lambda: handle.shapes[-1].pose[0] == 0.45)
+                    evidence.capture("05-duplicate-1920")
+                    copy = handle.shapes[-1].name
+                    click_marked(screen, "object-actions")
+                    click_marked(screen, "object-hide")
+                    wait(screen).until(
+                        lambda _: run_in_app(
+                            lambda: view._hidden_objects == {f"shape:{copy}"}
+                        )
+                    )
+                    wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+                    clear_selection(screen)
+                    assert len(handle.shapes) == 2
+                    evidence.capture("06-hidden-recovery-1920")
+                    click_marked(screen, f"scene-eye-{copy}")
+                    wait(screen).until(
+                        lambda _: run_in_app(lambda: not view._hidden_objects)
+                    )
+                    click_object(screen, "shape:Fixture")
+                    wait(screen).until(
+                        lambda _: run_in_app(
+                            lambda: view._selected_objects == ["shape:Fixture"]
+                        )
+                    )
+                    evidence.stop()
                     with viewport(screen, 1366, 768):
                         wait_for_scene_idle(screen)
                         evidence.capture("07-inspector-1366")

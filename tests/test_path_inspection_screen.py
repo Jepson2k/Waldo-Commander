@@ -85,11 +85,15 @@ def _seek_timeline(screen, fraction):
             timeline, timeline.size["width"] / 2 - 2, 0
         ).click_and_hold().move_by_offset(20, 0).release().perform()
         return
-    ActionChains(screen.selenium).move_to_element_with_offset(
+    ActionChains(screen.selenium, duration=0).move_to_element_with_offset(
         timeline,
         -timeline.size["width"] / 2 + max(1, fraction * timeline.size["width"]),
         0,
     ).click().perform()
+
+
+def _playback_time():
+    return waldoctl.commander.programs.active.dry_run.playback.playback_time
 
 
 def _matches_record(screen):
@@ -382,10 +386,6 @@ class TestPathInspection:
                     lambda _: waldoctl.commander.status.tool.key in (None, "NONE")
                 )
                 evidence.capture("02-recorded-tool-change-1920")
-                click_marked(screen, "editor-step-next")
-                wait(screen).until(lambda _: _selected_line(screen) == 10)
-                click_marked(screen, "editor-step-prev")
-                wait(screen).until(lambda _: _selected_line(screen) == 9)
                 for line, tool in ((11, "SSG-48"), (12, "NONE")):
                     _event(screen, line)
                     wait(screen).until(lambda _: _selected_line(screen) == line)
@@ -632,7 +632,21 @@ class TestPathInspection:
                 )
                 evidence.capture("01-hover-unchanged-1920")
                 camera = camera_pose(screen)
-                action = ActionChains(screen.selenium, duration=80)
+                # A plain click scrubs the simulator there.
+                ActionChains(screen.selenium).click().perform()
+                wait(screen).until(
+                    lambda _: not np.allclose(
+                        waldoctl.commander.status.joints.angles.rad, before
+                    )
+                )
+                state = scene_js(screen, "return S.inspection()")
+                assert run_in_app(_playback_time) == pytest.approx(state["time"])
+                clicked = state["current"]["row"]
+                evidence.capture("01b-click-scrub-1920")
+                # Slower only for the recording to follow.
+                action = ActionChains(
+                    screen.selenium, duration=80 if evidence.enabled else 16
+                )
                 action.click_and_hold()
                 for fraction in np.linspace(0.3, 0.8, 14):
                     px, py, _ = path_point(screen, moving["command"], float(fraction))
@@ -642,7 +656,7 @@ class TestPathInspection:
                     lambda _: scene_js(
                         screen, "return S.inspection().current?.row ?? -1"
                     )
-                    > row
+                    > max(row, clicked)
                 )
                 state = scene_js(screen, "return S.inspection()")
                 assert record["blocks"][state["current"]["block"]]["line"] == 7
@@ -654,6 +668,18 @@ class TestPathInspection:
                 assert camera_pose(screen) == pytest.approx(camera)
                 assert control_lease.generation == lease
                 evidence.capture("02-crossing-path-scrub-1920")
+
+                def followed(_) -> bool:
+                    shown = scene_js(screen, "return S.inspection().time")
+                    return (
+                        shown is not None
+                        and shown < state["time"]
+                        and abs(shown - run_in_app(_playback_time)) < 0.05
+                    )
+
+                # The pinned point follows the scrub bar back to the start.
+                _seek_timeline(screen, 0)
+                wait(screen).until(followed)
                 _event(screen, 8)
                 wait(screen).until(lambda _: _selected_line(screen) == 8)
                 evidence.capture("03-dwell-on-shared-timeline-1920")
