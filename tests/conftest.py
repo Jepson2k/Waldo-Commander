@@ -688,6 +688,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store_true",
         help="record review screenshots and videos into .scene-evidence/",
     )
+    parser.addoption(
+        "--lane",
+        choices=("browser", "simulated"),
+        help="run only the tests that open a browser, or only the rest",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -730,12 +735,22 @@ def pytest_collection_modifyitems(
     Under ``-n 2 --dist loadgroup`` the browser tests run in one lane and
     the rest in the other: never two browsers at once, which the frame-rate
     tests cannot share a machine with. Before xdist names the groups.
+    ``--lane`` keeps one lane, for a machine of its own.
     """
+
+    def lane(item: pytest.Item) -> str:
+        browser = {"screen", "class_screen"} & set(item.fixturenames)
+        return "browser" if browser else "simulated"
+
+    if only := config.getoption("lane"):
+        kept = [item for item in items if lane(item) == only]
+        config.hook.pytest_deselected(
+            items=[item for item in items if lane(item) != only]
+        )
+        items[:] = kept
     if getattr(config.option, "loadgroup", False):
         for item in items:
-            browser = {"screen", "class_screen"} & set(item.fixturenames)
-            lane = "browser" if browser else "simulated"
-            item.add_marker(pytest.mark.xdist_group(lane))
+            item.add_marker(pytest.mark.xdist_group(lane(item)))
 
     if sys.platform == "linux" or "GITHUB_ACTIONS" not in os.environ:
         return

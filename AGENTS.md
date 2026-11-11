@@ -55,7 +55,9 @@ pytest tests/test_editor_integration.py -v
 The two lanes never run two browsers at once, which the frame-rate tests
 cannot share a machine with; on a 4-core machine they take about two thirds
 of the sequential time. A test that passes only alone, or only in one lane's
-order, is a bug in the test.
+order, is a bug in the test. CI runs the lanes on separate machines
+(`--lane browser`, `--lane simulated`): without a GPU, Chrome draws on the
+CPU the other lane needs.
 
 Review screenshots and videos are opt-in: `pytest --evidence` makes the
 `VisualEvidence` captures in the scene screen tests write to
