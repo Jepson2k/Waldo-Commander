@@ -217,6 +217,64 @@ class _EStopManager:
         self._last_io_state = current
 
 
+class _ProtectiveStopBanner:
+    """The arm stopped itself and is holding: what it stopped for, what to do
+    about it, and the reset that lets it move again.
+
+    Not a dialog like the E-STOP's: the arm is enabled and held under power,
+    and the operator may want the scene and the diagnostics in front of them
+    before deciding it is clear."""
+
+    def __init__(self, client: "RobotClient") -> None:
+        self._client = client
+        self._row: ui.row | None = None
+        self._shown: waldoctl.RobotError | None = None
+
+    def build(self) -> None:
+        # The E-Stop hangs out of the row above into this one's right end;
+        # the padding is the footprint the action row reserves for it.
+        self._row = (
+            ui.row()
+            .classes("protective-stop items-center no-wrap gap-2 w-full pr-20")
+            .mark("protective-stop")
+        )
+        self._row.set_visibility(False)
+
+    def update(self) -> None:
+        """Follow ``robot_state``: shown for as long as the stop stands."""
+        if self._row is None:
+            return
+        error = robot_state.standing_error if robot_state.protective_stop else None
+        if error == self._shown:
+            return
+        self._shown = error
+        # Emptied rather than only hidden: a hidden button is still on the
+        # page for anything that finds a control by its label, and the
+        # E-STOP dialog has a Reset of its own.
+        self._row.clear()
+        if error is not None:
+            with self._row:
+                ui.icon("front_hand", size="sm").classes("text-wc-error")
+                with ui.column().classes("gap-0 col min-w-0"):
+                    ui.label(f"Protective stop: {error.title}").classes(
+                        "text-sm font-bold text-wc-error"
+                    ).mark("protective-stop-title")
+                    ui.label(error.remedy).classes("text-xs text-wc-text-muted").mark(
+                        "protective-stop-remedy"
+                    )
+                ui.button("Reset", on_click=self._reset).props(
+                    "dense no-caps color=wc-action text-color=wc-on-bright"
+                ).mark("btn-protective-reset")
+        self._row.set_visibility(error is not None)
+
+    async def _reset(self) -> None:
+        try:
+            await self._client.reset()
+        except (waldoctl.RobotError, OSError, asyncio.TimeoutError) as e:
+            logger.error("Reset after a protective stop failed: %s", e)
+            ui.notify(f"Reset failed: {e}", color="negative")
+
+
 _IDLE_FILL = "color=wc-control text-color=wc-text"
 _ENGAGED_FILL = "color=wc-action text-color=wc-on-bright"
 
@@ -762,6 +820,7 @@ class ControlPanel:
 
         # E-STOP manager (initialized with ui_client in build())
         self.estop: _EStopManager | None = None
+        self.protective_stop: _ProtectiveStopBanner | None = None
 
         # Jog axis the status Waldo is currently looking along
         self._look_axis: str | None = None
@@ -2966,6 +3025,8 @@ class ControlPanel:
                     self.tool_actions.build()
 
                 self._build_action_row()
+                self.protective_stop = _ProtectiveStopBanner(self.client)
+                self.protective_stop.build()
                 self._build_control_indicator()
 
             # Jog controls (tabs + grids)

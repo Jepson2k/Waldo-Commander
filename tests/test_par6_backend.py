@@ -92,6 +92,9 @@ def par6_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @requires_par6
 @pytest.mark.integration
+# A whole session against a live runtime: about 90 s on the Pi, the global
+# limit itself.
+@pytest.mark.timeout(180)
 async def test_commander_runs_on_the_par6_runtime(
     par6_env: None, user: User, monkeypatch, tmp_path
 ) -> None:
@@ -138,6 +141,14 @@ async def test_commander_runs_on_the_par6_runtime(
                 with monkeypatch.context() as patch:
                     patch.setattr(waldoctl.commander, "client", unavailable)
                     patch.setattr(playback, "_uses_live_speed", lambda: True)
+                    # A refresh already asking would make this one return without
+                    # asking.
+                    await poll_until(
+                        lambda: playback._speed_query_pending,
+                        lambda pending: not pending,
+                        timeout_s=3.0,
+                        what="the speed refresh in flight",
+                    )
                     await playback._refresh_execution_speed()
                     assert playback._execution_speed is None
                     assert (
@@ -274,20 +285,51 @@ async def test_commander_runs_on_the_par6_runtime(
         def _text(marker: str) -> str:
             return next(iter(user.find(marker=marker).elements)).text
 
+        # The table's cells are built once and rewritten in place, so they are
+        # looked up once rather than searched for on every read.
+        cells = {
+            m: e
+            for e in user.client.elements.values()
+            for m in e._markers
+            if m.startswith("diag-drive-")
+        }
+
+        def cell(kind: str, row: int) -> str:
+            return cells[f"diag-drive-{kind}-{row}"].text
+
+        arm = robot.joints.count
         temps = await poll_until(
-            lambda: [_text(f"diag-drive-temp-{j}") for j in range(1, 7)],
+            lambda: [cell("temp", j) for j in range(1, arm + 1)],
             lambda t: all(v != "—" for v in t),
             timeout_s=10.0,
-            what=lambda: (
-                f"drive temperatures on STATUS (note: {_text('diag-drives-note')!r})"
-            ),
+            what="drive temperatures on STATUS",
         )
         assert all(float(t) > 0 for t in temps), f"drive temperatures read {temps}"
+
+        # Each current shows what the runtime sent: its reading, or "—" for a
+        # register that drive left unanswered — whichever drives answer it.
+        def currents() -> list[tuple[float, str]]:
+            sent = list(status.drive_health.currents_ma)
+            return [(v, cell("current", j)) for j, v in enumerate(sent, start=1)]
+
+        shown = await poll_until(
+            currents,
+            lambda rows: bool(rows)
+            and all((text == "—") == math.isnan(v) for v, text in rows),
+            timeout_s=10.0,
+            what="drive currents as STATUS sent them",
+        )
+        # The arm's drives that report a current hold the arm against gravity:
+        # all of them reading zero is a reading lost, not a reading.
+        held = [float(text) for _, text in shown[:arm] if text != "—"]
+        assert not held or any(r != 0 for r in held), f"drive currents read {shown}"
+        # And shown: a cell's text is written whether or not it shows, and the
+        # tool's row shows only when the runtime reports more drives than the
+        # arm has.
+        await user.should_see(marker="diag-drive-temp-1")
+        await user.should_see(marker=f"diag-drive-current-{len(shown)}")
         assert status.drive_health.bus_voltage_v is not None
         assert _text("diag-drive-supply").endswith(" V")
-        # The tool drive answers a temperature but no current, and an
-        # unanswered register must read as unknown rather than as zero.
-        assert _text("diag-drive-current-7") == "—"
 
         await poll_until(
             lambda: _text("diag-loop-p99"),
@@ -354,6 +396,57 @@ async def test_commander_runs_on_the_par6_runtime(
             await poll_until(lambda: table.rows, bool, what="rows from the bus scan")
             present = {row["node"] for row in table.rows if row["present"] == "yes"}
             assert {0, 1, 2, 3, 4, 5} <= present, f"scan rows: {table.rows}"
+
+        if any(
+            ep.name == "par6-contact" for ep in entry_points(group="waldoctl.panels")
+        ):
+            # par6's Contact tab: the runtime's own readout on screen, and a
+            # limit edited there applied to the running arm — read back from
+            # the runtime, not from the form.
+            await user.should_see(marker="tab-par6-contact")
+            user.find(marker="tab-par6-contact").click()
+            await asyncio.sleep(0)
+            await user.should_see(marker="contact-rows")
+            await poll_until(
+                lambda: _text("contact-trips"),
+                lambda t: t.startswith("Stops: 0"),
+                timeout_s=10.0,
+                what="the contact readout from the runtime",
+            )
+            shipped = await client.contact()
+            assert shipped is not None
+            limit = next(iter(user.find(marker="contact-sustained-0").elements))
+            await poll_until(
+                lambda: limit.value,
+                lambda v: v == pytest.approx(shipped.sustained_nm[0]),
+                what="the J1 limit seeded from the runtime",
+            )
+            limit.value = shipped.sustained_nm[0] + 0.5
+            await poll_until(
+                lambda: _text("contact-note"),
+                lambda note: note == "Edited, not applied",
+                what="the form to say the edit is pending",
+            )
+            user.find(marker="contact-apply").click()
+            applied = await poll_until(
+                client.contact,
+                lambda r: (
+                    r is not None
+                    and r.sustained_nm[0]
+                    == pytest.approx(shipped.sustained_nm[0] + 0.5)
+                ),
+                what="the edited limit in force on the runtime",
+            )
+            assert applied.sustained_nm[1:] == pytest.approx(shipped.sustained_nm[1:])
+            snippet = next(iter(user.find(marker="contact-snippet").elements))
+            assert (
+                f"sustained_nm = [{shipped.sustained_nm[0] + 0.5:g}," in snippet.content
+            )
+            await client.set_contact_limits(
+                reaction=shipped.reaction,
+                sustained_nm=shipped.sustained_nm,
+                impact_nm=shipped.impact_nm,
+            )
 
         import numpy as np
         from waldo_commander.skills import gripper_open, gripper_close, retract
@@ -612,8 +705,23 @@ async def test_commander_runs_on_the_par6_runtime(
             assert await client.wait_command(index, timeout=3), (
                 "Stop must clear the previous program's native queue"
             )
+
+            def ready(state) -> bool:
+                try:
+                    state.require_ready()
+                except ValueError:
+                    return False
+                return True
+
             for _ in range(6):
-                reference = await fresh_state(client)
+                # A run's last motion settles after the run returns, and a
+                # restart needs the arm still.
+                reference = await poll_until(
+                    lambda: fresh_state(client),
+                    ready,
+                    timeout_s=10.0,
+                    what="the arm ready to restart",
+                )
                 assert await script_exec.start(
                     restart_entry="after_stop",
                     restart_reference=reference,
@@ -818,3 +926,84 @@ async def test_native_managed_timeout_cancels_the_accepted_move(
         robot = getattr(ui_state, "robot", None)
         if robot is not None:
             robot.stop()
+
+
+#: A post on the tool's circle that the runtime is never told about: the
+#: physics holds it, the collision world does not, so the arm finds it by
+#: running into it.
+_UNDECLARED_POST = """
+[obstacle]
+size_m = [0.06, 0.06, 0.4]
+pose = [0.3204, 0.185, 0.2, 0.0, 0.0, 0.0]
+"""
+
+
+@pytest.fixture
+def par6_with_a_post(par6_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """The simulator the app spawns holds the post. Ordered ahead of `user`
+    for the reason `par6_env` is: the daemon is spawned during its setup."""
+    scenario = tmp_path / "post.toml"
+    scenario.write_text(_UNDECLARED_POST)
+    monkeypatch.setenv("PAR6_SIM_SCENARIO", str(scenario))
+
+
+@requires_par6
+@pytest.mark.integration
+async def test_a_protective_stop_raises_its_banner_and_reset_takes_it_down(
+    par6_with_a_post: None, user: User
+) -> None:
+    """The arm runs into something, stops itself and holds. The control
+    panel says so — what it stopped for and what to do — for as long as
+    the stop stands, and its Reset is the reset that re-arms the arm."""
+    import asyncio
+
+    import numpy as np
+    import waldoctl
+    from par6.client import RobotError
+    from par6.protocol import ErrorCode
+
+    from waldo_commander.state import robot_state
+
+    await user.open("/")
+    await wait_for_app_ready(timeout_s=60)
+    client = waldoctl.commander.client
+    # Reaching down in front of the base, tool about 0.37 m out.
+    reach = [math.degrees(q) for q in (0.0, -0.25, 4.35, 0.0, -1.28, 0.0)]
+    await client.reset()
+    async with asyncio.timeout(20):
+        while True:
+            with contextlib.suppress(RobotError):
+                await client.teleport(reach)
+            if await client.wait_status(
+                lambda s: s.homed and np.allclose(s.angles, reach, atol=0.5),
+                timeout=0.5,
+            ):
+                break
+    await user.should_not_see(marker="protective-stop")
+
+    through = list(reach)
+    through[0] = 60.0
+    with pytest.raises(RobotError) as stopped:
+        await client.move_j(through, speed=0.5, wait=True, timeout=20)
+    assert stopped.value.code == ErrorCode.SYS_CONTACT
+
+    await poll_until(
+        lambda: robot_state.protective_stop,
+        bool,
+        what="the protective stop on the status pipeline",
+    )
+    assert waldoctl.commander.status.controller.enabled, (
+        "a protective stop leaves the controller enabled"
+    )
+    await user.should_see(marker="protective-stop", retries=30)
+    await user.should_see("Protective stop: Contact detected")
+    await user.should_see("Clear what the arm touched, then send reset.")
+
+    user.find(marker="btn-protective-reset").click()
+    await poll_until(
+        lambda: not robot_state.protective_stop,
+        bool,
+        what="Reset to clear the protective stop",
+    )
+    await user.should_not_see(marker="protective-stop", retries=30)
+    assert robot_state.standing_error is None

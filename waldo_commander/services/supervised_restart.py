@@ -14,8 +14,11 @@ from typing import Any
 from waldoctl.client import RobotClient
 from waldoctl.status import ActionState
 
-# The joint speed a status may still report for an arm at rest (0.01 rad/s).
-_AT_REST_DEG_S = math.degrees(0.01)
+# The joint speed an arm at rest may still show (0.01 rad/s).
+AT_REST_DEG_S = math.degrees(0.01)
+# Speeds come from how far the joints moved over at least this long: a
+# status's own speed reads one encoder count of jitter as motion.
+STILL_WINDOW_NS = 50_000_000
 
 
 BEFORE_RESTART = "before_restart"
@@ -288,7 +291,7 @@ class RestartState:
             or len(self.tcp) != 6
         ):
             raise ValueError("Controller state is unavailable")
-        if any(abs(v) > _AT_REST_DEG_S for v in self.speeds_deg_s):
+        if any(abs(v) > AT_REST_DEG_S for v in self.speeds_deg_s):
             raise ValueError("Wait for the arm to stop before restarting")
 
     def require_same_setup(self, previous: RestartState) -> None:
@@ -323,7 +326,7 @@ class RestartState:
 async def fresh_state(client: RobotClient, *, timeout: float = 3.0) -> RestartState:
     """Require advancing publications and read current queue/fault/TCP state.
 
-    The queue is read on both sides of the status frame, so a command that
+    The queue is read on both sides of the status frames, so a command that
     arrives in between is in one of the two reads."""
     async with asyncio.timeout(timeout):
         queue = await client.queue()
@@ -335,7 +338,8 @@ async def fresh_state(client: RobotClient, *, timeout: float = 3.0) -> RestartSt
         error = await client.error()
         tcp = tuple(await client.tcp_transform())
         stream = client.stream_status()
-        previous = None
+        since: tuple[int, int, int] | None = None
+        since_angles: tuple[float, ...] = ()
         try:
             async for status in stream:
                 identity = (
@@ -343,38 +347,46 @@ async def fresh_state(client: RobotClient, *, timeout: float = 3.0) -> RestartSt
                     int(status.seq),
                     int(status.mono_time_ns),
                 )
+                angles = tuple(float(v) for v in status.angles)
                 if (
-                    previous is not None
-                    and identity[0] > 0
-                    and identity[0] == previous[0]
-                    and identity[1] > previous[1]
-                    and identity[2] > previous[2]
+                    since is None
+                    or identity[0] <= 0
+                    or identity[0] != since[0]
+                    or identity[1] <= since[1]
+                    or identity[2] < since[2]
                 ):
-                    after = await client.queue()
-                    if after is None:
-                        raise ConnectionError(
-                            "The controller queue could not be read; review again"
-                        )
-                    return RestartState(
-                        *identity,
-                        time.monotonic_ns(),
-                        int(status.scene_epoch),
-                        status.tool_status.key,
-                        status.tool_status.variant_key,
-                        tcp,
-                        tuple(float(v) for v in status.angles),
-                        tuple(float(v) for v in status.speeds),
-                        bool(status.homed),
-                        bool(status.enabled),
-                        int(status.executing_index),
-                        queue == [] and after == [],
-                        error is not None
-                        or bool(status.collision_active)
-                        or status.action_state == ActionState.ERROR,
-                        bool(status.freedrive),
-                        bool(status.simulator_active),
+                    since, since_angles = identity, angles
+                    continue
+                elapsed_ns = identity[2] - since[2]
+                if elapsed_ns < STILL_WINDOW_NS:
+                    continue
+                after = await client.queue()
+                if after is None:
+                    raise ConnectionError(
+                        "The controller queue could not be read; review again"
                     )
-                previous = identity
+                return RestartState(
+                    *identity,
+                    time.monotonic_ns(),
+                    int(status.scene_epoch),
+                    status.tool_status.key,
+                    status.tool_status.variant_key,
+                    tcp,
+                    angles,
+                    tuple(
+                        (a - b) * 1e9 / elapsed_ns
+                        for a, b in zip(angles, since_angles, strict=True)
+                    ),
+                    bool(status.homed),
+                    bool(status.enabled),
+                    int(status.executing_index),
+                    queue == [] and after == [],
+                    error is not None
+                    or bool(status.collision_active)
+                    or status.action_state == ActionState.ERROR,
+                    bool(status.freedrive),
+                    bool(status.simulator_active),
+                )
         finally:
             close = getattr(stream, "aclose", None)
             if close is not None:
