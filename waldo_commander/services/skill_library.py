@@ -504,7 +504,7 @@ async def plan_preview(
     shapes_wire = [s.to_wire() for s in scene.shapes] if scene is not None else []
     try:
         async with asyncio.timeout(_simulation_timeout_s() + 2.0):
-            planned = await run.cpu_bound(
+            return await run.cpu_bound(
                 _plan_isolated,
                 source,
                 robot.backend_package,
@@ -513,14 +513,10 @@ async def plan_preview(
                 shapes_wire,
             )
     except TimeoutError:
-        planned = None
+        raise TimeoutError("planning it took too long") from None
     except run.SubprocessException as error:
         # Its text carries the worker's whole traceback; the form shows a sentence.
         raise RuntimeError(error.original_message) from None
-    # cpu_bound answers None when its wait is cancelled: by the limit, or at shutdown.
-    if planned is None:
-        raise TimeoutError("planning it took too long")
-    return planned
 
 
 def _plan_isolated(
