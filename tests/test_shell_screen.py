@@ -22,6 +22,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from nicegui import Client, core
 
 from tests.helpers.browser_helpers import (
+    click_marked,
     click_tab,
     close_panel,
     focus_editor,
@@ -31,7 +32,14 @@ from tests.helpers.browser_helpers import (
     viewport,
 )
 from tests.helpers.browser_session import no_visible, wait, window_size
-from tests.helpers.scene_surface import SCENE_ROOT, frames, scene_js
+from tests.helpers.scene_screen import open_scene_panel
+from tests.helpers.scene_surface import (
+    SCENE_ROOT,
+    frames,
+    frames_at_rest,
+    scene_js,
+    scene_js_async,
+)
 from tests.helpers.wait import JOG_SAFE_POSE_DEG, screen_wait_for_scene_ready
 
 from waldo_commander.components.joint_dial import DIAL_RADIUS, dial_angle
@@ -173,11 +181,6 @@ class TestShellLayout:
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
 
-        def frames_in_a_second() -> int:
-            start = frames(screen)
-            time.sleep(1.0)
-            return frames(screen) - start
-
         def marker():
             assert ui_state.urdf_scene is not None
             return ui_state.urdf_scene.scene.sphere(0.01).move(0.0, 0.0, -5.0)
@@ -192,16 +195,36 @@ class TestShellLayout:
                     screen, "return !!document.querySelector('.q-dialog__backdrop')"
                 )
             )
-            covered = frames_in_a_second()
+            # Asked for a frame on every display frame, as while the arm moves.
+            # The count starts once the scene has looked for the dialog, which
+            # it does at most every 100 ms.
+            covered, elapsed_ms = scene_js_async(
+                screen,
+                """
+                const t0 = performance.now();
+                let start = null, t1 = 0;
+                (function poke() {
+                    S.requestRender();
+                    const now = performance.now();
+                    if (start === null && now - t0 >= 150) {
+                        start = S.frames();
+                        t1 = now;
+                    }
+                    if (start === null || now - t1 < 500) requestAnimationFrame(poke);
+                    else done([S.frames() - start, now - t1]);
+                })();
+                """,
+            )
             # A change landing just after a covered frame is drawn a little
             # later, not left on screen stale until something else draws.
-            wait(screen, 5).until(lambda _: frames_in_a_second() == 0)
-            before = frames(screen)
+            before = frames_at_rest(screen, 0.5)
             run_in_app(lambda: dot.move(0.0, 0.0, -4.9))
             time.sleep(0.05)
             run_in_app(lambda: dot.move(0.0, 0.0, -4.8))
-            time.sleep(1.0)
-            drawn = frames(screen) - before
+            wait(screen, 5).until(
+                lambda _: frames(screen) - before >= 2,
+                "the second of two changes was never drawn",
+            )
         finally:
             run_in_app(dialog.close)
             run_in_app(dot.delete)
@@ -210,8 +233,11 @@ class TestShellLayout:
                 screen, "return !document.querySelector('.q-dialog__backdrop')"
             )
         )
-        assert covered <= 5, f"{covered} frames in a second behind the dialog"
-        assert drawn >= 2, f"the second of two changes was never drawn ({drawn} frames)"
+        # At most one frame per COVERED_FRAME_MS (250 in scene3d/js/core.js),
+        # with room for one drawn a little early.
+        assert 1 <= covered <= elapsed_ms / 200 + 1, (
+            f"{covered} frames in {elapsed_ms:.0f} ms behind the dialog"
+        )
 
     def test_the_joint_tab_is_as_tall_as_its_dials(self, class_screen) -> None:
         screen_wait_for_scene_ready(class_screen, timeout_s=40.0)
@@ -486,6 +512,21 @@ class TestShellLayout:
         assert closed["offsetY"] == closed["footerCover"] > 0, closed
         assert closed["fullHeight"] == closed["height"] + closed["footerCover"], closed
 
+        # The scene panel is a card over the view's corner: the image stays put.
+        open_scene_panel(screen)
+        wait(screen).until(
+            lambda _: js(
+                screen,
+                "const r = document.querySelector('.scene-panel').getBoundingClientRect();"
+                "return PanelResize.layout().obstacles"
+                ".some(o => o.right === r.right && o.top === r.top);",
+            )
+        )
+        beside = _view(screen)
+        assert beside["fullWidth"] == beside["width"], beside
+        click_marked(screen, "scene-close")
+        wait(screen).until(lambda _: no_visible(screen, ".scene-panel"))
+
         click_tab(screen, "program")
         opened = _wait_view(
             screen, lambda v: v["columnRight"] > 0 and v["fullWidth"] > v["width"]
@@ -523,8 +564,10 @@ class TestShellLayout:
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
         try:
-            control_lease.seize(MCP, "screen-mcp", "MCP session screen-m")
-            # The 1 Hz active-tab loop refreshes the indicator.
+            # On the app's loop, as a lease change redraws the indicator.
+            run_in_app(
+                lambda: control_lease.seize(MCP, "screen-mcp", "MCP session screen-m")
+            )
             for selector in (".control-lease-glow", ".btn-take-control"):
                 wait(screen, 5).until(
                     lambda _, s=selector: not no_visible(screen, s),
@@ -542,11 +585,21 @@ class TestShellLayout:
                 f"glow does not cover the viewport: {rect}"
             )
         finally:
-            browser_try_acquire(ui_state.active_client_id)
+            run_in_app(lambda: browser_try_acquire(ui_state.active_client_id))
         assert control_lease.held_by(BROWSER, ui_state.active_client_id)
         wait(screen, 5).until(lambda _: no_visible(screen, ".control-lease-glow"))
 
-    def test_many_io_lines_keep_the_footer_one_row(self, class_screen) -> None:
+    def test_the_footer_stays_one_row_and_the_bottom_panel_pushes_the_column_up(
+        self, class_screen
+    ) -> None:
+        """In a 1366 x 768 window the footer stays one row however many I/O
+        lines it shows, each pose value centred in its slot and the pose well
+        whole inside the viewport; narrower windows give up the pose before
+        the Diagnostics and Log launchers, even with a tool named. The bottom
+        panel pushes the program column up, stays clear of the control panel
+        and frames the scene above it, its values unwrapped; on a short
+        desktop it gives way, so the column keeps room for its playbar and
+        the Stop on it."""
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
         with window_size(screen, 1366, 768):
@@ -607,18 +660,12 @@ class TestShellLayout:
             finally:
                 _select_tool("NONE")
 
-    def test_bottom_panel_pushes_the_column_up_and_stays_clear_of_the_control_panel(
-        self, class_screen
-    ) -> None:
-        screen = class_screen
-        screen_wait_for_scene_ready(screen, timeout_s=40.0)
-        geometry = """
-            const box = s => { const e = document.querySelector(s); if (!e || e.offsetParent === null) return null;
-                               const b = e.getBoundingClientRect(); return {left: b.left, right: b.right, top: b.top, bottom: b.bottom}; };
-            return {panel: box('.bottom-panel'), column: box('.program-panel'), control: box('.overlay-br'),
-                    viewport: innerHeight, framedBottom: S.framing().inset.bottom};
-        """
-        with window_size(screen, 1366, 768):
+            geometry = """
+                const box = s => { const e = document.querySelector(s); if (!e || e.offsetParent === null) return null;
+                                   const b = e.getBoundingClientRect(); return {left: b.left, right: b.right, top: b.top, bottom: b.bottom}; };
+                return {panel: box('.bottom-panel'), column: box('.program-panel'), control: box('.overlay-br'),
+                        viewport: innerHeight, framedBottom: S.framing().inset.bottom};
+            """
             click_tab(screen, "program")
             click_tab(screen, "diagnostics")
             opened = wait(screen).until(
@@ -681,9 +728,14 @@ class TestShellLayout:
                 close_panel(screen, "bottom-panel")
             close_panel(screen, "program-panel")
 
-    def test_the_bottom_panel_reopens_on_its_tab_after_a_reload(
+    def test_a_reload_reopens_the_bottom_panel_and_keeps_shortcuts_live(
         self, class_screen
     ) -> None:
+        """The bottom panel comes back on the tab it was left on. The app hears
+        from the page whether typing has focus; a page closed while the editor
+        had it must not leave the next page's shortcuts muted."""
+        from waldo_commander.services.keybindings import keybindings_manager
+
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
         wait(screen).until(
@@ -695,32 +747,6 @@ class TestShellLayout:
 
         click_tab(screen, "log")
         wait(screen, 5).until(lambda _: js(screen, saved) == "log")
-
-        screen.selenium.refresh()
-        screen_wait_for_scene_ready(screen, timeout_s=40.0)
-        wait(screen).until(
-            lambda _: run_in_app(
-                lambda: ui_state.bottom_panel.visible
-                and ui_state.bottom_panel.tabs.value == "log"
-            )
-        )
-        wait(screen).until(
-            lambda _: marked_element(screen, "response-log").is_displayed()
-        )
-
-        close_panel(screen, "bottom-panel")
-        wait(screen, 5).until(lambda _: js(screen, saved) is None)
-
-    def test_shortcuts_work_on_a_page_opened_after_one_closed_while_typing(
-        self, class_screen
-    ) -> None:
-        """The app hears from the page whether typing has focus; a page
-        closed while the editor had it must not leave the next page's
-        shortcuts muted."""
-        from waldo_commander.services.keybindings import keybindings_manager
-
-        screen = class_screen
-        screen_wait_for_scene_ready(screen, timeout_s=40.0)
         click_tab(screen, "program")
         focus_editor(screen)
         wait(screen).until(
@@ -729,6 +755,15 @@ class TestShellLayout:
         try:
             screen.selenium.refresh()
             screen_wait_for_scene_ready(screen, timeout_s=40.0)
+            wait(screen).until(
+                lambda _: run_in_app(
+                    lambda: ui_state.bottom_panel.visible
+                    and ui_state.bottom_panel.tabs.value == "log"
+                )
+            )
+            wait(screen).until(
+                lambda _: marked_element(screen, "response-log").is_displayed()
+            )
             speed = waldoctl.commander.settings.jog.speed
             ActionChains(screen.selenium).send_keys(
                 "[" if speed > 10 else "]"
@@ -736,6 +771,8 @@ class TestShellLayout:
             wait(screen).until(lambda _: waldoctl.commander.settings.jog.speed != speed)
         finally:
             close_panel(screen, "program-panel")
+            close_panel(screen, "bottom-panel")
+            wait(screen, 5).until(lambda _: js(screen, saved) is None)
 
     def test_controls_only_layout_keeps_all_footer_readings_and_restores_the_editor(
         self, class_screen
@@ -779,7 +816,8 @@ class TestShellLayout:
             run_in_app(lambda: setattr(ui_state.active_textarea, "value", source))
             panel_id = js(screen, "return document.querySelector('.overlay-br').id")
             try:
-                for width, height in ((390, 844), (667, 375), (844, 390), (568, 320)):
+                # 844x390 takes the same CSS blocks as 667x375, with more room.
+                for width, height in ((390, 844), (667, 375), (568, 320)):
                     with viewport(screen, width, height, mobile=True):
                         # The footer is sized from the controls' height, which
                         # the page publishes a frame after they lay out.
@@ -856,17 +894,17 @@ class TestShellLayout:
                             wait(screen, 5).until(
                                 lambda _: no_visible(screen, ".q-dialog__backdrop")
                             )
-                        for name in ("diagnostics", "log"):
-                            click_tab(screen, name)
-                            panel = js(
-                                screen,
-                                "return document.querySelector('.bottom-panel').getBoundingClientRect().toJSON()",
-                            )
-                            assert 0 <= panel["left"] < panel["right"] <= width, panel
-                            assert 0 <= panel["top"] < panel["bottom"] <= f["top"], (
-                                panel
-                            )
-                            close_panel(screen, "bottom-panel")
+                        # Both launchers open the one panel, whose box is the
+                        # same for either tab.
+                        click_tab(screen, "diagnostics")
+                        panel = js(
+                            screen,
+                            "return document.querySelector('.bottom-panel').getBoundingClientRect().toJSON()",
+                        )
+                        assert 0 <= panel["left"] < panel["right"] <= width, panel
+                        assert 0 <= panel["top"] < panel["bottom"] <= f["top"], panel
+                        click_tab(screen, "log")
+                        close_panel(screen, "bottom-panel")
                 with viewport(screen, 1366, 480):
                     restored = wait(screen).until(
                         lambda _: (g := js(screen, measure))["editor"]

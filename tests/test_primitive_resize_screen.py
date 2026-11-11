@@ -11,17 +11,17 @@ from tests.helpers.browser_helpers import (
     run_in_app,
     viewport,
 )
-from tests.helpers.browser_session import no_visible, wait
+from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
     gizmo_field,
     EDIT_PROGRAM,
     at_start,
     camera_kept,
     camera_settled,
-    clear_selection,
     click_spot,
     confirmed,
     create_shape,
+    drag_moves,
     probe,
     program_previewed,
     set_projection,
@@ -40,8 +40,9 @@ def _hold_resize(screen, axis=None, symmetric=False):
         action.key_down(Keys.SHIFT)
     pointer_to(screen, x, y, action)
     action.click_and_hold()
-    for k in range(1, 11):
-        pointer_to(screen, x + dx * k * 3, y + dy * k * 3, action)
+    moves = drag_moves()
+    for k in range(1, moves + 1):
+        pointer_to(screen, x + dx * 30 * k / moves, y + dy * 30 * k / moves, action)
     action.perform()
     # The size change rides on the dragged handle.
     wait(screen).until(
@@ -172,12 +173,10 @@ class TestPrimitiveResize:
             )
             try:
                 for kind in ("cylinder", "sphere"):
-                    if run_in_app(lambda: bool(ui_state.urdf_scene._selected_objects)):
-                        click_marked(screen, "object-actions")
-                        click_marked(screen, "object-hide")
-                        # A closing menu would swallow the click on the view.
-                        wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
-                        clear_selection(screen)
+                    # Gone, the earlier shapes take no press meant for this
+                    # one. Hiding through the panel is test_shape_drawing_screen's.
+                    run_in_app(lambda: setattr(handle, "shapes", []))
+                    confirmed(screen, lambda: not handle.shapes)
                     create_shape(screen, kind, f"Resize {kind}")
                     for axis in (0, 2) if kind == "cylinder" else (0,):
                         initial = handle.shapes[-1]

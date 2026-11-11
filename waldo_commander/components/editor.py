@@ -1485,7 +1485,10 @@ class EditorPanel(FileOperationsMixin):
 
         # Only run simulation for active tab
         if tab.id == waldoctl.commander.programs.active_id:
-            simulation.schedule_debounced_simulation()
+            textarea = widgets.get("textarea")
+            simulation.schedule_debounced_simulation(
+                scene_edit=textarea is not None and textarea.scene_edit
+            )
 
     def build(self, close_callback: Callable | None = None) -> None:
         """Build the program editor content with multi-tab support."""

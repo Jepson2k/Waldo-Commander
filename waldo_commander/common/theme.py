@@ -1,12 +1,12 @@
 """Theme: the palettes, every other design token, and the adapters that hand
 them to CSS, Quasar, Three.js and charts.
 
-A theme is a :class:`Palette` of fourteen colours (a base16-style scheme with
-named roles). Every colour token in the app is either fixed (the simulator
-amber, the E-Stop red, the axis hues, the tool teal, the arm greys) or derived
-from the active palette, so switching the theme moves every linked role
-together: the surfaces, the text, the action colour, the status colours, the
-scene floor.
+A theme is a :class:`Palette`: a shadcn/ui theme's colours under their shadcn
+names, plus the hues the status and data colours come from. Every colour token
+in the app is either fixed (the simulator amber, the E-Stop red, the axis
+hues, the tool teal, the arm greys) or derived from the active palette, so
+switching the theme moves every linked role together: the surfaces, the text,
+the action colour, the status colours, the scene floor.
 
 - CSS reads ``var(--wc-<name>)`` (emitted on ``:root``).
 - Quasar ``color=`` / ``text-color=`` props use the registered name ``wc-<name>``.
@@ -28,15 +28,22 @@ STORAGE_KEY = "theme"
 
 @dataclass(frozen=True)
 class Palette:
-    """The fourteen colours a theme is made of."""
+    """A shadcn/ui theme's colours, and the hues of the status and data colours."""
 
-    bg: str
-    surface: str
-    surface_2: str
-    border: str
-    text: str
+    background: str
+    foreground: str
+    card: str
+    popover: str
+    primary: str
+    primary_foreground: str
+    secondary: str
     muted: str
+    muted_foreground: str
     accent: str
+    destructive: str
+    border: str
+    input: str
+    ring: str
     red: str
     orange: str
     yellow: str
@@ -47,48 +54,55 @@ class Palette:
 
 
 THEMES: dict[str, Palette] = {
-    "Ink": Palette(
-        bg="#000000",
-        surface="#171717",
-        surface_2="#383838",
-        border="#858585",
-        text="#ffffff",
-        muted="#cfcfcf",
-        accent="#38bdf8",
-        red="#ff5555",
-        orange="#ff9f43",
-        yellow="#ffd43b",
+    # shadcn/ui's neutral base colour, dark; the hues are Tailwind's 400s.
+    "Neutral": Palette(
+        background="oklch(0.145 0 0)",
+        foreground="oklch(0.985 0 0)",
+        card="oklch(0.205 0 0)",
+        popover="oklch(0.205 0 0)",
+        primary="oklch(0.922 0 0)",
+        primary_foreground="oklch(0.205 0 0)",
+        secondary="oklch(0.269 0 0)",
+        muted="oklch(0.269 0 0)",
+        muted_foreground="oklch(0.708 0 0)",
+        accent="oklch(0.269 0 0)",
+        destructive="oklch(0.704 0.191 22.216)",
+        border="oklch(1 0 0 / 10%)",
+        input="oklch(1 0 0 / 15%)",
+        ring="oklch(0.556 0 0)",
+        red="#f87171",
+        orange="#fb923c",
+        yellow="#facc15",
         green="#4ade80",
         cyan="#22d3ee",
         blue="#60a5fa",
         magenta="#c084fc",
     ),
 }
-DEFAULT_THEME = "Ink"
+DEFAULT_THEME = "Neutral"
 
 #: Colours that mean one thing whatever the theme.
 FIXED_COLOR: dict[str, str] = {
     "scene-arm": "#a3a3a3",
-    "scene-arm-sim": "#c77d28",
+    "scene-arm-sim": "#d97706",
     "scene-arm-edit": "#525252",
-    "scene-tool": "#2a9d8f",
-    "scene-tool-moving": "#4ecdc4",
-    "scene-tool-edit": "#3d6b65",
-    "scene-tool-moving-edit": "#4d7e77",
-    "scene-collision": "#b00020",
+    "scene-tool": "#0d9488",
+    "scene-tool-moving": "#2dd4bf",
+    "scene-tool-edit": "#115e59",
+    "scene-tool-moving-edit": "#0f766e",
+    "scene-collision": "#b91c1c",
     # Keep-outs read as "stay out": red, lighter while the backend has not
     # confirmed them, darker where the robot config fixes them. Shapes that
     # do not collide (things the arm will handle) stay neutral.
-    "scene-shape": "#c2574d",
-    "scene-shape-draft": "#de8f86",
-    "scene-shape-install": "#7c4844",
-    "scene-shape-proposed": "#8a7bb5",
-    "scene-object": "#6d8ea0",
-    "scene-hover": "#ffffff",
+    "scene-shape": "#dc2626",
+    "scene-shape-draft": "#f87171",
+    "scene-shape-install": "#7f1d1d",
+    "scene-shape-proposed": "#a78bfa",
+    "scene-object": "#64748b",
     "scene-light-sky": "#ffffff",
-    "scene-light-ground": "#1b2430",
+    "scene-light-ground": "#262626",
     "scene-light-key": "#ffffff",
-    "scene-light-fill": "#d6e4ff",
+    "scene-light-fill": "#e5e5e5",
     "scene-light-rim": "#ffffff",
     "axis-x": "#d94c3f",
     "axis-y": "#2faf7a",
@@ -122,9 +136,10 @@ SPACE: dict[str, str] = {
     "space-3": "12px",
     "space-4": "16px",
 }
+# shadcn's scale from its 10px --radius: controls and menus 8px, cards 14px.
 RADIUS: dict[str, str] = {
-    "radius-sm": "6px",
-    "radius-md": "10px",
+    "radius-sm": "8px",
+    "radius-md": "14px",
     "radius-pill": "9999px",
 }
 SIZE: dict[str, str] = {
@@ -138,7 +153,6 @@ SIZE: dict[str, str] = {
     "size-column-min": "200px",
     "size-footer": "28px",
 }
-EFFECT: dict[str, str] = {"glass-blur": "36px", "glass-saturate": "150%"}
 OPACITY: dict[str, str] = {
     "opacity-locked": "0.15",
     "opacity-fixture-fill": "0.06",
@@ -166,14 +180,17 @@ EASING: dict[str, str] = {
     "ease-pop": "cubic-bezier(0.34, 1.56, 0.64, 1)",
 }
 SHADOW: dict[str, str] = {
-    "shadow-glass": (
-        "inset -0.3px -1px 4px 0 rgba(0, 0, 0, 0.072), inset -1.5px 2.5px 0 -2px rgba(0, 0, 0, 0.108),"
-        " inset 0 3px 4px -2px rgba(0, 0, 0, 0.108), 0 6px 16px 0 rgba(0, 0, 0, 0.048)"
-    ),
+    # shadcn's shadow-sm.
+    "shadow-glass": "0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)",
 }
 FONT_FAMILY: dict[str, str] = {
-    "sans": 'Roboto, -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif',
-    "mono": 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+    "sans": 'Geist, ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif',
+    "mono": '"Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+}
+# Bundled, so a Pi with no internet draws them too.
+FONT_FILES: dict[str, str] = {
+    "Geist": "/static/fonts/Geist-Variable.woff2",
+    "Geist Mono": "/static/fonts/GeistMono-Variable.woff2",
 }
 # name -> (font-size, line-height, weight, letter-spacing or None)
 TYPE_STYLE: dict[str, tuple[str, str, int, str | None]] = {
@@ -257,45 +274,51 @@ def _shift(
     css_value: str, *, L: float | None = None, dL: float = 0.0, C: float | None = None
 ) -> str:
     """A colour with its OKLCH lightness moved (``L`` sets it, ``dL`` adds to it) and chroma scaled."""
-    r, g, b, _ = _rgba(css_value)
+    r, g, b, alpha = _rgba(css_value)
     L0, C0, h = _srgb_to_oklch(r, g, b)
     return _oklch(
-        L if L is not None else L0 + dL, C0 * (C if C is not None else 1.0), h
+        L if L is not None else L0 + dL, C0 * (C if C is not None else 1.0), h, alpha
     )
 
 
 def _alpha(css_value: str, alpha: float) -> str:
-    r, g, b, _ = _rgba(css_value)
+    """A colour at ``alpha`` of its own opacity."""
+    r, g, b, a = _rgba(css_value)
     L, C, h = _srgb_to_oklch(r, g, b)
-    return _oklch(L, C, h, alpha)
+    return _oklch(L, C, h, a * alpha)
 
 
 def _derive(p: Palette) -> dict[str, str]:
     """Every theme-dependent token from a palette. Fixed tokens are added by :func:`color_tokens`."""
-    bg_L = _srgb_to_oklch(*_rgba(p.bg)[:3])[0]
+    bg_L = _srgb_to_oklch(*_rgba(p.background)[:3])[0]
     ground_L = max(bg_L + 0.09, 0.22)
     return {
-        "scene-bg": p.bg,
-        "scene-ground": _shift(p.bg, L=ground_L),
-        "scene-grid": _shift(p.bg, L=ground_L + 0.16),
-        "surface": p.surface,
-        "glass": _alpha(p.surface, 0.86),
-        "glass-end": _alpha(_shift(p.surface, dL=-0.08), 0.86),
-        "glass-border": _alpha(p.border, 0.5),
-        "well": _alpha(p.bg, 0.55),
-        "state-hover": _alpha(p.text, 0.08),
-        "state-selected": _alpha(p.text, 0.16),
-        "text": p.text,
-        "text-muted": p.muted,
+        "scene-bg": p.background,
+        "scene-ground": _shift(p.background, L=ground_L),
+        "scene-grid": _shift(p.background, L=ground_L + 0.16),
+        # Grey, so a hovered part reads apart from the selection's primary.
+        "scene-hover": p.ring,
+        "surface": p.card,
+        # The glass names stayed when the panels became shadcn's solid cards.
+        "glass": p.card,
+        "glass-end": p.popover,
+        "glass-border": p.border,
+        "input": p.input,
+        "well": _alpha(p.input, 0.3),
+        "state-hover": p.accent,
+        "state-selected": _shift(p.accent, dL=0.06),
+        "text": p.foreground,
+        "text-muted": p.muted_foreground,
         "text-disabled": _shift(
-            p.muted, L=(bg_L + _srgb_to_oklch(*_rgba(p.muted)[:3])[0]) / 2
+            p.muted_foreground,
+            L=(bg_L + _srgb_to_oklch(*_rgba(p.muted_foreground)[:3])[0]) / 2,
         ),
-        "action": p.accent,
-        "action-hover": _shift(p.accent, dL=-0.1),
-        "action-text": _shift(p.accent, L=0.88, C=0.5),
-        "focus-ring": _shift(p.accent, L=0.75),
-        "control": p.surface_2,
-        "progress": _shift(p.accent, L=0.75),
+        "action": p.primary,
+        "action-hover": _alpha(p.primary, 0.9),
+        "action-text": p.primary,
+        "focus-ring": _alpha(p.ring, 0.5),
+        "control": p.secondary,
+        "progress": p.primary,
         # The status colours are saturated like the simulator's amber, and
         # still past 4.5:1 as small text on the glass.
         "positive": _shift(p.green, L=0.72),
@@ -306,12 +329,12 @@ def _derive(p: Palette) -> dict[str, str]:
         "error": _shift(p.red, L=0.66),
         "error-soft": _alpha(p.red, 0.08),
         "mode-sim-soft": _alpha(FIXED_COLOR["mode-sim"], 0.12),
-        "info": _shift(p.accent, L=0.75),
+        "info": _shift(p.blue, L=0.75),
         "run": _shift(p.green, L=0.7),
         "fill-positive": _shift(p.green, L=0.5),
         "fill-warning": _shift(p.orange, L=0.55),
         "fill-error": _shift(p.red, L=0.5),
-        "fill-info": _shift(p.accent, L=0.5),
+        "fill-info": _shift(p.blue, L=0.5),
         "ai-inspect": _shift(p.green, L=0.76),
         "ai-inspect-text": _shift(p.green, L=0.84),
         "ai-auto-edits": _shift(p.blue, L=0.75),
@@ -325,10 +348,10 @@ def _derive(p: Palette) -> dict[str, str]:
         "path-smooth": p.magenta,
         "path-invalid": p.red,
         "path-timing-warning": _shift(p.yellow, L=0.85),
-        "path-checkpoint": p.muted,
+        "path-checkpoint": p.muted_foreground,
         "path-tool-action": FIXED_COLOR["scene-tool"],
         "physics-contact": _shift(p.red, L=0.7),
-        "physics-com": _shift(p.text, L=0.92),
+        "physics-com": _shift(p.foreground, L=0.92),
         "chart-1": p.blue,
         "chart-2": p.green,
         "chart-3": p.orange,
@@ -478,7 +501,7 @@ def _token_block(theme: str) -> str:
 
 def _scalar_block() -> str:
     lines: list[str] = []
-    for group in (SPACE, RADIUS, SIZE, EFFECT, OPACITY, Z_INDEX, DURATION, EASING):
+    for group in (SPACE, RADIUS, SIZE, OPACITY, Z_INDEX, DURATION, EASING):
         lines.extend(f"  --wc-{n}: {v};" for n, v in group.items())
     lines.extend(f"  --wc-font-{n}: {v};" for n, v in FONT_FAMILY.items())
     lines.append(
@@ -501,10 +524,20 @@ def _type_classes() -> str:
     return "\n".join(rules)
 
 
+def _font_faces() -> str:
+    return "\n".join(
+        f"@font-face {{ font-family: '{family}'; src: url('{url}') format('woff2');"
+        " font-weight: 100 900; font-display: swap; }"
+        for family, url in FONT_FILES.items()
+    )
+
+
 def _inject_tokens_css() -> None:
     """Emit every token of the active theme as ``--wc-*`` on ``:root``."""
     ui.add_css(
         f"""
+{_font_faces()}
+
 :root {{
 {_token_block(_active_theme)}
 {_scalar_block()}
@@ -533,15 +566,18 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
 /* ========== Surfaces ========== */
 
 {_GLASS_SELECTORS} {{
-  background: linear-gradient(135deg, var(--wc-glass), var(--wc-glass-end)) !important;
-  backdrop-filter: blur(var(--wc-glass-blur)) saturate(var(--wc-glass-saturate));
-  -webkit-backdrop-filter: blur(var(--wc-glass-blur)) saturate(var(--wc-glass-saturate));
+  background: var(--wc-glass) !important;
   border: 1px solid var(--wc-glass-border) !important;
   border-radius: var(--wc-radius-md);
   box-shadow: var(--wc-shadow-glass);
   color: var(--wc-text);
   isolation: isolate;
 }}
+.q-menu {{ background: var(--wc-glass-end) !important; border-radius: var(--wc-radius-sm); padding: 4px; }}
+/* shadcn's menu rows: compact, rounded, filled on hover. */
+.q-menu .q-item {{ min-height: 32px; padding: 6px 8px; border-radius: 6px; }}
+.q-menu .q-item:hover {{ background: var(--wc-state-hover); }}
+.q-menu .q-separator {{ margin: 4px -4px; }}
 .well {{ background: var(--wc-well); border-radius: var(--wc-radius-sm); }}
 .q-item, .q-toolbar, .q-field, .q-tab-panels, .q-tab-panel {{ background: transparent; }}
 .q-separator {{ background: var(--wc-glass-border); }}
@@ -560,9 +596,12 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
   min-width: var(--wc-size-control) !important;
 }}
 .q-btn--flat, .q-btn--outline {{ color: var(--wc-text); }}
+/* A pressed toggle is filled, as shadcn's are: its primary icon alone
+   would read no different from the white of the others. */
+.q-btn--flat[aria-pressed="true"] {{ background: var(--wc-state-selected) !important; }}
 .q-btn:focus-visible, .q-field__native:focus-visible, .q-tab:focus-visible {{
-  outline: 2px solid var(--wc-focus-ring);
-  outline-offset: 2px;
+  outline: 3px solid var(--wc-focus-ring);
+  outline-offset: 0;
 }}
 .q-slider__thumb {{ width: 30px !important; height: 30px !important; }}
 .q-slider__track {{ height: 8px !important; }}
@@ -583,6 +622,7 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
 .q-field:not(.q-field--borderless) .q-field__control {{
   background: var(--wc-well);
   border-radius: var(--wc-radius-sm);
+  box-shadow: inset 0 0 0 1px var(--wc-input);
 }}
 .q-field--error .q-field__bottom, .q-field--error .q-field__messages {{ color: var(--wc-error) !important; }}
 .step-input .q-field__suffix {{ display: inline-block; width: 14px; text-align: center; }}
@@ -677,7 +717,8 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
             "minWidth": 378,
             "minHeight": 310,
             "defaultWidth": 378,
-            "defaultHeight": 310,
+            # Tall enough for the chart, the status and the sliders below them.
+            "defaultHeight": 450,
             "cameraWidth": 660,
             "cameraHeight": 675,
             "group": "top",
@@ -1199,6 +1240,10 @@ body:has(.q-dialog__backdrop) .status-footer .btn-take-control { pointer-events:
 }
 
 .left-panels-container::-webkit-scrollbar { display: none !important; }
+
+/* A tab panel sliding in overflows its wrapper sideways; a scrollbar there
+   would stand the panel taller until the slide ends. */
+.q-panel[class*="q-transition--"] { overflow: hidden; }
 
 .top-panels-container { top: var(--wc-space-3); }
 

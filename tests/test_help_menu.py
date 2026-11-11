@@ -56,7 +56,7 @@ async def test_settings_lists_the_shortcuts_and_walks_the_tour(user: User) -> No
     await asyncio.sleep(0)
     await user.should_see("Jog in joint space")
 
-    for _ in range(3):  # 4 steps total, need 3 Next clicks
+    for _ in range(9):  # 10 steps total, need 9 Next clicks
         _settings_button(user, "Next").click()
         await asyncio.sleep(0)
 

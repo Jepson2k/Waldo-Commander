@@ -91,7 +91,7 @@ jobs:
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
   test:
-    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    name: ${{ matrix.os }} / Python ${{ matrix.python }} / ${{ matrix.lane }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -99,6 +99,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python: ['3.12', '3.13', '3.14']
+        # The browser tests and the rest on machines of their own: without
+        # a GPU, Chrome draws on the CPU the other lane would need. Browser
+        # tests run on Linux only.
+        lane: [simulated, browser]
+        exclude:
+          - os: windows-latest
+            lane: browser
+          - os: macos-latest
+            lane: browser
 
     steps:
       - name: Checkout repository
@@ -186,20 +195,20 @@ jobs:
         env:
           PYTHONUNBUFFERED: '1'
           PYTHONUTF8: '1'
-          EVIDENCE: ${{ (runner.os == 'Linux' && matrix.python == '3.13') && '--evidence' || '' }}
+          EVIDENCE: ${{ (matrix.lane == 'browser' && matrix.python == '3.13') && '--evidence' || '' }}
         run: |
-          pytest -vv --tb=long --log-cli-level=DEBUG $EVIDENCE
+          pytest -vv --tb=long --log-cli-level=DEBUG --lane ${{ matrix.lane }} $EVIDENCE
 
       - name: Preserve test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: junit-${{ matrix.os }}-python-${{ matrix.python }}
+          name: junit-${{ matrix.os }}-python-${{ matrix.python }}-${{ matrix.lane }}
           path: test-results.xml
           retention-days: 7
 
       - name: Preserve scene review media
-        if: ${{ !cancelled() && runner.os == 'Linux' && matrix.python == '3.13' }}
+        if: ${{ !cancelled() && matrix.lane == 'browser' && matrix.python == '3.13' }}
         uses: actions/upload-artifact@v4
         with:
           name: scene-review-${{ matrix.os }}-python-${{ matrix.python }}

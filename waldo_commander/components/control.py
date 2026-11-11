@@ -29,6 +29,7 @@ from waldo_commander.constants import (
 from waldo_commander.services.control_lease import (
     BROWSER,
     ControlMode,
+    add_change_listener,
     control_lease,
     control_mode,
     deny_action,
@@ -822,6 +823,7 @@ class ControlPanel:
         self._drag_context: tuple[int, str, bool, int] | None = None
         self._remove_stop_listener: Callable[[], None] | None = None
         self._remove_command_listener: Callable[[], None] | None = None
+        self._remove_control_listener: Callable[[], None] | None = None
         self._tcp_last_sent_limits: tuple[float, float] | None = None
 
         self._jog_end_wait_task: asyncio.Task | None = None
@@ -1388,12 +1390,11 @@ class ControlPanel:
     def _build_control_indicator(self) -> None:
         """Page-perimeter glow (colored by control mode) while an MCP/AI
         session is around, plus the approval dialog (per-action move
-        approvals and the one-time hardware-consent floor). Driven by the
-        1 Hz ping; the mode and Take control sit in the footer's chip.
+        approvals and the one-time hardware-consent floor). The mode and Take
+        control sit in the footer's chip.
 
-        Parented at the page root: the overlay-card's ``backdrop-filter``
-        creates a containing block that would trap these ``position:fixed``
-        overlays inside the panel instead of the viewport."""
+        Parented at the page root, so these ``position:fixed`` overlays span
+        the viewport, not the panel."""
         with self._ui_client.content:
             self._build_control_indicator_elements()
 
@@ -1475,7 +1476,6 @@ class ControlPanel:
         stopped = await motion_guard.stop_robot(
             waldoctl.commander.client, "browser took control"
         )
-        self.refresh_control_indicator()
         if stopped:
             ui.notify("You're in control — robot stopped", color="positive")
         else:
@@ -1486,7 +1486,7 @@ class ControlPanel:
 
     def refresh_control_indicator(self) -> None:
         """Drive the ambient glow, the footer chip's AI state, and pending
-        approvals from the 1 Hz ping loop. Glow states: hidden (no MCP client
+        approvals from the control lease. Glow states: hidden (no MCP client
         around), faint (a client is connected but the human holds control),
         breathing at full strength (an AI session holds the lease)."""
         glow = getattr(self, "_control_glow", None)
@@ -1584,7 +1584,6 @@ class ControlPanel:
         set_control_mode(mode)
         ui.notify(f"AI control mode: {mode.label}", color="info")
         self._set_mode_theme(mode)
-        self._show_ai()
         toggle = getattr(self, "_mode_toggle", None)
         if toggle is not None and toggle.value != mode.value:
             self._suppress_mode_toggle = True
@@ -2651,7 +2650,6 @@ class ControlPanel:
                 )
                 num.set_enabled(not ui_state.editing_target)
                 self._joint_readouts.append(num)
-                num.tooltip("Live robot joint angle")
                 _num_ref: dict[str, Any] = {
                     "focused": False,
                     "el": num,
@@ -2984,6 +2982,11 @@ class ControlPanel:
         self._remove_command_listener = motion_guard.add_command_listener(
             self.claim_motion
         )
+        if self._remove_control_listener is not None:
+            self._remove_control_listener()
+        self._remove_control_listener = add_change_listener(
+            self.refresh_control_indicator
+        )
         # Capture UI client for background task operations
         self._ui_client = ui.context.client
         owner = self._ui_client
@@ -3150,6 +3153,9 @@ class ControlPanel:
         if self._remove_command_listener is not None:
             self._remove_command_listener()
             self._remove_command_listener = None
+        if self._remove_control_listener is not None:
+            self._remove_control_listener()
+            self._remove_control_listener = None
         if self._joint_click_hold:
             self._joint_click_hold.cleanup()
         if self._cart_click_hold:

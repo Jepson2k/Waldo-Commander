@@ -535,6 +535,7 @@ async def check_ping() -> None:
         readout_panel.update_conn_io()
     if control_panel is not None:
         control_panel.sync_gizmo_for_jog_state()
+        # The lease announces every change but a holder or client ageing out.
         control_panel.refresh_control_indicator()
 
 
@@ -841,7 +842,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             ui_state.io_page.build()
 
         with ui.tab_panel("gripper").classes(
-            "gap-2 overlay-card gripper-panel overflow-hidden"
+            "gap-2 overlay-card gripper-panel overflow-x-hidden overflow-y-auto"
         ) as gripper_panel_container:
             gripper_content_built = False
 

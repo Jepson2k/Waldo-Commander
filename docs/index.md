@@ -34,26 +34,8 @@ Jog in joint space (one joint at a time) or Cartesian space (translate in XYZ, r
 Keyboard shortcuts: **WASD** + **Q/E** for Cartesian movement, **[/]** to adjust speed. Clicking a jog button or key sends a single step; holding it jogs continuously until you release.
 
 <video controls width="100%">
-  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/basic_control.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/basic_controls.mp4" type="video/mp4">
 </video>
-
-### Jogging in the 3D view
-
-Rest the pointer on a link of the arm and that joint's ring appears around it; rest it on the last link or the tool and the gizmo appears at the TCP. One handle shows at a time, and it goes a moment after the pointer leaves it. On a touch screen, tap the link instead; tapping empty space puts the handle away.
-
-- **Rings.** Drag anywhere on a ring to turn its joint. The joint moves in whole steps from where the drag began, stops at its limits, and the label beside the knob shows the joint's value, the change so far and the step, for example `Shoulder  −47.5°  Δ+20.0°  step 5°`. The dots on the ring mark the steps.
-- **Gizmo.** Drag an arrow to move the tool along its own axes, or a ring (in Rotate mode) to turn it about them. Moves snap to whole steps in the tool frame; dots along the dragged axis mark them and a label shows the change.
-
-The step follows the zoom: the further the camera is from what it orbits, the coarser the step.
-
-| Camera distance | Ring step | Gizmo step |
-|---|---|---|
-| over 1.2 m | 5° | 10 mm, 5° |
-| 0.5 – 1.2 m | 1° | 5 mm, 1° |
-| 0.3 – 0.5 m | 0.5° | 1 mm, 0.5° |
-| under 0.3 m | 0.1° | 0.5 mm, 0.1° |
-
-The step field in the control panel is separate: it sets the step of the jog buttons and keys only. The gizmo buttons in the control panel choose Move or Rotate for the gizmo, or Hidden to never show it; the rings still appear. No handle appears while a program runs, while you edit a target, or when there is no robot or simulator to move. While recording, a drag is recorded as one `move_j` (ring) or `move_l` (gizmo) when the arm settles.
 
 ### Connecting Your Robot
 
@@ -64,7 +46,30 @@ Open **Settings** from the gear in the bottom-left rail and select your hardware
 - <img src="assets/img/waldo-neutral.svg" width="27" alt=""> Simulator mode
 
 <video controls width="100%">
-  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/connecting_to_robot.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/connecting_your_robot.mp4" type="video/mp4">
+</video>
+
+### Navigating the 3D view
+
+Drag empty space to orbit around the robot, right-drag to pan, and scroll to zoom. Click a face of the view cube in the top-right corner to look along that axis, or a corner for a three-sided view; dragging the cube orbits too. The buttons under the cube frame the robot (**Focus**, or **F**) and go back to the starting view (**Reset view**).
+
+<video controls width="100%">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/navigating_the_3d_view.mp4" type="video/mp4">
+</video>
+
+### Jogging in the 3D view
+
+Rest the pointer on a link of the arm and that joint's ring appears around it; rest it on the last link or the tool and the gizmo appears at the TCP. Clicking the **TCP** badge beside the tool brings up the gizmo too, and keeps it up until you click empty space. One handle shows at a time, and it goes a moment after the pointer leaves it. On a touch screen, tap the link instead; tapping empty space puts the handle away.
+
+- **Rings.** Drag anywhere on a ring to turn its joint. The joint moves in whole steps from where the drag began, stops at its limits, and the label beside the knob shows the joint's value, the change so far and the step, for example `Shoulder  −47.5°  Δ+20.0°  step 5°`. The dots on the ring mark the steps.
+- **Gizmo.** Drag an arrow to move the tool along its own axes, or a ring (in Rotate mode) to turn it about them. Moves snap to whole steps in the tool frame; dots along the dragged axis mark them and a label shows the change. Click an arrow instead of dragging it to type an exact distance; **Enter** moves the tool that far.
+
+The step follows the zoom: it is a round number close to two pixels of pointer travel (one pixel of arc for a gizmo turn), so zooming in gives finer steps. Ring steps run from 0.1° to 10°; gizmo steps go up to 10 mm and 5°.
+
+The step field in the control panel is separate: it sets the step of the jog buttons and keys only. The gizmo buttons in the control panel choose Move or Rotate for the gizmo, or Hidden to never show it; the rings still appear. No handle appears while a program runs, while you edit a target, or when there is no robot or simulator to move. While recording, a drag is recorded as one `move_j` (ring) or `move_l` (gizmo) when the arm settles.
+
+<video controls width="100%">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/jogging_in_the_3d_view.mp4" type="video/mp4">
 </video>
 
 ### Programming, Recording, and Path Visualization
@@ -74,7 +79,39 @@ Write robot programs in Python using the built-in editor with auto-complete for 
 Run programs against the simulator to preview the motion path in 3D. The path traces the TCP position through each move, color-coded by reachability. Execute on hardware when you're ready.
 
 <video controls width="100%">
-  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/recording_and_previewing_actions.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/programming_and_recording.mp4" type="video/mp4">
+</video>
+
+### Editing targets
+
+Each move's target shows in the 3D view. Right-click one and choose **Edit Target**, then drag the gizmo: the target moves and the arm stays where it is. **Escape** finishes editing and rewrites the move's line in the program; **Ctrl+Z** puts it back. Right-click the floor and choose **Place Target Here** to add a move to that point to the program.
+
+<video controls width="100%">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/editing_targets.mp4" type="video/mp4">
+</video>
+
+### Keep-outs
+
+A keep-out marks space the arm must stay out of. Right-click the floor and choose **Add keep-out…**: the scene panel opens on a new keep-out card. Pick a box, sphere or cylinder, then **Place here** to put it where you clicked, or **Draw** to drag out its footprint on the floor and pull up its height. Every keep-out is listed in the scene panel, opened from the bottom-left rail; drag a keep-out's gizmo to move it and the panel's values follow.
+
+<video controls width="100%">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/keep_outs.mp4" type="video/mp4">
+</video>
+
+### Inspecting a path
+
+Rest the pointer on a previewed path and it lights up; press and drag along it, and the simulator follows to that point of the program. Right-click a target and choose **Show swept volume** to draw everything the arm passes through on the move to it. From where the move runs into a keep-out, the sweep is drawn red.
+
+<video controls width="100%">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/inspecting_a_path.mp4" type="video/mp4">
+</video>
+
+### Setup frames
+
+A target can be stored relative to a fixture's frame from a [named setup](guides/named-setup.md) instead of the world, so it moves with the fixture when the fixture is re-taught while the program's numbers stay the same. While editing a target, click the gizmo's **World** badge and choose **Store in › fixture**: the target stays put, and its line now reads in that fixture's frame.
+
+<video controls width="100%">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/setup_frames.mp4" type="video/mp4">
 </video>
 
 ### I/O and Tool Control
@@ -82,7 +119,7 @@ Run programs against the simulator to preview the motion path in 3D. The path tr
 Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, slide the position and current controls and watch the gripper track in real time — a live chart plots position and current over time. Tool and variant switching happens under Settings → Tool; the 3D model updates to show the attached tool.
 
 <video controls width="100%">
-  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/attaching_a_tool.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/io_and_tools.mp4" type="video/mp4">
 </video>
 
 ### Camera Feed

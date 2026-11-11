@@ -21,17 +21,45 @@ state), not part of the public ``commander`` surface.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
 from nicegui import Client, app
+
+logger = logging.getLogger(__name__)
 
 BROWSER = "browser"
 MCP = "mcp"
 
 # How long an MCP holder stays "live" without a gated call before it ages out.
 MCP_TTL_SECONDS = 30.0
+
+_change_listeners: list[Callable[[], None]] = []
+
+
+def add_change_listener(listener: Callable[[], None]) -> Callable[[], None]:
+    """Call ``listener()`` after each change to the holder, the control mode,
+    MCP presence or the pending approvals; returns its remover. Ageing out (a
+    holder or an MCP client going quiet) is not announced."""
+    _change_listeners.append(listener)
+
+    def remove() -> None:
+        with contextlib.suppress(ValueError):
+            _change_listeners.remove(listener)
+
+    return remove
+
+
+def _notify_change() -> None:
+    for listener in list(_change_listeners):
+        try:
+            listener()
+        except Exception:
+            logger.exception("Control change listener failed")
 
 
 class ControlMode(Enum):
@@ -81,6 +109,7 @@ def set_control_mode(mode: ControlMode) -> None:
     app.storage.general[_MODE_STORAGE_KEY] = mode.value
     if not mode.auto_approves_motion:
         revoke_consent()
+    _notify_change()
 
 
 def cycle_control_mode() -> ControlMode:
@@ -148,11 +177,14 @@ class ControlLease:
         """Take control for ``(channel, id)``. Anyone may seize; the displaced
         holder finds out on its next query / actuation (always visible)."""
         h = self._holder
-        if h is None or (h.channel, h.id) != (channel, id):
+        changed = h is None or (h.channel, h.id) != (channel, id)
+        if changed:
             self.generation += 1
             if channel == BROWSER and h is not None and h.channel == MCP:
                 revoke_consent()
         self._holder = Holder(channel, id, label, time.monotonic())
+        if changed:
+            _notify_change()
 
     def touch(self, channel: str, id: str) -> None:
         """Refresh liveness if ``(channel, id)`` is the current holder."""
@@ -166,6 +198,7 @@ class ControlLease:
         if h is not None and h.channel == channel and h.id == id:
             self._holder = None
             self.generation += 1
+            _notify_change()
 
     def reset(self) -> None:
         """Drop any holder (used by ``reset_all_state`` between test sessions)."""
@@ -180,6 +213,7 @@ class ControlLease:
         _mcp_last_message.clear()
         # Test-isolation default, not a human choice — bypass persistence.
         _control_mode = ControlMode.INSPECT
+        _notify_change()
 
 
 control_lease = ControlLease()
@@ -196,7 +230,10 @@ _mcp_last_message: dict[str, float] = {}  # session_id -> monotonic last message
 
 def mcp_touch(session_id: str) -> None:
     """Record MCP activity for ``session_id`` (any message, not just tools)."""
+    new = session_id not in _mcp_last_message
     _mcp_last_message[session_id] = time.monotonic()
+    if new:
+        _notify_change()
 
 
 def mcp_connected() -> bool:
@@ -277,7 +314,7 @@ _mcp_consented = False
 _pending_consent: dict[str, str] = {}  # session_id -> human label awaiting approval
 
 # A denied prompt must not instantly re-arm (the AI's retry loop would re-open
-# the dialog ~1s after every Deny). Within the cooldown, attempts get a
+# the dialog right after every Deny). Within the cooldown, attempts get a
 # terminal "denied" error; afterwards a fresh attempt may prompt again.
 CONSENT_DENY_COOLDOWN_SECONDS = 30.0
 _denied_at: dict[str, float] = {}  # session_id -> monotonic time of the deny
@@ -295,6 +332,7 @@ def revoke_consent() -> None:
 def arm_consent_prompt(session_id: str, label: str) -> None:
     """Record that *session_id* is awaiting GUI consent for hardware motion."""
     _pending_consent[session_id] = label
+    _notify_change()
 
 
 def pending_consents() -> dict[str, str]:
@@ -307,11 +345,13 @@ def grant_consent(session_id: str) -> None:
     _mcp_consented = True
     _pending_consent.clear()
     _denied_at.pop(session_id, None)
+    _notify_change()
 
 
 def deny_consent(session_id: str) -> None:
     _pending_consent.pop(session_id, None)
     _denied_at[session_id] = time.monotonic()
+    _notify_change()
 
 
 def recently_denied(session_id: str) -> bool:
@@ -331,6 +371,7 @@ def reset_consent(session_id: str) -> None:
     _denied_at.pop(session_id, None)
     _pending_action.pop(session_id, None)
     _approved_action.pop(session_id, None)
+    _notify_change()
 
 
 # --- Per-action motion approval (Inspect / Auto-edits modes) ---------------
@@ -350,6 +391,7 @@ _approved_action: dict[
 def arm_action_prompt(session_id: str, description: str) -> None:
     """Record that *session_id* is awaiting GUI approval for a specific move."""
     _pending_action[session_id] = description
+    _notify_change()
 
 
 def pending_actions() -> dict[str, str]:
@@ -363,11 +405,13 @@ def grant_action(session_id: str) -> None:
     if description is not None:
         _approved_action[session_id] = description
     _denied_at.pop(session_id, None)
+    _notify_change()
 
 
 def deny_action(session_id: str) -> None:
     _pending_action.pop(session_id, None)
     _denied_at[session_id] = time.monotonic()
+    _notify_change()
 
 
 def take_approved_action(session_id: str, description: str) -> bool:

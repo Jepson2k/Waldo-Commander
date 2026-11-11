@@ -56,6 +56,9 @@ export function surface(core) {
     get resets() {
       return core.resets;
     },
+    set restoreWaitMs(ms) {
+      core.restoreWaitMs = ms;
+    },
     byName,
     frames: () => core.frameCount,
     clearanceLines: () => [...core.clearances.items.values()].map(item => ({
@@ -137,6 +140,30 @@ export function surface(core) {
       o.updateWorldMatrix(true, false);
       const v = new THREE.Vector3();
       return points.map(([x, y, z]) => pixel(v.set(x, y, z).applyMatrix4(o.matrixWorld).project(core.camera)));
+    },
+    // The viewport box round what of ``name`` is drawn: its visible meshes,
+    // not its invisible pick proxies.
+    screenBox(name) {
+      const o = byName(name);
+      if (!o) return null;
+      o.updateWorldMatrix(true, true);
+      const box = new THREE.Box3(), part = new THREE.Box3(), v = new THREE.Vector3();
+      o.traverseVisible(c => {
+        const m = c.material;
+        if (!(c.isMesh || c.isLine || c.isPoints) || !m || m.visible === false
+            || m.colorWrite === false || (m.transparent && m.opacity === 0)) return;
+        if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
+        box.union(part.copy(c.geometry.boundingBox).applyMatrix4(c.matrixWorld));
+      });
+      if (box.isEmpty()) return null;
+      const xs = [], ys = [];
+      for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y])
+        for (const z of [box.min.z, box.max.z]) {
+          const [px, py] = pixel(v.set(x, y, z).project(core.camera));
+          xs.push(px); ys.push(py);
+        }
+      const l = Math.min(...xs), t = Math.min(...ys);
+      return [l, t, Math.max(...xs) - l, Math.max(...ys) - t];
     },
     pixelOf(name) {
       const o = byName(name);
@@ -311,6 +338,15 @@ export function surface(core) {
     return null;
   };
 
+  // Where the named object's gizmo handles are drawn and where the object
+  // is, in page pixels.
+  S.handlesAt = (name) => {
+    const tc = gizmoFor(name);
+    if (!tc || !tc.object) return null;
+    const at = (obj) => pixel(obj.getWorldPosition(new THREE.Vector3()).project(core.camera));
+    return { handles: at(tc.getHelper()), object: at(tc.object) };
+  };
+
   // The middle of the stretch of the named object's `letter` arrow that
   // sticks out past every object, and the arrow's direction on screen.
   S.arrowTip = (name, letter = "X") => {
@@ -448,15 +484,35 @@ export function surface(core) {
           .filter((n) => view.dot(new THREE.Vector3(...n)) < 0.99)
           .sort((a, b) => view.dot(new THREE.Vector3(...b)) - view.dot(new THREE.Vector3(...a)));
     const r = cube.box.getBoundingClientRect();
+    // Every other pixel across the box, as columns i and rows j.
+    const nx = Math.max(0, Math.ceil((r.width - 1) / 2)), ny = Math.max(0, Math.ceil((r.height - 1) / 2));
     for (const d of wanted) {
       const picks = (x, y) => {
         if (document.elementFromPoint(r.left + x, r.top + y) !== cube.box) return false;
         const region = cube.regionAt(x, y);
         return !!region && region.every((v, i) => v === d[i]);
       };
-      const found = [];
-      for (let y = 1; y < r.height; y += 2) for (let x = 1; x < r.width; x += 2) if (picks(x, y)) found.push([x, y]);
-      if (!found.length) continue;
+      const seen = new Uint8Array(nx * ny), cells = [];
+      const visit = (i, j) => {
+        if (i < 0 || j < 0 || i >= nx || j >= ny || seen[j * nx + i]) return;
+        seen[j * nx + i] = 1;
+        if (picks(1 + 2 * i, 1 + 2 * j)) cells.push([i, j]);
+      };
+      // Each pixel costs raycasts: a coarse pass finds the region, which then
+      // grows to every pixel of it joined to those found.
+      for (let j = 0; j < ny; j += 3) for (let i = 0; i < nx; i += 3) visit(i, j);
+      if (cells.length) {
+        for (let k = 0; k < cells.length; k++) {
+          const [i, j] = cells[k];
+          for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) visit(i + di, j + dj);
+        }
+      } else {
+        // A region too small for the coarse pass to land on.
+        for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) visit(i, j);
+      }
+      if (!cells.length) continue;
+      cells.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+      const found = cells.map(([i, j]) => [1 + 2 * i, 1 + 2 * j]);
       // The middle of the pixels found, or the found pixel nearest it.
       const mx = found.reduce((a, [x]) => a + x, 0) / found.length;
       const my = found.reduce((a, [, y]) => a + y, 0) / found.length;
@@ -464,6 +520,19 @@ export function surface(core) {
       return [r.left + x, r.top + y, new THREE.Vector3(...d).normalize().toArray()];
     }
     return null;
+  };
+
+  // The viewport box round the cube as drawn: the pixels a press would pick.
+  S.cubeBox = () => {
+    const cube = core.cube;
+    if (!cube.at) return null;
+    const r = cube.box.getBoundingClientRect();
+    let l = Infinity, t = Infinity, rr = -Infinity, b = -Infinity;
+    for (let y = 1; y < r.height; y += 2) for (let x = 1; x < r.width; x += 2) {
+      if (!cube.regionAt(x, y)) continue;
+      l = Math.min(l, x); t = Math.min(t, y); rr = Math.max(rr, x); b = Math.max(b, y);
+    }
+    return l === Infinity ? null : [r.left + l - 1, r.top + t - 1, rr - l + 2, b - t + 2];
   };
 
   return S;

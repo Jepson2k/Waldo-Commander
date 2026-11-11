@@ -195,7 +195,7 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
     await teleport_to_jog_pose(panel.client)
     start = np.array(await panel.client.angles())
     await _released(ring(user, scene, 1).move(delta=float("nan")), delta=float("inf"))
-    assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+    assert await panel.client.wait_motion(timeout=10, settle_window=0.25)
     assert np.array(await panel.client.angles()) == pytest.approx(start, abs=0.1)
 
     # Grab the next ring before the first joint has reached its target: the
@@ -221,7 +221,7 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
         await panel.jog_tick()
         await _released(ring(user, scene, 1).move(delta=5.0), delta=5.0)
         assert await wait_until(lambda: abs(angles.deg[1] - start[1] - 5) < 0.1, 20)
-        assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+        assert await panel.client.wait_motion(timeout=10, settle_window=0.25)
         assert angles.deg[0] < start[0] + 3, "the held ring's target was carried"
 
         # Release commits an angle, but it must not refresh that servo after
@@ -230,11 +230,11 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
         ring(user, scene, 0).move(delta=25.0).release(delta=25.0)
         assert await wait_until(lambda: angles.deg[0] > start[0] + 1, 5)
         take_over()
-        assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+        assert await panel.client.wait_motion(timeout=10, settle_window=0.25)
         stopped = np.array(await panel.client.angles())
         assert stopped[0] < start[0] + 24
         await panel.jog_tick()
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.2)
         assert np.array(await panel.client.angles()) == pytest.approx(stopped, abs=0.1)
     finally:
         waldoctl.commander.settings.jog.speed = speed
@@ -274,7 +274,7 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
         await interrupt()
         await panel.jog_tick()
         drag.release(delta=10.0)
-        assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+        assert await panel.client.wait_motion(timeout=10, settle_window=0.25)
         assert np.array(await panel.client.angles()) == pytest.approx(start, abs=0.1), (
             interrupt.__name__
         )
@@ -289,7 +289,7 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
     panel = ui_state.control_panel
     start = np.array(await panel.client.angles())
     await simulate_click(user, "btn-j1-plus")
-    assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+    assert await panel.client.wait_motion(timeout=10, settle_window=0.25)
     end = np.array(await panel.client.angles())
     assert end[0] > start[0] + 0.1
     assert end[1] == pytest.approx(start[1], abs=0.1)

@@ -28,6 +28,7 @@ from tests.test_editor_integration import (
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
+    teleport_to_jog_pose,
     wait_for_app_ready,
     wait_until,
 )
@@ -173,8 +174,7 @@ async def test_skill_fields_teach_preview_record_and_run_live(
     await enable_sim(user)
     await ensure_robot_ready_for_motion()
     client = waldoctl.commander.client
-    index = await client.move_j(START, speed=1)
-    assert index >= 0 and await client.wait_command(index, timeout=20)
+    await teleport_to_jog_pose(client)
 
     def element(marker):
         return next(iter(user.find(marker=marker).elements))
@@ -358,6 +358,14 @@ async def test_skill_fields_teach_preview_record_and_run_live(
     assert slot.frame == "tray"
     assert slot.values == pytest.approx((0, 0, 0, 0, 0, 0), abs=0.1)
 
+    # The slot was taught where the arm stands; away from it, arriving there
+    # is the run's doing.
+    away = await client.angles()
+    assert away is not None
+    away[0] += 3.0
+    assert await client.teleport(away) == 1
+    assert await client.wait_status(lambda s: abs(s.angles[0] - away[0]) < 0.1)
+
     # A selection that refers to the setup runs with the program's setup load.
     try:
         await run_selected(call, call)
@@ -517,7 +525,9 @@ async def test_skill_fields_teach_preview_record_and_run_live(
         await asyncio.sleep(0.1)
         await run_finished()
         assert waldoctl.commander.programs.active is original
-        assert script_exec.last_exit_code == 0
+        assert script_exec.last_exit_code == 0, "\n".join(
+            entry.text for entry in waldoctl.commander.programs.active.log.entries
+        )
         actual = await client.pose()
         assert actual is not None
         assert np.linalg.norm(np.array(actual[:3]) - before_pose[:3]) == pytest.approx(

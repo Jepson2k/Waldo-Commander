@@ -11,7 +11,7 @@ from waldoctl.shapes import Box, ShapeWorld
 from waldoctl.world import world_to_dict
 
 from tests.helpers.scene_events import right_click
-from tests.helpers.scene_objects import confirmed, field, select
+from tests.helpers.scene_objects import confirmed, field, new_keepout, select
 from tests.helpers.wait import wait_until
 from tests.test_scene_jog_handles import _open, _start_recording
 from waldo_commander.services import world_files
@@ -67,8 +67,7 @@ async def test_workcell_library_save_load_undo_stale_file_and_insert(
     live = waldoctl.commander.status.joints.angles.rad.copy()
     editor = await _start_recording(user)
     take_source = editor.value
-    right_click(user, view.scene, [], [0.4, 0.1, 0])
-    user.find(marker="scene-add-box").click()
+    new_keepout(user, view, [0.4, 0.1, 0])
     await confirmed(view, lambda: len(handle.shapes) == 1)
     # A recorded edit's import joins the program's imports, not the take.
     assert editor.value.startswith(
@@ -78,7 +77,8 @@ async def test_workcell_library_save_load_undo_stale_file_and_insert(
     await confirmed(view, lambda: handle.shapes[0].name == "Fixture")
     original = handle.shapes[0]
 
-    # The panel's Workcells button opens the library at the top of the panel.
+    # Workcells… in the panel's Add menu opens the library at the top of the
+    # panel.
     panel = ui_state.scene_panel
     user.find(marker="scene-close").click()
     assert not panel.is_open

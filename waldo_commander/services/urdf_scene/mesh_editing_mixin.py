@@ -24,6 +24,7 @@ from .shape_drawing_mixin import ShapeDrawingMixin
 
 class MeshEditingMixin(ShapeDrawingMixin):
     _scene_panel: Any
+    _close_panel_cards: Any
     _library_host: Any
     _tree_rows: Any
     _tree_row: Any
@@ -114,14 +115,11 @@ class MeshEditingMixin(ShapeDrawingMixin):
 
     def _open_mesh_import(self, at=(0.3, 0.0, 0.0)) -> None:
         from waldo_commander.components.mesh_import import MeshImport
-        from waldo_commander.components.world_library import close_world_library
 
         panel = self._scene_panel()
         if panel is None:
             return
-        if self._mesh_import is not None:
-            self._mesh_import.close()
-        close_world_library(self)
+        self._close_panel_cards()
         panel.open()
         self._mesh_import = MeshImport(self, self._library_host, at)
 
@@ -262,11 +260,6 @@ class MeshEditingMixin(ShapeDrawingMixin):
                     ).set_enabled(not readonly)
                 else:
                     ui.label(f"{len(selected)} objects").classes("scene-name flex-1")
-                ui.button(icon="flip_to_front", on_click=self._toggle_isolation).props(
-                    flat
-                ).tooltip(
-                    "Show all" if self._isolated_view else "Isolate selection"
-                ).mark("object-isolate")
                 with (
                     ui.button(icon="more_vert")
                     .props(flat)
@@ -274,6 +267,11 @@ class MeshEditingMixin(ShapeDrawingMixin):
                     .mark("object-actions"),
                     ui.menu(),
                 ):
+                    ui.menu_item(
+                        "Show all" if self._isolated_view else "Isolate",
+                        on_click=self._toggle_isolation,
+                    ).mark("object-isolate")
+                    ui.separator()
                     ui.menu_item("Delete", on_click=self._delete_objects).classes(
                         "text-wc-error"
                     ).mark("object-delete").set_enabled(not readonly)

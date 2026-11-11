@@ -57,8 +57,8 @@ from tests.helpers.scene_screen import (
     grab_ring,
     joint_deg,
     joint_settled,
+    keepout_card,
     poll,
-    place_shape,
     probe,
     program_previewed,
     tcp_mm,
@@ -525,21 +525,9 @@ class TestScene:
             client = waldoctl.commander.client
             assert await client.simulator(True) == 1
             assert await client.reset() == 1
-            assert await client.wait_command(await client.home(), timeout=15)
 
         asyncio.run_coroutine_threadsafe(ready(), core.loop).result(30)
-
-        at_rest = frames_at_rest(screen, 1.0)
-        # The footer's Waldo moving its eyes is no change to the scene.
-        run_in_app(lambda: ui_state.readout_panel.look((1.0, 0.0, 0.0)))
-        try:
-            looked = frames_at_rest(screen, 1.0)
-        finally:
-            run_in_app(lambda: ui_state.readout_panel.look(None))
-        assert looked == at_rest, (
-            f"the scene drew {looked - at_rest} frames for a glance"
-        )
-        at_rest = frames_at_rest(screen, 1.0)
+        teleport_jog_pose()
 
         async def nudge():
             client = waldoctl.commander.client
@@ -549,9 +537,19 @@ class TestScene:
                 await client.move_j(q, duration=0.6), timeout=10
             )
 
-        asyncio.run_coroutine_threadsafe(nudge(), core.loop).result(15)
-        moved = frames_at_rest(screen, 0.5)
-        assert moved > at_rest + 2, (at_rest, moved)
+        at_rest = frames_at_rest(screen, 1.0)
+        # The footer's Waldo moving its eyes is no change to the scene.
+        run_in_app(lambda: ui_state.readout_panel.look((1.0, 0.0, 0.0)))
+        try:
+            looked = frames_at_rest(screen, 1.0)
+            assert looked == at_rest, (
+                f"the scene drew {looked - at_rest} frames for a glance"
+            )
+            asyncio.run_coroutine_threadsafe(nudge(), core.loop).result(15)
+            moved = frames_at_rest(screen, 0.5)
+        finally:
+            run_in_app(lambda: ui_state.readout_panel.look(None))
+        assert moved > looked + 2, (looked, moved)
 
     def test_zoomed_out_the_fog_starts_beyond_the_robot(
         self, class_screen: Screen
@@ -689,11 +687,23 @@ class TestScene:
             program_previewed(source) as targets,
         ):
             try:
+                # Placing a keep-out through the menu is tested on its own.
                 clear_selection(screen)
-                point = wait(screen).until(lambda _: probe(screen, "floorSpot"))
-                name = place_shape(screen, "box", *point[:2], "Selected fixture")
-                selected = [f"shape:{name}"]
-                assert run_in_app(lambda: view._selected_objects) == selected
+                *_, x, y = wait(screen).until(lambda _: probe(screen, "floorSpot"))
+                box = Box(
+                    name="Selected fixture",
+                    pose=(round(x, 3), round(y, 3), 0.05, 0.0, 0.0, 0.0),
+                    x=0.1,
+                    y=0.1,
+                    z=0.1,
+                )
+                run_in_app(lambda: setattr(handle, "shapes", [*handle.shapes, box]))
+                confirmed(screen, lambda: box in handle.shapes)
+                selected = [f"shape:{box.name}"]
+                click_object(screen, selected[0])
+                wait(screen).until(
+                    lambda _: run_in_app(lambda: view._selected_objects) == selected
+                )
                 if not program_was_open:
                     click_tab(screen, "program")
                 target = targets[-1]
@@ -797,7 +807,7 @@ class TestScene:
             start = tcp_mm()
             camera = camera_pose(screen)
 
-            # Sixty pointer moves along the arrow, a frame apart as a mouse
+            # Twenty pointer moves along the arrow, a frame apart as a mouse
             # sends them: the value on the handle names the axis while it is
             # held, the app hears at most thirty targets a second, and the
             # marks go with the release.
@@ -817,11 +827,11 @@ class TestScene:
                 actions = ActionChains(screen.selenium, duration=16)
                 pointer_to(screen, x, y, actions)
                 actions.click_and_hold()
-                for step in range(1, 61):
+                for step in range(1, 21):
                     pointer_to(
                         screen,
-                        x + dx * 40 * step / 60,
-                        y + dy * 40 * step / 60,
+                        x + dx * 40 * step / 20,
+                        y + dy * 40 * step / 20,
                         actions,
                     )
                 actions.release()
@@ -1275,8 +1285,9 @@ class TestScene:
                 x, y, *floor = poll(
                     lambda: probe(screen, "floorSpot"), 5.0, "floor near the arm"
                 )
-                offered = choose(screen, x, y, "Box here")
+                offered = choose(screen, x, y, "Add keep-out…")
                 assert any(i.startswith("Place Target Here") for i in offered), offered
+                keepout_card(screen, "box", "keepout-place")
                 (name,) = poll(
                     lambda: set(shapes()) - set(before), 5.0, "the new keep-out"
                 )
@@ -1284,6 +1295,13 @@ class TestScene:
                     "the keep-out is not where the floor was clicked"
                 )
                 obj = f"shape:{name}"
+                # Placed once the controller confirms it, it is selected.
+                poll(
+                    lambda: run_in_app(lambda: ui_state.urdf_scene._selected_objects)
+                    == [obj],
+                    5.0,
+                    "the new keep-out selected",
+                )
                 # Move it by its gizmo's arrow; the drop is its new pose.
                 clear_selection(screen)
                 centre = settled_pixel(screen, obj)

@@ -148,11 +148,11 @@ async def test_gripper_panel_and_quick_actions(
         ), f"drew {waldoctl.commander.status.tool.current}, expected {expected}"
 
         # The chart streams: a push carries the samples since the last one, so
-        # over two seconds it sends far less than one copy of its window, where
-        # resending the window every push would send it twenty times.
+        # five pushes send far less than one copy of its window, where
+        # resending the window every push would send it five times.
         chart = next(iter(user.find(marker="gripper-chart").elements))
         series = chart.options["series"]
-        assert await wait_until(lambda: len(series[0]["data"]) >= 150, 15), (
+        assert await wait_until(lambda: len(series[0]["data"]) >= 80, 15), (
             "the chart's window never filled"
         )
         window_bytes = sum(len(json.dumps(s["data"])) for s in series)
@@ -169,9 +169,9 @@ async def test_gripper_panel_and_quick_actions(
             return enqueue(self, message_type, data, target_id)
 
         monkeypatch.setattr(Outbox, "enqueue_message", counting)
-        await asyncio.sleep(2.0)
+        pushed = await wait_until(lambda: len(sent) >= 5, 5)
         monkeypatch.undo()
-        assert sent, "the chart pushed nothing while samples arrived"
+        assert pushed, f"the chart pushed {len(sent)} times while samples arrived"
         assert sum(sent) < window_bytes, (sum(sent), window_bytes, len(sent))
     finally:
         await client.select_tool("NONE")

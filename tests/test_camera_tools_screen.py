@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import waldoctl
 from scipy.spatial.transform import Rotation
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -67,14 +68,6 @@ class TestCameraTools:
         screen = camera_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)
         at_start(screen)
-        screen.selenium.execute_cdp_cmd(
-            "Emulation.setEmulatedMedia",
-            {
-                "features": [
-                    {"name": "prefers-reduced-motion", "value": "no-preference"}
-                ]
-            },
-        )
         scene = ui_state.urdf_scene
         live = waldoctl.commander.status.joints.angles.rad.copy()
         with viewport(screen, 1920, 1080), program_previewed(EDIT_PROGRAM) as targets:
@@ -121,7 +114,16 @@ class TestCameraTools:
                 )
                 evidence.capture("05-restored-1920")
                 # From the right, with the front face only just on the cube, a
-                # press on it turns the camera a long way round its target.
+                # press on it turns the camera a long way round its target: a
+                # turn that is animated, so the orbit is watched frame by frame.
+                screen.selenium.execute_cdp_cmd(
+                    "Emulation.setEmulatedMedia",
+                    {
+                        "features": [
+                            {"name": "prefers-reduced-motion", "value": "no-preference"}
+                        ]
+                    },
+                )
                 scene_js(
                     screen,
                     """
@@ -143,6 +145,14 @@ class TestCameraTools:
                     screen, "window.__watchOrbit=false; return window.__orbitDistances"
                 )
                 assert min(distances) == pytest.approx(max(distances), rel=1e-5)
+                screen.selenium.execute_cdp_cmd(
+                    "Emulation.setEmulatedMedia",
+                    {
+                        "features": [
+                            {"name": "prefers-reduced-motion", "value": "reduce"}
+                        ]
+                    },
+                )
                 evidence.capture("05b-front-alignment-1920")
                 evidence.stop()
 
@@ -166,8 +176,9 @@ class TestCameraTools:
                     )
                     hold(screen, spot, 20)
                     wait(screen).until(
-                        lambda _: run_in_app(lambda: scene._requested_edit_pose)
-                        != initial
+                        lambda _: (
+                            run_in_app(lambda: scene._requested_edit_pose) != initial
+                        )
                     )
                     wait_for_scene_idle(screen)
                     evidence.capture("06-orthographic-drag-1366")
@@ -175,8 +186,9 @@ class TestCameraTools:
                         Keys.ESCAPE
                     ).release().perform()
                     wait(screen).until(
-                        lambda _: run_in_app(lambda: scene._requested_edit_pose)
-                        == initial
+                        lambda _: (
+                            run_in_app(lambda: scene._requested_edit_pose) == initial
+                        )
                     )
                     end_target_edit(screen)
                     evidence.capture("07-camera-tools-1366")
@@ -247,8 +259,9 @@ class TestCameraTools:
 
                 tap(marked_element(screen, "camera-orthographic"))
                 wait(screen).until(
-                    lambda _: orthographic()
-                    and _projection_shown(screen, "orthographic")
+                    lambda _: (
+                        orthographic() and _projection_shown(screen, "orthographic")
+                    )
                 )
                 face = tap_cube()
                 assert np.dot(looking_from(), face) > 0.999
@@ -288,12 +301,22 @@ class TestCameraTools:
                 )
                 evidence.capture("02-corner-view-touch-1024")
                 evidence.stop()
-                scene_js(screen, "S.renderer.forceContextLoss()")
-                notice = screen.selenium.find_element(By.CSS_SELECTOR, ".wc-scene-lost")
-                wait(screen, 10).until(
-                    lambda _: notice.value_of_css_property("cursor") == "pointer"
-                )
-                notice.click()
+                scene_js(screen, "S.restoreWaitMs = 200; S.renderer.forceContextLoss()")
+
+                def offered():
+                    """The lost-context notice once it offers a remount; the
+                    scene drawing it again replaces the element."""
+                    try:
+                        notice = screen.selenium.find_element(
+                            By.CSS_SELECTOR, ".wc-scene-lost"
+                        )
+                        if notice.value_of_css_property("cursor") == "pointer":
+                            return notice
+                    except StaleElementReferenceException:
+                        pass
+                    return None
+
+                wait(screen, 10).until(lambda _: offered()).click()
                 wait(screen, 15).until(
                     lambda _: screen.selenium.find_elements(
                         By.CSS_SELECTOR, ".wc-scene[data-ready]:not([data-gl])"
@@ -301,8 +324,9 @@ class TestCameraTools:
                 )
                 wait_for_scene_idle(screen)
                 wait(screen).until(
-                    lambda _: not orthographic()
-                    and _projection_shown(screen, "perspective")
+                    lambda _: (
+                        not orthographic() and _projection_shown(screen, "perspective")
+                    )
                 )
                 evidence.capture("03-recovered-tools-touch-1024")
                 # The recovered view has no earlier one for Shift+F to go back
@@ -311,8 +335,9 @@ class TestCameraTools:
                 camera_action(screen, "back")
                 tap(marked_element(screen, "camera-orthographic"))
                 wait(screen).until(
-                    lambda _: orthographic()
-                    and _projection_shown(screen, "orthographic")
+                    lambda _: (
+                        orthographic() and _projection_shown(screen, "orthographic")
+                    )
                 )
                 assert scene_js(screen, "return S.cameraPose()") == pytest.approx(
                     recovered, abs=1e-6
@@ -320,14 +345,41 @@ class TestCameraTools:
                 click_marked(screen, "camera-reset")
                 camera_settled(screen)
                 wait(screen).until(
-                    lambda _: not orthographic()
-                    and _projection_shown(screen, "perspective")
+                    lambda _: (
+                        not orthographic() and _projection_shown(screen, "perspective")
+                    )
                 )
                 evidence.finish()
             finally:
                 evidence.stop()
                 screen.selenium.execute_cdp_cmd(
                     "Emulation.setTouchEmulationEnabled", {"enabled": False}
+                )
+
+    def test_a_dense_screen_gets_a_sharp_view(self, camera_screen):
+        """A screen of two device pixels to one gets a view drawn at that
+        density, the cube still answers where it is drawn, and a move to a
+        plainer screen of the same size follows."""
+        screen = camera_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40)
+
+        def density():
+            return scene_js(
+                screen,
+                "const c = S.renderer.domElement;"
+                " return [c.width / c.clientWidth, c.height / c.clientHeight]",
+            )
+
+        with viewport(screen, 1366, 768, scale=2):
+            wait(screen).until(lambda _: density() == pytest.approx([2, 2], abs=0.01))
+            cube_view(screen, [0, 0, 1])
+            camera_settled(screen)
+            assert scene_js(screen, "return S.viewDirection()") == pytest.approx(
+                [0, 0, 1], abs=1e-5
+            )
+            with viewport(screen, 1366, 768):
+                wait(screen).until(
+                    lambda _: density() == pytest.approx([1, 1], abs=0.01)
                 )
 
     def test_face_alignment_projection_and_back(self, camera_screen):

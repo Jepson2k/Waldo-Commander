@@ -8,6 +8,9 @@ import { GAP } from "./overlays.js";
 
 const add=(tag,parent,text="",cls="")=>element(tag,cls,parent,text);
 const at=[0,0,0];
+// What counts as a difference worth showing the bar for, whatever the
+// display thresholds are set to: TCP mm, orientation °, any joint °.
+const THRESHOLDS=[1,.5,.5];
 const turnA=new THREE.Quaternion(),turnB=new THREE.Quaternion(),euler=new THREE.Euler();
 
 // The TCP (mm), tool orientation (°) and largest joint (°) difference
@@ -32,7 +35,7 @@ function difference(ideal,idealRow,pred,row) {
 export class Comparison {
   constructor(inspection) {
     this.inspection=inspection; this.core=inspection.core;
-    this.data=null; this.mode="auto"; this.enabled=true;this.thresholds=[1,.5,.5];
+    this.data=null; this.mode="auto"; this.enabled=true;this.thresholds=[...THRESHOLDS];
     this.ghost=new RecordedGhost(this.core,"comparison:ghost",()=>this.show(this.inspection.current));
     this.bar=add("div",this.core.root,"","wc-comparison-bar");this.bar.hidden=true;
     this.core.overlays.track("comparison",this.bar);
@@ -80,21 +83,17 @@ export class Comparison {
     this.core.overlays.mark("separation",null);
   }
 
-  status({state,reason}) {
-    if(this.data && state==="ready")return;
-    if(this.data && state!=="ready")this.reset();
-    this.bar.hidden=state==="unavailable" || state==="ready";
-    this.summary.textContent=`Prediction · ${{pending:"Computing…",failed:"Failed",stale:"Stale"}[state] || ""}`;
-    this.duration.textContent=reason;
-    for(const item of [this.modeInput,this.previous,this.next,this.maximum,this.settings])item.hidden=true;
-    this.core.requestRender();
+  // Only a difference is shown: a pass in flight shows on the playback bar,
+  // and a failed one in the log.
+  status({state}) {
+    if(state==="ready" || !this.data)return;
+    this.reset();this.core.requestRender();
   }
 
   get visibility() {return this.enabled?this.mode:"off";}
 
   setVisible(on) {
-    this.enabled=on;this.modeInput.disabled=!on;
-    this.modeInput.title=on?"":"Prediction hidden by the view setting";
+    this.enabled=on;
     this.updateVisibility();
   }
 
@@ -107,21 +106,22 @@ export class Comparison {
     if(!data || data.revision!==this.inspection.data?.revision)return;
     this.data=data;
     this.ghost.build(this.inspection.data);
-    this.bar.hidden=false;this.modeInput.value=this.mode;
-    for(const item of [this.modeInput,this.previous,this.next,this.maximum,this.settings])item.hidden=false;
+    this.differs=deviations(this.inspection.data.records,data,THRESHOLDS).intervals.length>0;
+    this.modeInput.value=this.mode;
     this.rebuild();this.show(this.inspection.current);
   }
 
   rebuild() {
     if(!this.data)return;
     const d=this.data, r=this.inspection.data.records[1];
+    this.bar.hidden=!this.enabled || !this.differs;
     Object.assign(this,deviations(this.inspection.data.records,d,this.thresholds));
     this.visibleRows=new Uint32Array(r.rows+1);this.visibleSegments=new Uint32Array(r.rows+1);
     for(let row=0;row<r.rows;row++) {
       this.visibleRows[row+1]=this.visibleRows[row]+Number(this.visible(row));
       this.visibleSegments[row+1]=this.visibleSegments[row]+Number(row<r.rows-1 && this.segmentVisible(row));
     }
-    this.summary.textContent=!this.enabled?"Prediction · Hidden by view setting":this.intervals.length?`Prediction · ${this.intervals.length} deviation${this.intervals.length===1?"":"s"}`:"Prediction · Within display thresholds";
+    this.summary.textContent=this.intervals.length?`Prediction · ${this.intervals.length} deviation${this.intervals.length===1?"":"s"}`:"Prediction · Within display thresholds";
     const missing=d.idealRows.filter(row=>row<0).length;
     this.duration.textContent=`Ideal ${reading(d.commandedDuration,2)} s · Predicted ${reading(d.predictedDuration,2)} s${d.stop!=="completed"?` · ${d.stop==="budget_exhausted"?"Partial prediction": "Prediction stopped"}`:""}${missing?" · Unmatched samples unavailable":""}`;
     this.updateNavigation();

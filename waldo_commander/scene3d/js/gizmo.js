@@ -437,7 +437,12 @@ export class Gizmos {
     // The spring starts before the frame moves to where the arm is now, so
     // the ball springs back from where it was let go.
     if (kind === "tcp") {
-      if(this.core.ix.edit?.active){this.ball.position.set(0,0,0);this.ball.quaternion.identity();}
+      if(this.core.ix.edit?.active){
+        // An edited target's handles stay where they were let go until the
+        // app answers with where it put the target.
+        this.dropped=[this.ball.getWorldPosition(new THREE.Vector3()).toArray(),this.ball.getWorldQuaternion(new THREE.Quaternion()).toArray()];
+        this.ball.position.set(0,0,0);this.ball.quaternion.identity();
+      }
       else this.springBack();
     }
     this.finishDrag(true);
@@ -494,7 +499,13 @@ export class Gizmos {
     }
     this.precision.end(released);
     if (drag.kind === "tcp") {
-      if (this.placed) this.place(this.rev, ...this.placed);
+      const pose = released && this.dropped ? this.dropped : this.placed;
+      this.dropped = null;
+      if (pose) {
+        this.frame.position.fromArray(pose[0]);
+        this.frame.quaternion.fromArray(pose[1]);
+        this.core.requestRender();
+      }
     }
   }
 

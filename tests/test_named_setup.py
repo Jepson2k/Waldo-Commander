@@ -14,6 +14,7 @@ from waldoctl.setup import Frame, Pose, PoseValues, SetupSnapshot, TcpCalibratio
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
+    teleport_to_jog_pose,
     wait_for_app_ready,
 )
 from waldo_commander.services.programs import is_any_program_running
@@ -94,9 +95,7 @@ async def test_teach_saved_fixture_preview_and_execute_same_named_pose(
     await enable_sim(user)
     await ensure_robot_ready_for_motion()
     client = waldoctl.commander.client
-    start_angles = [85, -85, 135, 10, 45, 170]
-    index = await client.move_j(start_angles, speed=1.0)
-    assert index >= 0 and await client.wait_command(index, timeout=20)
+    await teleport_to_jog_pose(client)
     current = await client.pose()
     assert current is not None
     native = await client.status()
@@ -379,8 +378,7 @@ async def test_setup_save_replans_programs_that_load_it(
     await enable_sim(user)
     await ensure_robot_ready_for_motion()
     client = waldoctl.commander.client
-    index = await client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
-    assert index >= 0 and await client.wait_command(index, timeout=20)
+    await teleport_to_jog_pose(client)
     current = await client.pose()
     assert current is not None
     below = list(current)
@@ -395,6 +393,8 @@ async def test_setup_save_replans_programs_that_load_it(
     textarea = ui_state.active_textarea
     program = waldoctl.commander.programs.active
     assert textarea is not None and program is not None
+    # These edits land whole; there is no typing pause to wait out.
+    delay, simulation._debounce_delay = simulation._debounce_delay, 0.1
     textarea.value = (
         "from parol6 import RobotClient\n"
         "from waldo_commander.setup import load_setup\n\n"
@@ -425,6 +425,7 @@ async def test_setup_save_replans_programs_that_load_it(
     user.find(marker="setup-save").click()
     await user.should_see("Saved bench")
     await planned_end_z(below[2] - 10.0)
+    simulation._debounce_delay = delay
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)

@@ -171,9 +171,10 @@ class TCPControlsMixin:
         if self.scene is None or not (force or self._gizmo_shown()):
             return
         if self._edit_active and self._edit_target_first:
-            # The browser moves what it drags; placing it meanwhile would make
-            # the dragged pose the one an aborted drag goes back to.
-            if self._tcp_drag is not None and not force:
+            # The browser moves what it drags; placing it meanwhile, even for a
+            # tool change, would make the dragged pose the one an aborted drag
+            # goes back to. The drag's end places it.
+            if self._tcp_drag is not None:
                 return
             target = self._requested_edit_pose
             if target is not None and (force or target is not self._tcp_placed_pose):

@@ -43,13 +43,11 @@ def close_world_library(view) -> None:
 
 
 def show_world_library(view) -> None:
-    """Open the library in *view*'s scene panel, in place of one open there."""
-    close_world_library(view)
-    if view._mesh_import is not None:
-        view._mesh_import.close()
+    """Open the library in *view*'s scene panel, in place of any card open there."""
     panel = view._scene_panel()
     if panel is None:
         return
+    view._close_panel_cards()
     panel.open()
     _libraries[view] = WorkcellLibrary(view, view._library_host)
 

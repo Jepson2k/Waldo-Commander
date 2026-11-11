@@ -127,10 +127,10 @@ class TestSceneEditing:
                 ActionChains(screen.selenium).release().perform()
                 updated = wait(screen).until(
                     lambda _: (
-                        value := run_in_app(lambda: ui_state.active_textarea.value)
+                        (value := run_in_app(lambda: ui_state.active_textarea.value))
+                        != source
+                        and value
                     )
-                    != source
-                    and value
                 )
                 line = run_in_app(lambda: scene._edit_line)
                 binding = target_binding(updated, line, 6)
@@ -232,10 +232,12 @@ class TestSceneEditing:
                 entry.click()
                 wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
                 wait(screen).until(
-                    lambda _: '"fixture")).as_list()'
-                    in screen.selenium.find_element(
-                        By.CSS_SELECTOR, ".program-panel .cm-content"
-                    ).text
+                    lambda _: (
+                        '"fixture")).as_list()'
+                        in screen.selenium.find_element(
+                            By.CSS_SELECTOR, ".program-panel .cm-content"
+                        ).text
+                    )
                 )
                 updated = run_in_app(lambda: ui_state.active_textarea.value)
                 assert "setup.resolve(Pose((" in updated
@@ -261,9 +263,11 @@ class TestSceneEditing:
         scene = ui_state.urdf_scene
         # A near-vertical tool with wrist travel left for the snap to vertical.
         pose = run_in_app(
-            lambda: scene._ensure_ik_solver()
-            .forward_kinematics(np.radians([90, -75, 210, 0, 70, 180]))
-            .copy()
+            lambda: (
+                scene._ensure_ik_solver()
+                .forward_kinematics(np.radians([90, -75, 210, 0, 70, 180]))
+                .copy()
+            )
         )
         literal = [float(v) for v in pose[:3] * 1000] + [
             float(v) for v in np.degrees(pose[3:])
@@ -298,10 +302,10 @@ class TestSceneEditing:
                 gizmo_choice(screen, "vertical")
                 updated = wait(screen).until(
                     lambda _: (
-                        value := run_in_app(lambda: ui_state.active_textarea.value)
+                        (value := run_in_app(lambda: ui_state.active_textarea.value))
+                        != source
+                        and value
                     )
-                    != source
-                    and value
                 )
                 binding = target_binding(updated, line, 6)
                 values = [ast.literal_eval(e) for e in binding.vector.elts]
@@ -321,16 +325,18 @@ class TestSceneEditing:
                 evidence.capture("01-vertical-target")
                 gizmo_choice(screen, "vertical")
                 wait(screen).until(
-                    lambda _: gizmo(screen, "tcp:ball")["rotationAxes"]
-                    == ["X", "Y", "Z"]
+                    lambda _: (
+                        gizmo(screen, "tcp:ball")["rotationAxes"] == ["X", "Y", "Z"]
+                    )
                 )
                 assert run_in_app(lambda: ui_state.active_textarea.value) == updated
                 end_target_edit(screen)
                 click_tab(screen, "program")
                 focus_editor(screen).send_keys(Keys.CONTROL, "z")
                 wait(screen).until(
-                    lambda _: run_in_app(lambda: ui_state.active_textarea.value)
-                    == source
+                    lambda _: (
+                        run_in_app(lambda: ui_state.active_textarea.value) == source
+                    )
                 )
                 evidence.finish()
             finally:
@@ -366,7 +372,9 @@ class TestSceneEditing:
                 initial = run_in_app(lambda: scene._requested_edit_pose)
                 live = waldoctl.commander.status.joints.angles.rad.copy()
                 timeline = run_in_app(
-                    lambda: waldoctl.commander.programs.active.dry_run.playback.playback_time
+                    lambda: (
+                        waldoctl.commander.programs.active.dry_run.playback.playback_time
+                    )
                 )
                 sequence = scene_js(
                     screen,
@@ -388,7 +396,9 @@ class TestSceneEditing:
                 )
                 assert (
                     run_in_app(
-                        lambda: waldoctl.commander.programs.active.dry_run.playback.playback_time
+                        lambda: (
+                            waldoctl.commander.programs.active.dry_run.playback.playback_time
+                        )
                     )
                     == timeline
                 )
@@ -402,23 +412,30 @@ class TestSceneEditing:
                     lambda _: run_in_app(lambda: scene._requested_edit_pose) != initial
                 )
                 wait(screen).until(
-                    lambda _: np.linalg.norm(
-                        ball_mm(screen)
-                        - np.array(run_in_app(lambda: scene._requested_edit_pose[:3]))
-                        * 1000
+                    lambda _: (
+                        np.linalg.norm(
+                            ball_mm(screen)
+                            - np.array(
+                                run_in_app(lambda: scene._requested_edit_pose[:3])
+                            )
+                            * 1000
+                        )
+                        < 0.5
                     )
-                    < 0.5
                 )
                 # The target's own marker rides the drag; no other ball is drawn.
                 marker = f"targetgroup:{targets[-1]}"
                 wait(screen).until(
-                    lambda _: np.linalg.norm(
-                        marker_mm(screen, marker) - ball_mm(screen)
+                    lambda _: (
+                        np.linalg.norm(marker_mm(screen, marker) - ball_mm(screen))
+                        < 0.5
                     )
-                    < 0.5
                 )
                 assert not scene_js(screen, "return S.byName('tcp:ball').visible")
                 wait_for_scene_idle(screen)
+                # The handles ride the drag with the target.
+                at = scene_js(screen, "return S.handlesAt('tcp:ball')")
+                assert np.hypot(*np.subtract(at["handles"], at["object"])) < 2, at
                 evidence.capture("01-preview-drag-1920")
                 assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
                     live
@@ -429,10 +446,12 @@ class TestSceneEditing:
                 )
                 assert run_in_app(lambda: scene._edit_active)
                 wait(screen).until(
-                    lambda _: np.linalg.norm(
-                        marker_mm(screen, marker) - np.array(initial[:3]) * 1000
+                    lambda _: (
+                        np.linalg.norm(
+                            marker_mm(screen, marker) - np.array(initial[:3]) * 1000
+                        )
+                        < 0.5
                     )
-                    < 0.5
                 )
                 evidence.capture("02-cancelled-drag-1920")
 
@@ -445,6 +464,19 @@ class TestSceneEditing:
                         wait_for_scene_idle(screen)
                         evidence.capture("03-preview-drag-1366")
                 wait_for_scene_idle(screen)
+                dropped = scene_js(screen, "return S.handlesAt('tcp:ball')")["handles"]
+                scene_js(
+                    screen,
+                    """
+                    const core = getElement(S.root).core, draw = core.draw.bind(core);
+                    window.trail = [];
+                    core.draw = () => {
+                      const out = draw();
+                      window.trail.push(S.handlesAt('tcp:ball')?.handles);
+                      return out;
+                    };
+                    """,
+                )
                 ActionChains(screen.selenium).release().perform()
                 wait(screen).until(
                     lambda _: not scene_js(screen, "return !!S.byName('tcp:ticks')")
@@ -452,11 +484,21 @@ class TestSceneEditing:
                 # The release is kept: written into the program at once.
                 released = wait(screen).until(
                     lambda _: (
-                        value := run_in_app(lambda: ui_state.active_textarea.value)
+                        (value := run_in_app(lambda: ui_state.active_textarea.value))
+                        != EDIT_PROGRAM
+                        and value
                     )
-                    != EDIT_PROGRAM
-                    and value
                 )
+                wait_for_scene_idle(screen)
+                trail = scene_js(
+                    screen,
+                    "delete getElement(S.root).core.draw; return window.trail;",
+                )
+                # Let go, the handles stay where they were dropped: they never
+                # go back to where the drag began.
+                assert trail and all(
+                    np.hypot(*np.subtract(spot, dropped)) < 3 for spot in trail if spot
+                ), (dropped, trail)
                 assert run_in_app(lambda: scene._edit_active)
                 # The drag's value, retyped, replaces the drag: the target ends
                 # exactly that far from where it started.
@@ -474,23 +516,25 @@ class TestSceneEditing:
                     "a"
                 ).key_up(Keys.CONTROL).send_keys("25", Keys.ENTER).perform()
                 wait(screen).until(
-                    lambda _: np.linalg.norm(
-                        np.subtract(
-                            run_in_app(lambda: scene._requested_edit_pose[:3]),
-                            initial[:3],
+                    lambda _: (
+                        np.linalg.norm(
+                            np.subtract(
+                                run_in_app(lambda: scene._requested_edit_pose[:3]),
+                                initial[:3],
+                            )
                         )
+                        == pytest.approx(0.025, abs=0.0002)
                     )
-                    == pytest.approx(0.025, abs=0.0002)
                 )
                 assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
                     live
                 )
                 updated = wait(screen).until(
                     lambda _: (
-                        value := run_in_app(lambda: ui_state.active_textarea.value)
+                        (value := run_in_app(lambda: ui_state.active_textarea.value))
+                        != released
+                        and value
                     )
-                    != released
-                    and value
                 )
                 end_target_edit(screen)
                 assert updated != EDIT_PROGRAM
@@ -508,11 +552,13 @@ class TestSceneEditing:
                 )
                 editor_id = run_in_app(lambda: ui_state.active_textarea.id)
                 wait(screen).until(
-                    lambda _: screen.selenium.execute_script(
-                        "return getElement(arguments[0]).currentAnchorPositions()",
-                        editor_id,
+                    lambda _: (
+                        screen.selenium.execute_script(
+                            "return getElement(arguments[0]).currentAnchorPositions()",
+                            editor_id,
+                        )
+                        == expected_anchors
                     )
-                    == expected_anchors
                 )
                 assert len(expected_anchors) == 2
                 evidence.capture("04-committed-source-1920")
@@ -521,19 +567,19 @@ class TestSceneEditing:
                 for expected in (released, EDIT_PROGRAM):
                     editor.send_keys(Keys.CONTROL, "z")
                     wait(screen).until(
-                        lambda _, expected=expected: run_in_app(
-                            lambda: ui_state.active_textarea.value
+                        lambda _, expected=expected: (
+                            run_in_app(lambda: ui_state.active_textarea.value)
+                            == expected
                         )
-                        == expected
                     )
                 evidence.capture("05-undo-1920")
                 for expected in (released, updated):
                     editor.send_keys(Keys.CONTROL, Keys.SHIFT, "z")
                     wait(screen).until(
-                        lambda _, expected=expected: run_in_app(
-                            lambda: ui_state.active_textarea.value
+                        lambda _, expected=expected: (
+                            run_in_app(lambda: ui_state.active_textarea.value)
+                            == expected
                         )
-                        == expected
                     )
                 evidence.capture("06-redo-1920")
                 evidence.finish()

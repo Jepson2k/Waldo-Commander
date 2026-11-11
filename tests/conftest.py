@@ -1,6 +1,9 @@
 """Pytest configuration and shared fixtures for Waldo Commander tests."""
 
 import errno
+import functools
+import gc
+import importlib.metadata
 import logging
 import os
 import subprocess
@@ -31,6 +34,7 @@ from nicegui.testing.screen_plugin import (
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
 import waldoctl
+import waldoctl.skills
 import parol6.config as _parol6_config
 from parol6 import Robot
 from parol6.config import HOME_ANGLES_DEG
@@ -57,6 +61,14 @@ if not os.environ.get("HEADED") and os.environ.get("DISPLAY", "").startswith(
 
 if TYPE_CHECKING:
     from parol6 import AsyncRobotClient
+
+# What is installed does not change during a session, and each entry-point
+# scan reads every installed distribution's metadata: every app start and
+# every test's Commander scanned several times. Tests that add entry points
+# patch over this.
+_scan_entry_points = functools.cache(importlib.metadata.entry_points)
+importlib.metadata.entry_points = _scan_entry_points
+waldoctl.skills.entry_points = _scan_entry_points
 
 # NiceGUI's nicegui_reset_globals teardown pops every module that owns a page
 # route from sys.modules — including "__main__", because the user/screen
@@ -471,12 +483,34 @@ def class_screen(
 
             # Stop server before exiting context
             screen_instance.stop_server()
+            _release_finished_apps()
         # NiceGUI globals reset on context exit (class teardown), which
         # clears run.process_pool and pops "__main__"
         sys.modules.setdefault("__main__", _MAIN_MODULE)
         _session_pool.restore()
     finally:
         os.environ.pop("NICEGUI_SCREEN_TEST_PORT", None)
+
+
+@pytest.fixture
+def demo_screen(class_screen: "Screen") -> Generator["Screen", None, None]:
+    """The app for a recorded video (a review demo or a tutorial): 1920 ×
+    1080, the arm at its jog pose, no objects, the camera given back after."""
+    from tests.helpers.browser_helpers import run_in_app, viewport
+    from tests.helpers.demo_video import DemoVideo
+    from tests.helpers.scene_screen import at_start, camera_kept, confirmed
+    from tests.helpers.wait import screen_wait_for_scene_ready
+
+    screen_wait_for_scene_ready(class_screen, timeout_s=40)
+    at_start(class_screen)
+    # Objects an earlier recording left would crowd the floor and view.
+    run_in_app(lambda: setattr(waldoctl.commander.scene, "shapes", []))
+    confirmed(class_screen, lambda: not waldoctl.commander.scene.shapes)
+    with viewport(class_screen, 1920, 1080), camera_kept(class_screen):
+        yield class_screen
+    # A recording that failed keeps what it took, to show where it went wrong.
+    if DemoVideo.current is not None and DemoVideo.current.frames:
+        DemoVideo.current.save("-failed")
 
 
 def _clear_world() -> None:
@@ -550,25 +584,35 @@ def reset_editor_singletons(
         pass
 
 
-@pytest.fixture(autouse=True)
-def remove_elements_of_finished_clients(
-    request: pytest.FixtureRequest,
-) -> Generator[None, None, None]:
-    """Detach the elements of the clients a user or screen test leaves behind.
+def _release_finished_apps() -> None:
+    """Let go of what still holds a stopped app's pages for the rest of the
+    session. Every later gc.collect() walked all of it, which made each app
+    start slower than the one before.
 
     NiceGUI's per-test reset forgets clients without deleting them, so their
-    elements stay attached; each ui.dialog's canary finalizer then holds its
-    dialog, the handlers on it, and through them the whole page, for the rest
-    of the session. Every later gc.collect() walks all of it, which made the
-    per-test reset grow with every app start before it.
+    elements stay attached, and each ui.dialog's canary finalizer holds its
+    dialog, the handlers on it, and through them the whole page. anyio keeps
+    its run variables per event loop in a WeakKeyDictionary whose values hold
+    the loop's root task, and so the loop: every closed loop stays, and with
+    it the app's globals, through the exception handler main.py installs.
     """
-    yield
-    if "class_screen" in request.fixturenames:
-        return
+    import anyio.lowlevel
     from nicegui import Client
 
     for client in list(Client.instances.values()):
         client.remove_all_elements()
+    for loop in [loop for loop in anyio.lowlevel._run_vars if loop.is_closed()]:
+        del anyio.lowlevel._run_vars[loop]
+
+
+@pytest.fixture(autouse=True)
+def release_finished_apps(
+    request: pytest.FixtureRequest,
+) -> Generator[None, None, None]:
+    """After a user or screen test; class_screen does it at class teardown."""
+    yield
+    if "class_screen" not in request.fixturenames:
+        _release_finished_apps()
 
 
 @pytest.fixture(autouse=True)
@@ -644,6 +688,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store_true",
         help="record review screenshots and videos into .scene-evidence/",
     )
+    parser.addoption(
+        "--lane",
+        choices=("browser", "simulated"),
+        help="run only the tests that open a browser, or only the rest",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -664,12 +713,17 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
-    """The review demos only record; they run under --evidence alone."""
-    if collection_path.name == "test_review_demos_screen.py":
+    """The review demos and tutorials only record; they run under --evidence
+    alone."""
+    if (
+        collection_path.name == "test_review_demos_screen.py"
+        or collection_path.parent.name == "tutorials"
+    ):
         return not config.getoption("evidence") or None
     return None
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
@@ -677,7 +731,27 @@ def pytest_collection_modifyitems(
 
     We rely on NiceGUI/Quasar/Vue to provide a consistent cross-platform
     experience, so browser tests only need to run on Linux.
+
+    Under ``-n 2 --dist loadgroup`` the browser tests run in one lane and
+    the rest in the other: never two browsers at once, which the frame-rate
+    tests cannot share a machine with. Before xdist names the groups.
+    ``--lane`` keeps one lane, for a machine of its own.
     """
+
+    def lane(item: pytest.Item) -> str:
+        browser = {"screen", "class_screen"} & set(item.fixturenames)
+        return "browser" if browser else "simulated"
+
+    if only := config.getoption("lane"):
+        kept = [item for item in items if lane(item) == only]
+        config.hook.pytest_deselected(
+            items=[item for item in items if lane(item) != only]
+        )
+        items[:] = kept
+    if getattr(config.option, "loadgroup", False):
+        for item in items:
+            item.add_marker(pytest.mark.xdist_group(lane(item)))
+
     if sys.platform == "linux" or "GITHUB_ACTIONS" not in os.environ:
         return
 
@@ -691,16 +765,18 @@ class _SessionProcessPool:
     """NiceGUI's process pool, shielded so it lives for the whole session.
 
     NiceGUI's per-test reset and the app's shutdown each discard the pool,
-    which made every test's first preview build the robot model again in a
-    fresh worker. Here the pool's shutdown is a no-op until the session ends,
-    run.reset() leaves it alone, and restore() hands it back after each test.
-    A pool that broke (a worker died) is replaced by a fresh one.
+    and each app start makes a new one, which made every test's first
+    preview build the robot model again in a fresh worker. Here the pool's
+    shutdown is a no-op until the session ends, run.reset() leaves it alone,
+    and an app start and restore() each hand it back. A pool that broke (a
+    worker died) is replaced by a fresh one.
     """
 
     def __init__(self) -> None:
         self._pool = None
         self._shutdown = None
         self._reset = nicegui_run.reset
+        self._setup = nicegui_run.setup
 
     def install(self) -> None:
         def reset_keeping_process_pool() -> None:
@@ -708,10 +784,11 @@ class _SessionProcessPool:
             self._reset()
 
         nicegui_run.reset = reset_keeping_process_pool
+        nicegui_run.setup = self.restore
         self._adopt_new_pool()
 
     def _adopt_new_pool(self) -> None:
-        nicegui_run.setup()
+        self._setup()
         pool = nicegui_run.process_pool
         assert pool is not None
         self._pool, self._shutdown = pool, pool.shutdown
@@ -725,6 +802,7 @@ class _SessionProcessPool:
 
     def close(self) -> None:
         nicegui_run.reset = self._reset
+        nicegui_run.setup = self._setup
         if self._shutdown is not None:
             self._shutdown(wait=False, cancel_futures=True)
         nicegui_run.process_pool = None
@@ -918,49 +996,43 @@ def reset_state(request: pytest.FixtureRequest):
     yield
 
 
-@pytest.fixture(scope="session", autouse=True)
-def kill_stale_controllers() -> Generator[None, None, None]:
-    """Kill any existing controller processes before and after test session.
-
-    Ensures no stale controllers from previous runs interfere with tests.
-    """
-    controller_port, _ = _get_test_ports()
-
-    def _kill() -> None:
-        try:
-            if sys.platform.startswith("linux") or sys.platform == "darwin":
-                # Kill all controller processes
-                subprocess.run(
-                    ["pkill", "-f", "parol6.server.controller"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-        except (OSError, subprocess.SubprocessError):
-            pass
-
-    # Pre-session cleanup
-    _kill()
+def _kill_controllers() -> None:
+    """Kill every controller process, so none from an earlier run interferes."""
+    if not (sys.platform.startswith("linux") or sys.platform == "darwin"):
+        return
     try:
-        yield
-    finally:
-        # Post-session cleanup
-        _kill()
-        # Best-effort verification (non-fatal)
-        try:
-            from waldo_commander.constants import config
+        subprocess.run(
+            ["pkill", "-f", "parol6.server.controller"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
 
-            probe = Robot(host=config.controller_host, port=controller_port)
-            if probe.is_available():
-                _kill()
-        except (OSError, subprocess.SubprocessError):
-            pass
+
+def _xdist_worker(config: pytest.Config) -> bool:
+    return hasattr(config, "workerinput")
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Before any controller starts. In an xdist run only the main process
+    does this, since a worker's kill would take the other worker's
+    controller with it."""
+    if not _xdist_worker(session.config):
+        _kill_controllers()
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    """After every session's own controller has stopped."""
+    if not _xdist_worker(session.config):
+        _kill_controllers()
 
 
 @pytest.fixture(scope="session", autouse=True)
 def session_controller(
     test_env_config: None,
-    kill_stale_controllers: None,
     warmup_jit_cache: None,
 ) -> Generator["Robot", None, None]:
     """Session-scoped controller shared by all tests.
@@ -1002,6 +1074,15 @@ def warmup_jit_cache(silence_noisy_logging: None) -> None:
     from parol6.utils.warmup import warmup_jit
 
     warmup_jit()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def freeze_session_heap(session_client: "AsyncRobotClient") -> None:
+    """Take what the imports and the session's setup left behind out of the
+    collector's reach. NiceGUI's per-test reset collects twice per app start,
+    and each collection walked every object the libraries had loaded."""
+    gc.collect()
+    gc.freeze()
 
 
 @pytest.fixture(scope="session", autouse=True)

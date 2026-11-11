@@ -25,7 +25,7 @@ const mid = [0, 0, 0];
 export const LABEL_STYLE =
   "background: var(--wc-glass); color: var(--wc-text);" +
   " border: 1px solid var(--wc-glass-border); border-radius: var(--wc-radius-sm);" +
-  " padding: 2px 6px; font: 500 12px/16px var(--wc-font-mono);" +
+  " padding: 2px 6px; font: 500 12px/16px var(--wc-font-sans); font-variant-numeric: tabular-nums;" +
   " white-space: pre; pointer-events: none;";
 
 export function label(name) {
@@ -95,15 +95,15 @@ export class Ring {
     ballHalo.position.x = ball.position.x = radius;
     ball.renderOrder = 4;
     this.label = label(`jog:dial:${spec.u}:label`);
-    this.label.element.style.cssText += "padding:6px 10px;border:none;border-radius:var(--wc-radius-md);background:var(--wc-surface);text-shadow:0 1px 2px var(--wc-scene-bg);";
+    this.label.element.style.cssText += "padding:6px 10px;border:none;border-radius:var(--wc-radius-md);background:var(--wc-glass);box-shadow:var(--wc-shadow-glass);";
     const readout = document.createElement("div");
     readout.style.cssText = "display:grid;grid-template-columns:max-content max-content;column-gap:12px;align-items:baseline;";
     this.title = document.createElement("div");
     this.title.style.cssText = "grid-column:1 / -1;font:500 13px/18px var(--wc-font-sans);color:var(--wc-text-muted)";
     this.value = document.createElement("div");
-    this.value.style.cssText = "font:600 24px/30px var(--wc-font-mono);color:var(--wc-action)";
+    this.value.style.cssText = "font:600 24px/30px var(--wc-font-sans);color:var(--wc-action)";
     this.delta = document.createElement("div");
-    this.delta.style.cssText = "font:500 16px/24px var(--wc-font-mono);color:var(--wc-text)";
+    this.delta.style.cssText = "font:500 16px/24px var(--wc-font-sans);color:var(--wc-text)";
     readout.append(this.title, this.value, this.delta);
     this.label.element.replaceChildren(readout);
     this.label.position.x = radius;
@@ -209,7 +209,7 @@ export class Ring {
   scaleLabel(q, text, limit) {
     const object = label(`jog:dial:${this.u}:${limit ? "limit" : "scale"}:${text}`);
     object.element.textContent = text;
-    object.element.style.cssText += `border:none;padding:2px 5px;font:500 14px/20px var(--wc-font-mono);background:var(--wc-surface);color:var(--wc-${limit ? "text" : "text-muted"});text-shadow:0 1px 2px var(--wc-scene-bg);`;
+    object.element.style.cssText += `border:none;padding:2px 5px;font:500 14px/20px var(--wc-font-sans);font-variant-numeric:tabular-nums;background:var(--wc-glass);color:var(--wc-${limit ? "text" : "text-muted"});text-shadow:0 1px 2px var(--wc-scene-bg);`;
     object.position.set(Math.cos(q), Math.sin(q), 0).multiplyScalar(this.spec.radius * 1.17);
     object.userData.limit = limit;
     this.scaleLabels.push(object);

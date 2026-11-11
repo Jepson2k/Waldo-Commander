@@ -855,10 +855,16 @@ class PathVisualizer:
         """Whether a predicted pass is running for *tab_id*."""
         return tab_id is not None and tab_id in self._physics_tabs
 
+    def adds_prediction(self) -> bool:
+        """Whether the active backend's predicted pass may differ from its
+        plan: not once a pass has been seen to hand back the plan itself."""
+        backend = ui_state.active_robot.backend_package
+        return self._predicted_diverges.get(backend) is not False
+
     def prediction_status(self, tab) -> dict[str, str]:
         if tab is None or not tab.source.strip():
             return {"state": "unavailable", "reason": ""}
-        if self._predicted_diverges.get(ui_state.active_robot.backend_package) is False:
+        if not self.adds_prediction():
             return {
                 "state": "unavailable",
                 "reason": "No independent physics prediction",
@@ -1031,10 +1037,11 @@ class PathVisualizer:
                 logger.error("Subprocess simulation failed (sim_id=%d): %s", sim_id, e)
                 return f"Simulation failed: {e}"
 
-            # A None result can happen during shutdown/test teardown.
+            # run.cpu_bound swallows a cancellation and returns nothing, as it
+            # does once the app is stopping: there is no result to act on.
             if result is None:
-                logger.warning("Simulation returned None result (sim_id=%d)", sim_id)
-                return "Simulation returned no result"
+                logger.debug("Simulation cancelled (sim_id=%d)", sim_id)
+                raise asyncio.CancelledError
 
             if result.get("error"):
                 report = logger.warning if result.get("unresolved") else logger.error
@@ -1176,9 +1183,9 @@ class PathVisualizer:
         if planned is None:
             return None  # nothing planned to answer
         args, revision = planned
-        backend = ui_state.active_robot.backend_package
-        if self._predicted_diverges.get(backend) is False:
+        if not self.adds_prediction():
             return None
+        backend = ui_state.active_robot.backend_package
         bound = inspect.signature(_run_simulation_isolated).bind(*args)
         bound.arguments["simulate_seconds"] = MAX_SIMULATED_SECONDS
         args = bound.args

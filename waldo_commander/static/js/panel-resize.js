@@ -257,7 +257,7 @@
 
     let columnOpen = false;
     let coupled = false;
-    let layout = { columnRight: 0, leftCover: 0, bottomCover: 0, obstacles: [] };
+    let layout = { columnRight: 0, bottomCover: 0, obstacles: [] };
     let layoutFrame = 0;
 
     function setRootPx(name, value) {
@@ -300,16 +300,6 @@
         if (container) {
             columnRight = Math.round(container.getBoundingClientRect().left + container.offsetWidth);
         }
-        // A panel open over the settings gear covers the view's left as the
-        // column does, so the view centres on what it leaves uncovered.
-        let leftCover = columnRight;
-        const bottomPanels = getContainer('bottom');
-        if (bottomPanels) {
-            for (const panel of bottomPanels.querySelectorAll(':scope > .q-panel > .q-tab-panel')) {
-                const rect = panel.getBoundingClientRect();
-                if (rect.width > 0) leftCover = Math.max(leftCover, Math.round(rect.right));
-            }
-        }
         const bottomCover = coverOf(config.selectors.bottomCovers);
         const columnCover = Math.max(bottomCover, coverOf(config.selectors.columnCovers));
         const controlPanel = config.selectors.controlPanel ? document.querySelector(config.selectors.controlPanel) : null;
@@ -320,7 +310,7 @@
         setRootPx('--wc-control-inset', inset);
         setRootPx('--wc-column-cover', columnCover);
         setRootPx('--wc-bottom-cover', bottomCover);
-        layout = { columnRight: columnRight, leftCover: leftCover, bottomCover: bottomCover, obstacles: obstacleBoxes() };
+        layout = { columnRight: columnRight, bottomCover: bottomCover, obstacles: obstacleBoxes() };
         window.dispatchEvent(new CustomEvent('wc:layout', { detail: { ...layout } }));
     }
 

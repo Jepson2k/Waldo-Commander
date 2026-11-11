@@ -6,7 +6,17 @@ from nicegui.testing.user_interaction import UserInteraction
 from scipy.spatial.transform import Rotation
 from waldoctl.shapes import Box
 
+from tests.helpers.scene_events import right_click
 from tests.helpers.wait import wait_until
+
+
+def new_keepout(user, view, ground, kind="box", action="keepout-place"):
+    """Right-click the floor at ``ground``, choose Add keep-out… and, in the
+    scene panel's card, place a ``kind`` there or start drawing one."""
+    right_click(user, view.scene, [], ground)
+    user.find(marker="scene-create-keepout").click()
+    user.find(marker="keepout-shape").elements.pop().set_value(kind)
+    user.find(marker=action).click()
 
 
 def fixture_stl(path):

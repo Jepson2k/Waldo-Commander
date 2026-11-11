@@ -6,7 +6,6 @@ import asyncio
 import time
 
 import numpy as np
-from scipy.spatial.transform import Rotation
 from waldoctl import RobotClient
 from waldoctl.camera import CameraCalibration
 from waldoctl.dry_run import is_dry_run
@@ -87,6 +86,10 @@ async def locate_board(
                 "The source did not return an image received during this acquisition"
             )
         if before is not None:
+            # Here, not at module level: every program that imports the
+            # skills would load scipy for this one check.
+            from scipy.spatial.transform import Rotation
+
             after = await observe_tcp(rbt, timeout=observe_s)
             relative = (
                 np.linalg.inv(before.nominal_tool.matrix())

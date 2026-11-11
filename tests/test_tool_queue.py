@@ -8,6 +8,7 @@ import waldoctl
 from nicegui.testing import User
 from nicegui.testing.user_interaction import UserInteraction
 from parol6 import AsyncRobotClient, RobotClient
+from parol6.config import HOME_ANGLES_DEG
 from parol6.client.dry_run_client import DryRunRobotClient
 
 from tests.conftest import _get_test_ports
@@ -35,7 +36,7 @@ from waldo_commander.services.timeline import Timeline
 from waldo_commander.state import ui_state
 
 
-async def _gripper(user):
+async def _gripper(user, *, calibrate: bool = True):
     await user.open("/")
     await wait_for_app_ready()
     await enable_sim(user)
@@ -44,8 +45,9 @@ async def _gripper(user):
     selected = await client.select_tool("SSG-48")
     assert selected >= 0 and await client.wait_command(selected, timeout=5)
     await wait_for_tool_key("SSG-48")
-    calibrated = await client.tool.calibrate()
-    assert calibrated >= 0 and await client.wait_command(calibrated, timeout=10)
+    if calibrate:
+        calibrated = await client.tool.calibrate()
+        assert calibrated >= 0 and await client.wait_command(calibrated, timeout=10)
     waldoctl.commander.settings.gripper.current = 50
     return client
 
@@ -251,7 +253,7 @@ async def test_tool_state_reaches_the_preview_and_the_scrubbed_arm(user: User):
     from waldo_commander.services.path_visualizer import path_visualizer
     from waldo_commander.state import robot_state
 
-    client = await _gripper(user)
+    client = await _gripper(user, calibrate=False)
     try:
         # A Stop during the panel's calibration cancels it, which is what the
         # user asked for: nothing reports it as a failed action.
@@ -309,6 +311,34 @@ async def test_tool_state_reaches_the_preview_and_the_scrubbed_arm(user: User):
             what="the arm scrubbed to the program's end",
         )
 
+        # An edit landing while a preview runs retires that preview: it
+        # reports nothing, and the tool an earlier preview started from does
+        # not go back on the arm.
+        fitted: list[str] = []
+
+        async def watch_tool() -> None:
+            async for status in client.stream_status():
+                fitted.append(status.tool_status.key)
+
+        watching = asyncio.create_task(watch_tool())
+        delay, simulation._debounce_delay = simulation._debounce_delay, 0.05
+        try:
+            textarea.value += "    rbt.delay(0.1)\n"
+            with textarea:
+                simulation.schedule_debounced_simulation(program.id)
+            running = playback.sim_loading_progress
+            assert running is not None
+            assert await wait_until(lambda: running.visible, 5, interval=0.005)
+            with textarea:
+                simulation.schedule_debounced_simulation(program.id)
+            retired = len(fitted)
+            assert await wait_until(lambda: len(fitted) >= retired + 6, 5, 0.02)
+        finally:
+            simulation._debounce_delay = delay
+            watching.cancel()
+        assert set(fitted) == {"NONE"}, set(fitted)
+        assert not any("[SIM ERROR]" in entry.text for entry in program.log.entries)
+
         waldoctl.commander.status.simulator_active = False
         with user.client:
             await ui_state.control_panel.on_toggle_sim()
@@ -326,7 +356,8 @@ def test_tool_stop_does_not_complete_a_pending_arm_blend(session_controller):
         with RobotClient(host="127.0.0.1", port=port, timeout=5) as client:
             client.simulator(True)
             client.reset()
-            client.home(wait=True, timeout=30)
+            # The home pose and the homed state, without the homing move.
+            assert client.teleport(list(HOME_ANGLES_DEG)) == 1
             selected = client.select_tool("SSG-48")
             assert client.wait_command(selected, timeout=5)
             client.tool.calibrate(wait=True)

@@ -128,16 +128,26 @@ async def test_bootstrap_endpoint_injection(tmp_path: Path) -> None:
     gui = GUIStepController("endpoint-test")
     gui.initialize()
 
-    async def run_case(script: str, env_overrides: dict[str, str]) -> tuple:
-        script_path = tmp_path / "endpoint_case.py"
-        script_path.write_text(script)
-        env = {
-            **os.environ,
-            "WALDO_STEP_SESSION": "endpoint-test",
-            "WALDO_CONTROLLER_IP": "127.0.0.1",
-            "WALDO_CONTROLLER_PORT": "6001",
-            **env_overrides,
-        }
+    # The program starts with a malformed exported port. The port is read at
+    # each construction, so a good one set after that serves the rest.
+    script_path = tmp_path / "endpoint_case.py"
+    script_path.write_text(
+        "import os\n"
+        "from parol6 import RobotClient\n"
+        "rbt = RobotClient()\n"
+        "print('MALFORMED', rbt.host, rbt.port)\n"
+        "os.environ['WALDO_CONTROLLER_PORT'] = '6001'\n"
+        "for kwargs in ({}, {'port': 7001}, {'host': '10.0.0.5'}):\n"
+        "    rbt = RobotClient(**kwargs)\n"
+        "    print('EP', rbt.host, rbt.port)\n"
+    )
+    env = {
+        **os.environ,
+        "WALDO_STEP_SESSION": "endpoint-test",
+        "WALDO_CONTROLLER_IP": "127.0.0.1",
+        "WALDO_CONTROLLER_PORT": "nonsense",
+    }
+    try:
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             "-u",
@@ -148,27 +158,14 @@ async def test_bootstrap_endpoint_injection(tmp_path: Path) -> None:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
-        return proc.returncode, stdout.decode(), stderr.decode()
-
-    clients = (
-        "from parol6 import RobotClient\n"
-        "for kwargs in ({}, {'port': 7001}, {'host': '10.0.0.5'}):\n"
-        "    rbt = RobotClient(**kwargs)\n"
-        "    print('EP', rbt.host, rbt.port)\n"
-    )
-    bare = 'from parol6 import RobotClient\nrbt = RobotClient()\nprint("EP", rbt.host, rbt.port)\n'
-    try:
-        code, out, err = await run_case(clients, {})
-        assert code == 0, err
+        out, err = stdout.decode(), stderr.decode()
+        assert proc.returncode == 0, f"invalid port must not crash the program: {err}"
+        assert "MALFORMED 127.0.0.1 5001" in out, out
+        assert "Ignoring invalid WALDO_CONTROLLER_PORT" in err
         assert "EP 127.0.0.1 6001" in out, out
         assert "EP 127.0.0.1 7001" in out, out
         assert "EP 10.0.0.5 5001" in out, (
             f"an explicit host must keep the backend's default port: {out}"
         )
-
-        code, out, err = await run_case(bare, {"WALDO_CONTROLLER_PORT": "nonsense"})
-        assert code == 0, f"invalid port must not crash the program: {err}"
-        assert "EP 127.0.0.1 5001" in out, out
-        assert "Ignoring invalid WALDO_CONTROLLER_PORT" in err
     finally:
         gui.cleanup()

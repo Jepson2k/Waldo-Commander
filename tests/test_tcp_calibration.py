@@ -14,6 +14,7 @@ from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
     poll_until,
+    teleport_to_jog_pose,
     wait_for_app_ready,
     wait_until,
 )
@@ -49,7 +50,7 @@ async def test_pivot_orientation_saved_setup_and_confirmed_application(
     try:
         await completed(await client.select_tool("NONE"))
         await completed(await client.set_tcp_transform())
-        await completed(await client.move_j([85, -85, 135, 10, 45, 170], speed=1.0))
+        await teleport_to_jog_pose(client)
         current = await client.pose()
         assert current is not None
         base = Pose(cast(PoseValues, tuple(current))).matrix()

@@ -8,8 +8,8 @@ import pytest
 import waldoctl
 from scipy.spatial.transform import Rotation
 
-from tests.helpers.scene_events import Drag, right_click
-from tests.helpers.scene_objects import confirmed, field
+from tests.helpers.scene_events import Drag
+from tests.helpers.scene_objects import confirmed, field, new_keepout
 from tests.test_scene_jog_handles import _open
 
 
@@ -26,8 +26,7 @@ async def test_primitive_resize_faces_center_radius_cancel_and_history(user):
         ("sphere", 1, "radius"),
     ):
         count = len(handle.shapes)
-        right_click(user, view.scene, [], [0.4, 0.1, 0])
-        user.find(marker=f"scene-add-{kind}").click()
+        new_keepout(user, view, [0.4, 0.1, 0], kind)
         await confirmed(
             view,
             lambda: len(handle.shapes) == count + 1

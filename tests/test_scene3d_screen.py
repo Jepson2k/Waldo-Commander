@@ -24,9 +24,10 @@ from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import js, run_in_app, viewport
 from tests.helpers.browser_session import no_visible, wait
-from tests.helpers.scene_surface import pointer_to, scene_js
+from tests.helpers.scene_surface import pointer_to, scene_js, wait_for_scene_idle
 from waldo_commander.common.theme import SceneColors, hex_of
 from waldo_commander.scene3d import ClipPlane, Node, WcScene
+from waldo_commander.services.urdf_scene.loader import load_urdf
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -164,6 +165,12 @@ class _Recorder:
         self.log.append(("end", aborted))
 
 
+def _parol6_urdf() -> URDF:
+    """PAROL6's URDF with its package:// meshes resolved, as the app loads it."""
+    root = Path(str(files("parol6") / "urdf_model"))
+    return load_urdf(root / "urdf/PAROL6.urdf", package_map={"parol6": root})
+
+
 def _arm() -> dict[str, Any]:
     """PAROL6's chain with a box for each link, under the page's pointer
     handling: links show their joint's ring, the last link the gizmo."""
@@ -171,9 +178,7 @@ def _arm() -> dict[str, Any]:
         return _page["arm"]
     scene = _scene()
     menu = _page["menu"]
-    urdf = URDF.load(
-        str(files("parol6") / "urdf_model/urdf/PAROL6.urdf"), lazy_load_meshes=True
-    )
+    urdf = _parol6_urdf()
     _page["box"].visible(False)
     joints, links = _chain(urdf, "a:")
     actuated = [j for j in urdf.joints if j.joint_type != "fixed"]
@@ -423,10 +428,7 @@ class TestSceneElement:
         synthetic = tmp_path / "synthetic.urdf"
         synthetic.write_text(_SYNTHETIC_URDF)
         arms = {
-            "p:": URDF.load(
-                str(files("parol6") / "urdf_model/urdf/PAROL6.urdf"),
-                lazy_load_meshes=True,
-            ),
+            "p:": _parol6_urdf(),
             "s:": URDF.load(str(synthetic), lazy_load_meshes=True),
         }
         built = {
@@ -547,15 +549,40 @@ class TestSceneElement:
             run_in_app(remove)
 
     def test_frames_are_capped_and_a_hidden_view_draws_none(self, page: Screen) -> None:
-        drawn = page.selenium.execute_async_script(
-            "const done = arguments[arguments.length - 1];"
-            "const S = getElement(document.querySelector('.wc-scene')).core.surface;"
-            "const start = S.frames(); const t0 = performance.now();"
-            "(function poke() { S.requestRender();"
-            "  if (performance.now() - t0 < 2000) requestAnimationFrame(poke);"
-            "  else done(S.frames() - start); })();"
-        )
+        def drawn_in_2_s() -> int:
+            return page.selenium.execute_async_script(
+                "const done = arguments[arguments.length - 1];"
+                "const S = getElement(document.querySelector('.wc-scene')).core.surface;"
+                "const start = S.frames(); const t0 = performance.now();"
+                "(function poke() { S.requestRender();"
+                "  if (performance.now() - t0 < 2000) requestAnimationFrame(poke);"
+                "  else done(S.frames() - start); })();"
+            )
+
+        drawn = drawn_in_2_s()
         assert 10 <= drawn <= 30 * 2 + 3, f"{drawn} frames in 2 s"
+        renderer = scene_js(
+            page,
+            "const gl = S.renderer.getContext();"
+            " const info = gl.getExtension('WEBGL_debug_renderer_info');"
+            " return info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : '';",
+        )
+        if "SwiftShader" not in renderer:
+            # Paced on the display's frames, the cap is met, not undershot by
+            # a missed one.
+            assert drawn >= 50, f"{drawn} frames in 2 s"
+            # A hand turning the view gets every display frame.
+            x, y = wait(page).until(lambda _: scene_js(page, "return S.emptySpot()"))[
+                :2
+            ]
+            action = ActionChains(page.selenium)
+            pointer_to(page, x, y, action)
+            action.click_and_hold().perform()
+            try:
+                held = drawn_in_2_s()
+            finally:
+                ActionChains(page.selenium).release().perform()
+            assert held > 80, f"{held} frames in 2 s while dragging"
 
         box = _page["box"]
         scene_js(page, "S.root.style.display = 'none'")
@@ -607,7 +634,7 @@ class TestSceneElement:
 
         # Not restored, it offers a click that mounts the view again, which
         # asks for the whole scene.
-        scene_js(page, "S.renderer.forceContextLoss()")
+        scene_js(page, "S.restoreWaitMs = 200; S.renderer.forceContextLoss()")
         notice = page.selenium.find_element("css selector", ".wc-scene-lost")
         wait(page, 10).until(
             lambda _: notice.value_of_css_property("cursor") == "pointer"
@@ -647,18 +674,20 @@ class TestSceneElement:
 
             view = run_in_app(mount)
             wait(page, 10).until(
-                lambda _: js(
-                    page,
-                    "return document.querySelectorAll('.wc-scene[data-ready]').length",
+                lambda _: (
+                    js(
+                        page,
+                        "return document.querySelectorAll('.wc-scene[data-ready]').length",
+                    )
+                    == 2
                 )
-                == 2
             )
             run_in_app(view.delete)
             wait(page, 10).until(
-                lambda _: js(
-                    page, "return document.querySelectorAll('.wc-scene').length"
+                lambda _: (
+                    js(page, "return document.querySelectorAll('.wc-scene').length")
+                    == 1
                 )
-                == 1
             )
         assert js(page, "return window.__layout") == start, "removed views still listen"
         assert not scene_js(page, "return S.renderer.getContext().isContextLost()"), (
@@ -860,8 +889,9 @@ class TestSceneElement:
             wait(page, 5).until(lambda _: _handles(page) == ["ring:1"])
             dial = scene_js(page, "return S.dial(1)")
             (angle,) = wait(page, 5).until(
-                lambda _: (a := scene_js(page, "return S.ringGrab(1)")) is not None
-                and [a]
+                lambda _: (
+                    (a := scene_js(page, "return S.ringGrab(1)")) is not None and [a]
+                )
             )
             t = dial["q"] + np.radians(angle)
             gx, gy = scene_js(
@@ -964,6 +994,8 @@ class TestSceneElement:
         resets = scene_js(page, "return S.resets")
         scene_js(page, "getElement(S.root).$emit('init')")
         wait(page, 5).until(lambda _: scene_js(page, "return S.resets") == resets + 1)
+        # The link has to be drawn again before a move can land on it.
+        wait_for_scene_idle(page)
         _mouse_to(page, pixel[0] + 1, pixel[1])
         wait(page, 5).until(lambda _: _handles(page) == ["ring:1"])
         _rest_pointer(page)

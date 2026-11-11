@@ -69,13 +69,27 @@ async def test_supervised_restart_selects_a_fresh_entry_and_refuses_changed_stat
     user: User,
     tmp_path,
     monkeypatch,
+    caplog,
 ):
+    """A restart runs one reviewed entry of the program as it is now, never
+    its main sequence, and is refused once the controller no longer matches
+    the reviewed state.
+
+    Between Start and the subprocess a restart reads the controller's state,
+    and the launch already counts as running: a second Start or restart is
+    refused and Stop cancels it. A Stop the controller never confirms keeps
+    the launch reserved until a retry confirms, and control passing to the AI
+    or a mode switch ends the launch."""
     from tests.helpers.wait import (
         enable_sim,
         ensure_robot_ready_for_motion,
         wait_for_app_ready,
     )
+    from waldo_commander.components import script_execution as launching
+    from waldo_commander.components.playback import playback
     from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
+    from waldo_commander.services.motion_guard import motion_guard
     from waldo_commander.services.programs import is_any_program_running
     from waldo_commander.services.run_records import load_record
     from waldo_commander.services.supervised_restart import fresh_state, source_digest
@@ -125,8 +139,12 @@ if __name__ == '__main__':
     program = waldoctl.commander.programs.active
     assert program is not None
     script_exec.record_runs = True
-    assert await script_exec.start()
-    await finished()
+    # Ordinary Start runs the main sequence, ignoring even an inherited
+    # entry setting.
+    with monkeypatch.context() as patched:
+        patched.setenv("WALDO_RESTART_ENTRY", "after_pick")
+        assert await script_exec.start()
+        await finished()
     assert script_exec.last_exit_code == 1
     assert not marker.exists()
     before = await client.angles()
@@ -155,8 +173,6 @@ if __name__ == '__main__':
     assert start_button.text == "Start from after_place"
     user.find(marker="restart-physical-confirmation").click()
     assert start_button.enabled
-    from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
-
     control_lease.seize(MCP, "restart-review", "Review MCP")
     user.find(marker="restart-start").click()
     async with asyncio.timeout(25):
@@ -243,49 +259,11 @@ if __name__ == '__main__':
     assert not is_any_program_running()
 
     # A lost queue readback is not an empty queue.
-    from unittest.mock import AsyncMock
-
     with monkeypatch.context() as patched:
         patched.setattr(client, "queue", AsyncMock(return_value=None))
         with pytest.raises(ConnectionError):
             await fresh_state(client)
 
-    # Ordinary Start ignores even an inherited entry setting.
-    monkeypatch.setenv("WALDO_RESTART_ENTRY", "after_pick")
-    ui_state.active_textarea.value = "print('ordinary beginning')"
-    await ensure_robot_ready_for_motion()
-    assert await script_exec.start()
-    await finished()
-    assert script_exec.last_exit_code == 0
-
-
-@pytest.mark.integration
-async def test_a_restart_in_preflight_is_one_launch_and_stop_cancels_it(
-    user: User, tmp_path, monkeypatch, caplog
-):
-    """Between Start and the subprocess a restart reads the controller's
-    state. Nothing was marked running then, so a second Start launched a
-    second program and Stop answered that nothing was running."""
-    from tests.helpers.wait import (
-        enable_sim,
-        ensure_robot_ready_for_motion,
-        wait_for_app_ready,
-    )
-    from waldo_commander.components import script_execution as launching
-    from waldo_commander.components.playback import playback
-    from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
-    from waldo_commander.services.motion_guard import motion_guard
-    from waldo_commander.services.programs import is_any_program_running
-    from waldo_commander.services.supervised_restart import fresh_state, source_digest
-    from waldo_commander.state import ui_state
-
-    monkeypatch.setenv("WALDO_RUN_RECORD_DIR", str(tmp_path / "runs"))
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    client = waldoctl.commander.client
     source = (
         "from parol6 import RobotClient\n\n"
         "def before_restart():\n    pass\n\n"

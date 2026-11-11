@@ -128,21 +128,24 @@ class TestJointDial:
                 )
                 wait(screen).until(lambda _: not scene_js(screen, "return S.dial(5)"))
                 evidence.capture(f"{mode.value}-hover-cleared-1920")
-                drag_dial(screen, -25)
-                target = urdf_to_panel(0, scene_js(screen, "return S.dial(0).q"))[1]
-                assert target == pytest.approx(60, abs=1.1)
-                wait(screen).until(lambda _: abs(joint_deg(0) - target) < 0.2)
-                assert_dial_readable(screen)
-                evidence.capture(f"{mode.value}-drag-1920")
-                ActionChains(screen.selenium).release().perform()
-                joint_settled(0)
-                assert camera_pose(screen) == pytest.approx(camera)
+                if visual_evidence.enabled():
+                    # test_joint_dial_review makes and checks this drag.
+                    drag_dial(screen, -25)
+                    target = urdf_to_panel(0, scene_js(screen, "return S.dial(0).q"))[1]
+                    assert target == pytest.approx(60, abs=1.1)
+                    wait(screen).until(lambda _: abs(joint_deg(0) - target) < 0.2)
+                    assert_dial_readable(screen)
+                    evidence.capture(f"{mode.value}-drag-1920")
+                    ActionChains(screen.selenium).release().perform()
+                    joint_settled(0)
+                    assert camera_pose(screen) == pytest.approx(camera)
                 with viewport(screen, 1366, 768):
                     grab_ring(screen, "link:L1", 0)
                     wait_for_scene_idle(screen)
                     assert_dial_readable(screen)
                     evidence.capture(f"{mode.value}-base-1366")
-                    drag_dial(screen, 65)
+                    # To 125°, just past J1's travel, from wherever it stands.
+                    drag_dial(screen, 125 - joint_deg(0))
                     hi = scene_js(screen, "return S.dial(0).hi")
                     limit = urdf_to_panel(0, hi)[1]
                     wait(screen).until(lambda _: abs(joint_deg(0) - limit) < 0.2)
@@ -250,6 +253,10 @@ class TestJointDial:
                     [0.36, -0.42, 0.5, 0, 0.06, 0.13],
                 )
                 wait_for_scene_idle(screen)
+                # PAROL6's panel turns each joint the URDF's way round, so a
+                # knob turned by delta about its axis moves its joint by delta;
+                # the signs alternate so both ways are dragged.
+                wrist_turns = {2: 8, 3: -8, 4: 8, 5: -8}
                 for joint in range(6):
                     if joint == 5:
                         # From the first view the flange hides behind L5.
@@ -262,30 +269,30 @@ class TestJointDial:
                     grab_ring(screen, f"link:L{joint + 1}", joint)
                     wait_for_scene_idle(screen)
                     evidence.capture(f"0{joint + 1}-joint-{joint + 1}")
-                    if joint >= 2:
-                        for delta in (8, -8):
-                            start = joint_deg(joint)
-                            _, sign, _ = ui_state.urdf_scene._panel_mapping(joint)
-                            step = scene_js(
-                                screen, "return S.dial(arguments[0]).step", joint
-                            )
-                            drag_dial(screen, delta * sign, joint)
-                            target = urdf_to_panel(
-                                joint,
-                                scene_js(
-                                    screen, "return S.dial(arguments[0]).q", joint
-                                ),
-                            )[1]
-                            expected = start + math.floor(delta / step + 0.5) * step
-                            assert target == pytest.approx(expected, abs=0.2)
-                            wait(screen).until(
-                                lambda _: abs(joint_deg(joint) - target) < 0.2
-                            )
-                            evidence.capture(
-                                f"0{joint + 1}-joint-{joint + 1}-delta-{delta}"
-                            )
-                            ActionChains(screen.selenium).release().perform()
-                            joint_settled(joint)
+                    if joint in wrist_turns:
+                        delta = wrist_turns[joint]
+                        start = joint_deg(joint)
+                        step = scene_js(
+                            screen, "return S.dial(arguments[0]).step", joint
+                        )
+                        drag_dial(screen, delta, joint)
+                        target = urdf_to_panel(
+                            joint,
+                            scene_js(screen, "return S.dial(arguments[0]).q", joint),
+                        )[1]
+                        expected = start + math.floor(delta / step + 0.5) * step
+                        assert target == pytest.approx(expected, abs=0.2)
+                        wait(screen).until(
+                            lambda _: abs(joint_deg(joint) - target) < 0.2
+                        )
+                        evidence.capture(
+                            f"0{joint + 1}-joint-{joint + 1}-delta-{delta}"
+                        )
+                        ActionChains(screen.selenium).release().perform()
+                        joint_settled(joint)
+                        # The views here were laid out for the arm at the jog
+                        # pose.
+                        teleport_jog_pose()
                 for name, camera in [
                     ("06-close", [0.16, -0.18, 0.22, 0, 0, 0.11]),
                     ("07-distant", [0.75, -0.85, 1.05, 0, 0.06, 0.13]),
@@ -320,15 +327,19 @@ class TestJointDial:
         screen_wait_for_scene_ready(screen, timeout_s=40)
         teleport_jog_pose()
         speed = waldoctl.commander.settings.jog.speed
+
+        def set_speed(value: int) -> None:
+            steps = round((waldoctl.commander.settings.jog.speed - value) / 10)
+            if steps:
+                ActionChains(screen.selenium).send_keys(
+                    ("[" if steps > 0 else "]") * abs(steps)
+                ).perform()
+            wait(screen).until(lambda _: waldoctl.commander.settings.jog.speed == value)
+
         with viewport(screen, 1366, 768), camera_kept(screen):
             evidence = VisualEvidence(screen, "joint-dial-recovery")
             try:
-                ActionChains(screen.selenium).send_keys(
-                    "[" * (int(speed / 10) - 1)
-                ).perform()
-                wait(screen).until(
-                    lambda _: waldoctl.commander.settings.jog.speed == 10
-                )
+                set_speed(10)
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
@@ -336,7 +347,8 @@ class TestJointDial:
                 )
                 wait_for_scene_idle(screen)
                 # Far enough that the arm, at 10 %, is still on its way when
-                # the target is read, on a page that delivers a move a frame.
+                # the target is read, on a page that delivers a move a frame:
+                # without a GPU a page takes seconds over that.
                 drag_dial(screen, -100, duration=5, steps=3)
                 target = urdf_to_panel(0, scene_js(screen, "return S.dial(0).q"))[1]
                 assert abs(joint_deg(0) - target) > 5
@@ -368,6 +380,9 @@ class TestJointDial:
                 grab_ring(screen, "link:L1", 0)
                 evidence.capture("06-cancel-settled")
 
+                # The limits are what is checked now, not the lag: the arm
+                # need not crawl to them.
+                set_speed(speed)
                 for joint, start, deltas in [(0, -115, [-20, 10]), (2, 175, [10, -10])]:
                     pose = [85, -85, 135, 10, 45, 170]
                     pose[joint] = start
@@ -407,12 +422,7 @@ class TestJointDial:
             finally:
                 evidence.stop()
                 ActionChains(screen.selenium).release().perform()
-                ActionChains(screen.selenium).send_keys(
-                    "]" * (int(speed / 10) - 1)
-                ).perform()
-                wait(screen).until(
-                    lambda _: waldoctl.commander.settings.jog.speed == speed
-                )
+                set_speed(speed)
                 teleport_jog_pose()
 
     def test_joint_dial_review(self, class_screen):
@@ -435,8 +445,7 @@ class TestJointDial:
 
                 assert_dial_readable(screen)
 
-                _, sign, _ = ui_state.urdf_scene._panel_mapping(0)
-                drag_dial(screen, -25 * sign)
+                drag_dial(screen, -25)
                 target = scene_js(screen, "return S.dial(0)")
                 target_deg = urdf_to_panel(0, target["q"])[1]
                 assert target_deg == pytest.approx(start - 25, abs=1.1)
@@ -447,8 +456,9 @@ class TestJointDial:
                 )
                 wait(screen).until(
                     lambda _: abs(joint_deg(0) - target_deg) < 0.2,
-                    message=f"start={start}, sign={sign}, dial={target}",
+                    message=f"start={start}, dial={target}",
                 )
+                assert_dial_readable(screen)
                 evidence.capture("02-start-current-and-delta-1920")
                 assert camera_pose(screen) == pytest.approx(camera)
                 label = scene_js(screen, "return S.label('jog:dial:0:label')")
@@ -456,7 +466,7 @@ class TestJointDial:
                 ActionChains(screen.selenium).release().perform()
                 assert joint_settled(0) == pytest.approx(target_deg, abs=0.2)
 
-                drag_dial(screen, 15 * sign)
+                drag_dial(screen, 15)
                 second_deg = urdf_to_panel(
                     0, scene_js(screen, "return S.dial(0)")["q"]
                 )[1]
@@ -476,8 +486,7 @@ class TestJointDial:
 
                 teleport_jog_pose()
                 wait_for_scene_idle(screen)
-                _, shoulder_sign, _ = ui_state.urdf_scene._panel_mapping(1)
-                drag_dial(screen, 8 * shoulder_sign, joint=1)
+                drag_dial(screen, 8, joint=1)
                 shoulder = urdf_to_panel(1, scene_js(screen, "return S.dial(1).q"))[1]
                 wait(screen).until(lambda _: abs(joint_deg(1) - shoulder) < 0.2)
                 evidence.capture("05-shoulder-dial-1920")

@@ -9,8 +9,6 @@ recording it.
 import asyncio
 import ast
 import math
-import time
-from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -33,6 +31,27 @@ from tests.helpers.browser_helpers import (
 )
 from tests.helpers.browser_session import no_visible, wait
 from tests.helpers.demo_video import DemoVideo
+from tests.helpers.demo_steps import (
+    PLACEMENT_VIEW,
+    approach,
+    arm_pixel,
+    arm_still,
+    bring_up_gizmo,
+    center,
+    drag_arrow,
+    focus_subject,
+    frame_choice,
+    gizmo_center,
+    jog_ended,
+    menu_item,
+    motion,
+    open_scene_panel,
+    open_target_edit,
+    outward,
+    press_mark,
+    program_panel,
+    target_caught_up,
+)
 from tests.helpers.review_scenes import (
     FIXTURE_VIEW,
     FRAME_STORE_VIEW,
@@ -49,12 +68,8 @@ from tests.helpers.scene_screen import (
     PATH_PROGRAM,
     PATH_VIEW,
     TCP_VIEW,
-    at_start,
     ball_mm,
-    camera_action,
     camera_kept,
-    camera_pose,
-    camera_settled,
     clearance_button,
     clearance_line,
     clear_selection,
@@ -71,7 +86,6 @@ from tests.helpers.scene_screen import (
     reset_target_edit,
     settled_element as _settled,
     settled_pixel,
-    zoom,
 )
 from tests.helpers.scene_surface import (
     project_local,
@@ -89,245 +103,6 @@ from waldo_commander.state import ui_state
 # Frame-stepped recording takes a minute or two a demo; demos run only
 # under --evidence, outside the suite's time.
 pytestmark = pytest.mark.timeout(300)
-
-#: The floor in front of the arm, close enough to see a target land there.
-PLACEMENT_VIEW = [0.333, 0.447, 0.402, 0.05, 0.2, 0.15]
-
-
-def _focus_subject(screen):
-    """Fit the selection with room for the handles and their drag travel."""
-    camera_action(screen, "focus")
-    camera_settled(screen)
-    pose = camera_pose(screen)
-    zoom(screen, float(np.linalg.norm(np.subtract(pose[:3], pose[3:]))) * 1.2)
-    camera_settled(screen)
-
-
-def _arm_still(timeout: float = 4.0) -> None:
-    """Wait until the arm stops moving."""
-    deadline = time.monotonic() + timeout
-    last = waldoctl.commander.status.joints.angles.rad.copy()
-    while time.monotonic() < deadline:
-        time.sleep(0.06)
-        now = waldoctl.commander.status.joints.angles.rad.copy()
-        if np.allclose(now, last, atol=1e-5, rtol=0):
-            return
-        last = now
-
-
-def _jog_ended(screen) -> None:
-    wait(screen, 15).until(
-        lambda _: ui_state.control_panel._jog_end_wait_task is None
-        or ui_state.control_panel._jog_end_wait_task.done()
-    )
-    _arm_still()
-
-
-@contextmanager
-def program_panel(screen):
-    """The program editor open beside the scene, so a demo shows its source."""
-    click_tab(screen, "program")
-    try:
-        yield
-    finally:
-        # The panel slides out under the pointer left on its close button; a
-        # button passing under it shows a tooltip that only a move puts away.
-        def away() -> None:
-            screen.selenium.execute_cdp_cmd(
-                "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 960, "y": 540}
-            )
-
-        away()
-        close_panel(screen, "program-panel")
-        wait(screen).until(lambda _: no_visible(screen, ".program-panel"))
-        away()
-
-
-@contextmanager
-def motion(screen):
-    """Animations on, as a user without reduced motion sees them."""
-
-    def emulate(value: str) -> None:
-        screen.selenium.execute_cdp_cmd(
-            "Emulation.setEmulatedMedia",
-            {"features": [{"name": "prefers-reduced-motion", "value": value}]},
-        )
-
-    emulate("no-preference")
-    try:
-        yield
-    finally:
-        emulate("reduce")
-
-
-def _center(element) -> tuple[float, float]:
-    r = element.rect
-    return r["x"] + r["width"] / 2, r["y"] + r["height"] / 2
-
-
-def _menu_item(screen, starts: str):
-    """The menu entry starting ``starts``, once the menu has finished
-    opening, so the pointer is aimed where the entry stays."""
-    previous = None
-
-    def settled(_):
-        nonlocal previous
-        for e in screen.selenium.find_elements(By.CSS_SELECTOR, ".q-menu .q-item"):
-            if e.is_displayed() and e.text.strip().startswith(starts):
-                rect, previous = (e.rect, previous), e.rect
-                moving = screen.selenium.execute_script(
-                    "const m=arguments[0].closest('.q-menu');"
-                    "return !m || m.getAnimations({subtree:true}).some(a=>a.playState==='running');",
-                    e,
-                )
-                return e if rect[0] == rect[1] and not moving else None
-        return None
-
-    return wait(screen).until(settled)
-
-
-def _outward(
-    point: tuple[float, float], away: tuple[float, float], distance: float = 260
-) -> tuple[float, float]:
-    """A spot ``distance`` px beyond ``point``, on the side away from
-    ``away``: an approach from there crosses no link, so no joint's dial
-    comes up on the way in."""
-    dx, dy = point[0] - away[0], point[1] - away[1]
-    n = math.hypot(dx, dy) or 1.0
-    return point[0] + dx / n * distance, point[1] + dy / n * distance
-
-
-def _arm_pixel(screen) -> tuple[float, float]:
-    """Where the middle of the arm is on screen."""
-    x, y = scene_js(
-        screen,
-        "const c=getElement(S.root).core,v=new (c.camera.position.constructor)(0,0,0.15);"
-        "return c.pointer.screen(v.project(c.camera));",
-    )
-    return x, y
-
-
-def _bring_up_gizmo(screen, video: DemoVideo) -> None:
-    """From outside the arm to the tool's badge, whose click brings up the
-    gizmo, as a user would."""
-
-    def on_top(_):
-        badge = screen.selenium.find_element(
-            By.CSS_SELECTOR, '.wc-tcp-affordance button[aria-label="Move TCP"]'
-        )
-        x, y = _center(badge)
-        hit = screen.selenium.execute_script(
-            "return document.elementFromPoint(arguments[0], arguments[1])"
-            "?.getAttribute('aria-label')",
-            x,
-            y,
-        )
-        return (x, y) if hit == "Move TCP" else None
-
-    # The badge stands aside while a dial's label would cover it.
-    spot = wait(screen).until(on_top)
-    video.jump(*_outward(spot, _arm_pixel(screen)))
-    video.caption("Click the tool's badge to bring up the gizmo")
-    video.pause(0.8)
-    video.glide(spot, 1.2)
-
-    def shown() -> None:
-        try:
-            wait(screen, 5).until(lambda _: gizmo(screen, "tcp:ball"))
-        except TimeoutException:
-            state = scene_js(
-                screen,
-                "const c=getElement(S.root).core,h=c.pointer.hover,[x,y]=arguments[0];"
-                "const e=document.elementFromPoint(x,y);"
-                "return {shown:h.shown,target:h.target,pinned:h.pinned,rules:c.ix.rules,"
-                "edit:!!c.ix.edit?.active,at:e&&(e.getAttribute('aria-label')||e.className)};",
-                list(spot),
-            )
-            raise AssertionError(f"no gizmo after the badge click: {state}") from None
-
-    video.click(settle=shown)
-    video.pause(0.6)
-
-
-def _gizmo_center(screen) -> tuple[float, float]:
-    x, y = project_local(screen, "tcp:ball", [[0, 0, 0]])[0][:2]
-    return x, y
-
-
-def _press_mark(video, marker, settle=None, seconds=0.45):
-    element = _settled(video.screen, lambda: marked_element(video.screen, marker))
-    video.glide(_center(element), seconds)
-    video.click(settle)
-
-
-def _open_scene_panel(screen):
-    if no_visible(screen, ".scene-panel"):
-        click_marked(screen, "tab-scene")
-    wait(screen).until(lambda _: marked_element(screen, "scene-tree").is_displayed())
-
-
-def _frame_choice(video, choice, label):
-    screen = video.screen
-    badge = _settled(
-        screen, lambda: screen.selenium.find_element(By.CSS_SELECTOR, ".wc-gizmo-frame")
-    )
-    video.jump(*_outward(_center(badge), _arm_pixel(screen), 100))
-    video.glide(_center(badge), 0.4)
-    video.click()
-    _press_mark(video, f"scene-gizmo-{choice}")
-    wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
-    if label is not None:
-        wait(screen).until(lambda _: gizmo(screen, "tcp:ball")["frame"] == label)
-    video.frame()
-
-
-def _edit_target(screen, target):
-    from tests.helpers.scene_screen import choose
-
-    choose(screen, *settled_pixel(screen, f"targetgroup:{target}"), "Edit Target...")
-    wait(screen).until(lambda _: gizmo(screen, "tcp:ball"))
-    wait_for_scene_idle(screen)
-
-
-def _approach(video, point, seconds=0.5):
-    video.jump(*_outward(point, _arm_pixel(video.screen), 100))
-    video.glide(point, seconds)
-
-
-def _drag_arrow(video, name, length=55, seconds=1.8, settle=None):
-    screen = video.screen
-    x, y, dx, dy = wait(screen).until(lambda _: probe(screen, "arrowTip", name, "X"))
-    _approach(video, (x, y))
-    video.press()
-    video.glide((x + dx * length, y + dy * length), seconds, settle)
-
-
-def _target_caught_up(screen):
-    wait(screen).until(
-        lambda _: np.linalg.norm(
-            ball_mm(screen)
-            - np.asarray(
-                run_in_app(lambda: ui_state.urdf_scene._requested_edit_pose[:3])
-            )
-            * 1000
-        )
-        < 0.5
-    )
-
-
-@pytest.fixture
-def demo_screen(class_screen):
-    screen = class_screen
-    screen_wait_for_scene_ready(screen, timeout_s=40)
-    at_start(screen)
-    # Objects an earlier test left would crowd the demo's floor and view.
-    run_in_app(lambda: setattr(waldoctl.commander.scene, "shapes", []))
-    confirmed(screen, lambda: not waldoctl.commander.scene.shapes)
-    with viewport(screen, 1920, 1080), camera_kept(screen):
-        yield screen
-    # A demo that failed keeps what it recorded, to show where it went wrong.
-    if DemoVideo.current is not None and DemoVideo.current.frames:
-        DemoVideo.current.save("-failed")
 
 
 @pytest.mark.browser
@@ -454,7 +229,7 @@ class TestReviewDemos:
                 video.caption("Under the view cube: show clearances to keep-outs")
                 button = clearance_button(screen)
                 video.tap(
-                    _center(button),
+                    center(button),
                     lambda: wait(screen).until(
                         lambda _: scene_js(screen, "return S.clearanceLines()")
                     ),
@@ -465,7 +240,7 @@ class TestReviewDemos:
                 )
                 points = [(p[0], p[1]) for p in pixels if p[2] >= start[2]]
                 video.caption("Hover the path in the gap: it lights up, ready to drag")
-                video.jump(*_outward(points[0], _arm_pixel(screen)))
+                video.jump(*outward(points[0], arm_pixel(screen)))
                 video.glide(points[0], 1.0)
                 video.frame(
                     lambda: wait(screen).until(
@@ -507,7 +282,7 @@ class TestReviewDemos:
                 }
                 video.caption("Tap again to put the measurements away")
                 video.tap(
-                    _center(clearance_button(screen)),
+                    center(clearance_button(screen)),
                     lambda: wait(screen).until(
                         lambda _: not scene_js(screen, "return S.clearanceLines()")
                     ),
@@ -534,18 +309,18 @@ class TestReviewDemos:
         run_in_app(lambda: setattr(handle, "shapes", shapes))
         confirmed(screen, lambda: handle.shapes == shapes)
         clear_selection(screen)
-        _open_scene_panel(screen)
+        open_scene_panel(screen)
         scene_js(screen, "S.setCameraPose(arguments[0])", FIXTURE_VIEW)
         click_object(screen, "shape:Fixture A")
         click_object(screen, "shape:Fixture B", shift=True)
-        _focus_subject(screen)
+        focus_subject(screen)
         clear_selection(screen)
         wait_for_scene_idle(screen)
         video = DemoVideo(screen, "select-several")
         video.jump(1450, 700)
         try:
             video.caption("Select several lets touch taps build a selection")
-            _press_mark(
+            press_mark(
                 video,
                 "scene-multi-select",
                 lambda: wait(screen).until(
@@ -563,7 +338,7 @@ class TestReviewDemos:
                 )
                 video.pause(0.6)
             video.caption("Drag one arrow to move both keep-outs together")
-            _drag_arrow(video, "selection:center", length=85, seconds=2.2)
+            drag_arrow(video, "selection:center", length=85, seconds=2.2)
             video.release(lambda: confirmed(screen, lambda: handle.shapes != shapes))
             delta = np.asarray([s.pose[:3] for s in handle.shapes]) - np.asarray(
                 [s.pose[:3] for s in shapes]
@@ -572,7 +347,7 @@ class TestReviewDemos:
             assert delta[0] == pytest.approx(delta[1], abs=1e-6)
             video.pause(1)
             video.caption("Turn Select several off to return to single selection")
-            _press_mark(
+            press_mark(
                 video,
                 "scene-multi-select",
                 lambda: wait(screen).until(
@@ -593,17 +368,17 @@ class TestReviewDemos:
         )
         run_in_app(lambda: setattr(handle, "shapes", [box]))
         confirmed(screen, lambda: handle.shapes == [box])
-        _open_scene_panel(screen)
+        open_scene_panel(screen)
         click_marked(screen, "scene-row-Centred-box")
         object_mode(screen, "Resize")
         scene_js(screen, "S.setCameraPose(arguments[0])", FIXTURE_VIEW)
-        _focus_subject(screen)
+        focus_subject(screen)
         wait_for_scene_idle(screen)
         video = DemoVideo(screen, "resize-centre")
         video.jump(1450, 700)
         video.caption("In Resize, turn on Resize from the centre")
         try:
-            _press_mark(
+            press_mark(
                 video,
                 "object-resize-centre",
                 lambda: wait(screen).until(
@@ -618,7 +393,7 @@ class TestReviewDemos:
                 lambda _: probe(screen, "resizeHandle", 0)
             )
             video.caption("Pull a face: both opposite faces move equally")
-            _approach(video, (x, y))
+            approach(video, (x, y))
             video.press()
             video.glide((x + dx * 95, y + dy * 95), 2.5)
             video.release(lambda: confirmed(screen, lambda: handle.shapes[0] != box))
@@ -690,21 +465,21 @@ class TestReviewDemos:
         with program_previewed(source) as targets:
             try:
                 scene_js(screen, "S.setCameraPose(arguments[0])", TCP_VIEW)
-                _edit_target(screen, targets[-1])
+                open_target_edit(screen, targets[-1])
                 initial = np.asarray(run_in_app(lambda: scene._requested_edit_pose))
                 tool_x = Rotation.from_euler("XYZ", initial[3:]).as_matrix()[:, 0]
                 video = DemoVideo(screen, "gizmo-frames")
                 video.caption("The frame badge aligns the target's handles")
-                _frame_choice(video, "align-tool", "Tool")
+                frame_choice(video, "align-tool", "Tool")
                 video.caption("Tool: the X arrow follows the tool's own X axis")
-                _drag_arrow(
+                drag_arrow(
                     video,
                     "tcp:ball",
                     length=28,
                     seconds=1.6,
-                    settle=lambda: _target_caught_up(screen),
+                    settle=lambda: target_caught_up(screen),
                 )
-                _target_caught_up(screen)
+                target_caught_up(screen)
                 delta = ball_mm(screen) / 1000 - initial[:3]
                 video.release(
                     lambda: wait(screen).until(
@@ -716,7 +491,7 @@ class TestReviewDemos:
                 assert np.linalg.norm(np.cross(delta, tool_x)) < 0.0002
                 video.pause(0.7)
                 video.caption("Tilted nest: use the setup frame, with its axes shown")
-                _frame_choice(video, "align-frame:Tilted-nest", "Tilted-nest")
+                frame_choice(video, "align-frame:Tilted-nest", "Tilted-nest")
                 wait(screen).until(
                     lambda _: scene_js(
                         screen,
@@ -726,7 +501,7 @@ class TestReviewDemos:
                 video.frame()
                 video.pause(1.5)
                 video.caption("World returns the handles to the world axes")
-                _frame_choice(video, "align-world", "World")
+                frame_choice(video, "align-world", "World")
                 video.pause(1.2)
                 video.save()
             finally:
@@ -754,10 +529,10 @@ class TestReviewDemos:
             video = DemoVideo(screen, "frame-store")
 
             def edit_target(target):
-                _approach(video, settled_pixel(screen, f"targetgroup:{target}"), 0.4)
+                approach(video, settled_pixel(screen, f"targetgroup:{target}"), 0.4)
                 video.context_click()
-                item = _menu_item(screen, "Edit Target")
-                video.glide(_center(item), 0.4)
+                item = menu_item(screen, "Edit Target")
+                video.glide(center(item), 0.4)
                 video.click(
                     lambda: wait(screen).until(lambda _: gizmo(screen, "tcp:ball"))
                 )
@@ -781,7 +556,7 @@ class TestReviewDemos:
                         By.CSS_SELECTOR, ".wc-gizmo-frame"
                     ),
                 )
-                _approach(video, _center(badge), 0.4)
+                approach(video, center(badge), 0.4)
                 video.click()
                 _settled(
                     screen,
@@ -795,7 +570,7 @@ class TestReviewDemos:
                 )
                 video.frame()
                 video.pause(0.8)
-                _press_mark(video, "scene-target-store-frame:fixture")
+                press_mark(video, "scene-target-store-frame:fixture")
                 wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
                 stored = wait(screen).until(
                     lambda _: (
@@ -824,18 +599,18 @@ class TestReviewDemos:
                 video.pause(1.5)
 
                 video.caption("Align to fixture, then drag a little along its X")
-                _frame_choice(video, "align-frame:fixture", "fixture")
+                frame_choice(video, "align-frame:fixture", "fixture")
                 wait(screen).until(
                     lambda _: scene_js(
                         screen, "return S.byName('gizmo:aligned-frame')?.visible"
                     )
                 )
-                _drag_arrow(
+                drag_arrow(
                     video,
                     "tcp:ball",
                     length=24,
                     seconds=1.4,
-                    settle=lambda: _target_caught_up(screen),
+                    settle=lambda: target_caught_up(screen),
                 )
                 video.release(
                     lambda: wait(screen).until(
@@ -916,12 +691,12 @@ class TestReviewDemos:
         with program_previewed(source) as targets:
             try:
                 scene_js(screen, "S.setCameraPose(arguments[0])", camera)
-                _edit_target(screen, targets[-1])
+                open_target_edit(screen, targets[-1])
                 video = DemoVideo(screen, "keep-vertical")
                 video.caption(
                     "Keep tool vertical snaps this tilted target to pointing down"
                 )
-                _frame_choice(video, "vertical", None)
+                frame_choice(video, "vertical", None)
                 wait(screen).until(
                     lambda _: gizmo(screen, "tcp:ball")["rotationAxes"] == ["Z"]
                 )
@@ -939,7 +714,7 @@ class TestReviewDemos:
                 x, y, dx, dy = wait(screen).until(
                     lambda _: probe(screen, "ringSpot", "Z")
                 )
-                _approach(video, (x, y))
+                approach(video, (x, y))
                 video.press()
                 video.glide((x + dx * 30, y + dy * 30), 1.8)
                 video.release(
@@ -959,14 +734,14 @@ class TestReviewDemos:
                     ),
                 )
                 if not run_in_app(lambda: ui_state.program_panel_visible):
-                    _press_mark(video, "tab-program")
+                    press_mark(video, "tab-program")
                 editor = _settled(
                     screen,
                     lambda: screen.selenium.find_element(
                         By.CSS_SELECTOR, ".program-panel .cm-content"
                     ),
                 )
-                video.glide(_center(editor), 0.4)
+                video.glide(center(editor), 0.4)
                 video.click()
                 for expected in (vertical, source):
                     video.chord(
@@ -993,9 +768,9 @@ class TestReviewDemos:
             video = DemoVideo(screen, "swept-volume")
             video.caption("Right-click the sweeping move, then Show swept volume")
             point = tuple(path_point(screen, move["command"], 0.3)[:2])
-            _approach(video, point)
+            approach(video, point)
             video.context_click()
-            _press_mark(video, "scene-toggle-swept-volume")
+            press_mark(video, "scene-toggle-swept-volume")
             video.live(1)
             sweep = wait(screen).until(
                 lambda _: scene_js(screen, "return S.sweptVolume()")
@@ -1018,7 +793,7 @@ class TestReviewDemos:
             point = tuple(path_point(screen, move["command"], 0.3)[:2])
             video.glide(point, 0.6)
             video.context_click()
-            _press_mark(
+            press_mark(
                 video,
                 "scene-toggle-swept-volume",
                 lambda: wait(screen).until(
@@ -1034,16 +809,17 @@ class TestReviewDemos:
         source = bracket_stl(tmp_path / "L-bracket.stl")
         handle, view = waldoctl.commander.scene, ui_state.urdf_scene
         original_meshes = view.fixture_meshes
-        _open_scene_panel(screen)
+        open_scene_panel(screen)
         scene_js(screen, "S.setCameraPose(arguments[0])", FIXTURE_VIEW)
         wait_for_scene_idle(screen)
         video = DemoVideo(screen, "stl-import")
         video.jump(1400, 700)
         try:
-            video.caption("Import a fixture STL from the scene panel")
-            _press_mark(video, "scene-import-mesh")
+            video.caption("Import a fixture STL from the scene panel's Add menu")
+            press_mark(video, "scene-add-menu")
+            press_mark(video, "scene-import-mesh")
             upload = _settled(screen, lambda: marked_element(screen, "mesh-upload"))
-            video.glide(_center(upload), 0.4)
+            video.glide(center(upload), 0.4)
             upload.find_element(By.CSS_SELECTOR, 'input[type="file"]').send_keys(
                 str(source)
             )
@@ -1059,7 +835,7 @@ class TestReviewDemos:
                 ("cm", "1200 × 800 × 600 mm"),
                 ("mm", "120 × 80 × 60 mm"),
             ):
-                _press_mark(
+                press_mark(
                     video,
                     f"mesh-units-{unit}",
                     lambda size=size: wait(screen).until(
@@ -1068,7 +844,7 @@ class TestReviewDemos:
                 )
                 video.pause(0.55)
             video.caption("Place it: the mesh and its keep-out form one fixture")
-            _press_mark(
+            press_mark(
                 video,
                 "mesh-add",
                 lambda: confirmed(
@@ -1082,7 +858,7 @@ class TestReviewDemos:
                 )
             )
             clear_selection(screen)
-            _press_mark(
+            press_mark(
                 video,
                 "scene-mesh-L-bracket",
                 lambda: wait(screen).until(
@@ -1092,7 +868,7 @@ class TestReviewDemos:
             initial_mesh = view.fixture_meshes[-1]
             initial_box = handle.shapes[-1]
             video.caption("Select the fixture group and move it with one arrow")
-            _drag_arrow(video, "selection:center", length=60, seconds=1.3)
+            drag_arrow(video, "selection:center", length=60, seconds=1.3)
             video.release(
                 lambda: confirmed(
                     screen, lambda: view.fixture_meshes[-1] != initial_mesh
@@ -1107,21 +883,21 @@ class TestReviewDemos:
             ) == pytest.approx(mesh_delta)
             video.pause(0.5)
             video.caption("Add a second keep-out box to the group, then resize it")
-            _press_mark(
+            press_mark(
                 video,
                 "mesh-add-proxy",
                 lambda: confirmed(
                     screen, lambda: len(view.fixture_meshes[-1].proxy_names) == 2
                 ),
             )
-            _press_mark(
+            press_mark(
                 video,
                 "object-mode-resize",
                 lambda: wait(screen).until(lambda _: probe(screen, "resizeHandle", 1)),
             )
             box = handle.shapes[-1]
             x, y, dx, dy, axis, _ = probe(screen, "resizeHandle", 1)
-            _approach(video, (x, y), seconds=0.35)
+            approach(video, (x, y), seconds=0.35)
             video.press()
             video.glide((x - dx * 55, y - dy * 55), 1.4)
             video.release(lambda: confirmed(screen, lambda: handle.shapes[-1] != box))
@@ -1144,7 +920,7 @@ class TestReviewDemos:
         pose = waldoctl.commander.status.pose
         before = np.array([pose.x, pose.y, pose.z])
         video = DemoVideo(screen, "gizmo-move-arrow")
-        _bring_up_gizmo(screen, video)
+        bring_up_gizmo(screen, video)
         x, y, dx, dy = wait(screen).until(
             lambda _: probe(screen, "arrowTip", "tcp:ball", "X")
         )
@@ -1152,10 +928,10 @@ class TestReviewDemos:
         video.glide((x, y), 1.0)
         video.pause(0.3)
         video.press()
-        video.glide((x + dx * 140, y + dy * 140), 3.0, settle=_arm_still)
+        video.glide((x + dx * 140, y + dy * 140), 3.0, settle=arm_still)
         video.caption("The change rides on the arrow as you drag")
         video.pause(1.2)
-        video.release(settle=lambda: _jog_ended(screen))
+        video.release(settle=lambda: jog_ended(screen))
         video.pause(1.0)
         video.save()
         assert np.linalg.norm(np.array([pose.x, pose.y, pose.z]) - before) > 10
@@ -1166,7 +942,7 @@ class TestReviewDemos:
         pose = waldoctl.commander.status.pose
         before = np.array([pose.x, pose.y, pose.z])
         video = DemoVideo(screen, "gizmo-move-plane")
-        _bring_up_gizmo(screen, video)
+        bring_up_gizmo(screen, video)
         x, y, dx, dy = wait(screen).until(lambda _: probe(screen, "planeSpot", "XY"))
         video.caption("Drag a square: the tool moves in that plane")
         video.glide((x, y), 1.0)
@@ -1179,10 +955,10 @@ class TestReviewDemos:
                 (x + dx * 90 - dy * 70, y + dy * 90 + dx * 70),
             ],
             3.5,
-            settle=_arm_still,
+            settle=arm_still,
         )
         video.pause(1.0)
-        video.release(settle=lambda: _jog_ended(screen))
+        video.release(settle=lambda: jog_ended(screen))
         video.pause(1.0)
         video.save()
         after = np.array([pose.x, pose.y, pose.z])
@@ -1195,9 +971,9 @@ class TestReviewDemos:
         pose = waldoctl.commander.status.pose
         before = np.array([pose.rx, pose.ry, pose.rz])
         video = DemoVideo(screen, "gizmo-turn-arc")
-        _bring_up_gizmo(screen, video)
+        bring_up_gizmo(screen, video)
         x, y, dx, dy = wait(screen).until(lambda _: probe(screen, "ringSpot", "Z"))
-        cx, cy = _gizmo_center(screen)
+        cx, cy = gizmo_center(screen)
         radius = math.hypot(x - cx, y - cy)
         start = math.atan2(y - cy, x - cx)
         # Turn the way the ring runs at the press.
@@ -1213,9 +989,9 @@ class TestReviewDemos:
         video.glide((x, y), 1.0)
         video.pause(0.3)
         video.press()
-        video.along(arc, 3.5, settle=_arm_still)
+        video.along(arc, 3.5, settle=arm_still)
         video.pause(1.0)
-        video.release(settle=lambda: _jog_ended(screen))
+        video.release(settle=lambda: jog_ended(screen))
         video.pause(1.0)
         video.save()
         # About the tool's own Z, so any of the angles may change.
@@ -1229,7 +1005,7 @@ class TestReviewDemos:
         before = np.array([pose.x, pose.y, pose.z])
         moved = lambda: np.linalg.norm(np.array([pose.x, pose.y, pose.z]) - before)  # noqa: E731
         video = DemoVideo(screen, "gizmo-typed-value")
-        _bring_up_gizmo(screen, video)
+        bring_up_gizmo(screen, video)
         x, y, _, _ = wait(screen).until(
             lambda _: probe(screen, "arrowTip", "tcp:ball", "X")
         )
@@ -1267,15 +1043,15 @@ class TestReviewDemos:
             live = waldoctl.commander.status.joints.angles.rad.copy()
             mx, my = scene_object_pixel(screen, f"targetgroup:{targets[-1]}")
             video = DemoVideo(screen, "target-edit")
-            video.jump(*_outward((mx, my), _arm_pixel(screen)))
+            video.jump(*outward((mx, my), arm_pixel(screen)))
             video.caption("Right-click a target to edit it")
             video.pause(0.8)
             video.glide((mx, my), 1.0)
             video.pause(0.3)
             video.context_click()
-            item = _menu_item(screen, "Edit Target")
+            item = menu_item(screen, "Edit Target")
             video.pause(0.6)
-            video.glide(_center(item), 0.7)
+            video.glide(center(item), 0.7)
             video.click(settle=lambda: wait(screen).until(lambda _: scene._edit_active))
             video.pause(0.8)
             initial = scene._requested_edit_pose
@@ -1316,15 +1092,15 @@ class TestReviewDemos:
             live = waldoctl.commander.status.joints.angles.rad.copy()
             x, y, gx, gy = wait(screen).until(lambda _: probe(screen, "floorSpot"))
             video = DemoVideo(screen, "target-place")
-            video.jump(*_outward((x, y), _arm_pixel(screen)))
+            video.jump(*outward((x, y), arm_pixel(screen)))
             video.caption("Over the floor, a ring shows where a target would go")
             video.pause(0.6)
             video.glide((x, y), 2.0)
             video.pause(0.6)
             video.context_click()
-            item = _menu_item(screen, "Place Target Here")
+            item = menu_item(screen, "Place Target Here")
             video.pause(0.6)
-            video.glide(_center(item), 0.7)
+            video.glide(center(item), 0.7)
             video.click(settle=lambda: wait(screen).until(lambda _: scene._edit_active))
             video.caption("A new target lands there, in the program at once")
             video.pause(1.5)
@@ -1375,9 +1151,16 @@ class TestReviewDemos:
 
                 wait(screen, 10).until(matches)
 
-            # From partway along line 7, clear of the arm, to the path's end.
+            # From partway along line 7, where nothing covers the path, to its end.
             first = next(i for i, b in enumerate(record["blocks"]) if b["line"] == 7)
-            points = []
+            grab = wait(screen).until(
+                lambda _: scene_js(
+                    screen,
+                    "return S.pathGrab(0, arguments[0], 0.25)",
+                    record["blocks"][first]["command"],
+                )
+            )
+            points = [(grab[0], grab[1])]
             for i, block in enumerate(record["blocks"][first:]):
                 pixels = scene_js(
                     screen, "return S.pathPixels(0, arguments[0])", block["command"]
@@ -1385,10 +1168,10 @@ class TestReviewDemos:
                 if not pixels or len(pixels) < 2:
                     continue
                 if i == 0:
-                    pixels = pixels[len(pixels) // 10 :]
+                    pixels = [p for p in pixels if p[2] > grab[2]]
                 points += [(p[0], p[1]) for p in pixels[:: max(1, len(pixels) // 40)]]
             video = DemoVideo(screen, "path-scrub")
-            video.jump(*_outward(points[0], _arm_pixel(screen)))
+            video.jump(*outward(points[0], arm_pixel(screen)))
             video.caption("Hover a path: it lights up, ready to drag")
             video.pause(0.6)
             video.glide(points[0], 1.0)
@@ -1413,7 +1196,7 @@ class TestReviewDemos:
         before = waldoctl.commander.status.joints.angles.deg[u]
         lx, ly = scene_object_pixel(screen, f"link:L{u + 1}")
         video = DemoVideo(screen, "joint-dial")
-        video.jump(*_outward((lx, ly), _arm_pixel(screen), 320))
+        video.jump(*outward((lx, ly), arm_pixel(screen), 320))
         video.caption("Hover a link: its joint's dial appears")
         video.pause(0.6)
         video.glide((lx, ly), 1.2)
@@ -1453,9 +1236,9 @@ class TestReviewDemos:
         video.caption("Drag around the dial to turn the joint")
         video.glide(tuple(arc[0][:2]), 0.8)
         video.press()
-        video.along([tuple(p[:2]) for p in arc], 3.5, settle=_arm_still)
+        video.along([tuple(p[:2]) for p in arc], 3.5, settle=arm_still)
         video.pause(0.8)
-        video.release(settle=lambda: _jog_ended(screen))
+        video.release(settle=lambda: jog_ended(screen))
         video.pause(1.0)
         video.save()
         assert abs(waldoctl.commander.status.joints.angles.deg[u] - before) > 10
@@ -1465,25 +1248,34 @@ class TestReviewDemos:
         handle = waldoctl.commander.scene
         run_in_app(lambda: setattr(handle, "shapes", []))
         confirmed(screen, lambda: not handle.shapes)
+        # The card opens in the scene panel; open, it leaves the view still.
+        open_scene_panel(screen)
         scene_js(screen, "S.setCameraPose(arguments[0])", PLACEMENT_VIEW)
         wait_for_scene_idle(screen)
         x, y, *_ = wait(screen).until(lambda _: probe(screen, "floorSpot"))
         video = DemoVideo(screen, "keepout-place-move")
-        video.jump(*_outward((x, y), _arm_pixel(screen)))
+        video.jump(*outward((x, y), arm_pixel(screen)))
         video.caption("Right-click the floor to add a keep-out there")
         video.pause(0.6)
         video.glide((x, y), 1.0)
         video.context_click()
-        submenu = _menu_item(screen, "Create keep-out")
+        item = menu_item(screen, "Add keep-out…")
         video.pause(0.5)
-        video.glide(_center(submenu), 0.7)
-        video.click()
-        item = _menu_item(screen, "Box here")
-        video.pause(0.4)
-        video.glide(_center(item), 0.6)
-        video.click(settle=lambda: confirmed(screen, lambda: len(handle.shapes) == 1))
+        video.glide(center(item), 0.7)
+        video.click(
+            settle=lambda: _settled(
+                screen, lambda: marked_element(screen, "keepout-place")
+            )
+        )
+        video.caption("The scene panel holds the new keep-out: place a box there")
+        video.pause(1.0)
+        press_mark(
+            video,
+            "keepout-place",
+            settle=lambda: confirmed(screen, lambda: len(handle.shapes) == 1),
+        )
         name = handle.shapes[0].name
-        video.caption("It is placed and selected; the scene panel opens with it")
+        video.caption("It is placed and selected")
         video.pause(1.8)
         ax, ay, dx, dy = wait(screen).until(
             lambda _: probe(screen, "arrowTip", f"shape:{name}")
@@ -1504,26 +1296,32 @@ class TestReviewDemos:
         handle = waldoctl.commander.scene
         run_in_app(lambda: setattr(handle, "shapes", []))
         confirmed(screen, lambda: not handle.shapes)
+        # The card opens in the scene panel; open, it leaves the view still.
+        open_scene_panel(screen)
         scene_js(screen, "S.setCameraPose(arguments[0])", PLACEMENT_VIEW)
         wait_for_scene_idle(screen)
         x, y, *_ = wait(screen).until(lambda _: probe(screen, "floorSpot"))
         video = DemoVideo(screen, "keepout-draw-box")
-        video.jump(*_outward((x, y), _arm_pixel(screen)))
-        video.caption("Right-click the floor, Create keep-out, Draw Box")
+        video.jump(*outward((x, y), arm_pixel(screen)))
+        video.caption("Right-click the floor, Add keep-out…, then Draw")
         video.pause(0.6)
         video.glide((x, y), 1.0)
         video.context_click()
-        submenu = _menu_item(screen, "Create keep-out")
+        item = menu_item(screen, "Add keep-out…")
         video.pause(0.5)
-        video.glide(_center(submenu), 0.7)
-        video.click()
-        item = _menu_item(screen, "Draw Box")
-        video.pause(0.4)
-        video.glide(_center(item), 0.6)
+        video.glide(center(item), 0.7)
         video.click(
+            settle=lambda: _settled(
+                screen, lambda: marked_element(screen, "keepout-draw")
+            )
+        )
+        video.pause(0.4)
+        press_mark(
+            video,
+            "keepout-draw",
             settle=lambda: wait(screen).until(
                 lambda _: probe(screen, "drawing")["active"]
-            )
+            ),
         )
         start, end = probe(screen, "drawingPlane", [[-0.06, -0.05], [0.06, 0.05]])
         video.caption("Drag out its footprint")
@@ -1555,10 +1353,10 @@ class TestReviewDemos:
         initial = handle.shapes[0]
         video = DemoVideo(screen, "keepout-resize")
         resize = marked_element(screen, "object-mode-resize")
-        video.jump(*_outward(_center(resize), _arm_pixel(screen), 160))
+        video.jump(*outward(center(resize), arm_pixel(screen), 160))
         video.caption("Switch the selected keep-out to Resize in the scene panel")
         video.pause(0.6)
-        video.glide(_center(resize), 1.0)
+        video.glide(center(resize), 1.0)
         video.click(
             settle=lambda: wait(screen).until(lambda _: probe(screen, "resizeHandle"))
         )
@@ -1600,7 +1398,7 @@ class TestReviewDemos:
         a = scene_object_pixel(screen, "shape:Fixture A")
         b = scene_object_pixel(screen, "shape:Fixture B")
         video = DemoVideo(screen, "isolate")
-        video.jump(*_outward(a, _arm_pixel(screen)))
+        video.jump(*outward(a, arm_pixel(screen)))
         video.caption("Hovering a keep-out lights it")
         video.pause(0.6)
         video.glide(a, 1.0)
@@ -1623,13 +1421,22 @@ class TestReviewDemos:
         video.pause(0.8)
 
         def isolate(done) -> None:
-            video.glide(_center(marked_element(screen, "object-isolate")), 0.8)
-            video.click(settle=lambda: wait(screen).until(lambda _: done()))
+            video.glide(center(marked_element(screen, "object-actions")), 0.8)
+            video.click(
+                settle=lambda: _settled(
+                    screen, lambda: marked_element(screen, "object-isolate")
+                )
+            )
+            press_mark(
+                video,
+                "object-isolate",
+                settle=lambda: wait(screen).until(lambda _: done()),
+            )
 
-        video.caption("Isolate them from the scene panel: the rest fades out")
+        video.caption("Isolate them from the scene panel's More menu: the rest fades")
         isolate(lambda: run_in_app(lambda: view._isolated_view))
         video.pause(2.0)
-        video.caption("The same button shows everything again")
+        video.caption("The same menu shows everything again")
         isolate(lambda: not run_in_app(lambda: view._isolated_view))
         video.pause(1.5)
         video.save()
@@ -1640,12 +1447,12 @@ class TestReviewDemos:
             with program_previewed(EDIT_PROGRAM):
                 wait_for_scene_idle(screen)
                 video = DemoVideo(screen, "camera-tools")
-                reset = _center(marked_element(screen, "camera-reset"))
+                reset = center(marked_element(screen, "camera-reset"))
                 video.jump(reset[0] - 320, reset[1] + 240)
 
                 def press(caption: str, marker: str, seconds: float = 1.6) -> None:
                     video.caption(caption)
-                    video.glide(_center(marked_element(screen, marker)), 0.8)
+                    video.glide(center(marked_element(screen, marker)), 0.8)
                     video.pause(0.4)
                     video.click()
                     video.live(seconds)
@@ -1717,7 +1524,7 @@ class TestReviewDemos:
             assert probe(screen, "viewDirection") != before
             video.pause(0.6)
             video.caption("Reset view, under the cube, puts the camera back")
-            video.glide(_center(marked_element(screen, "camera-reset")), 0.8)
+            video.glide(center(marked_element(screen, "camera-reset")), 0.8)
             video.click()
             video.live(1.4)
             video.save()
@@ -1743,7 +1550,7 @@ class TestReviewDemos:
                 [0.685, -0.4, 0.295, 0.42, -0.05, 0.05],
             )
             wait_for_scene_idle(screen)
-            tab = _center(marked_element(screen, "tab-scene"))
+            tab = center(marked_element(screen, "tab-scene"))
             video = DemoVideo(screen, "scene-panel")
             video.jump(tab[0] + 380, tab[1] - 260)
             video.caption("The scene panel sits by the settings, beside the editor")
@@ -1756,7 +1563,7 @@ class TestReviewDemos:
             )
             video.pause(1.0)
             video.caption("It lists everything in the scene; hover a row to find it")
-            video.glide(_center(marked_element(screen, "scene-row-Clamp")), 1.0)
+            video.glide(center(marked_element(screen, "scene-row-Clamp")), 1.0)
             video.pause(1.6)
             video.caption("Click a row to select it and edit its values")
             video.click(
@@ -1767,7 +1574,7 @@ class TestReviewDemos:
             )
             video.pause(0.8)
             field = marked_element(screen, "object-z")
-            video.glide(_center(field), 0.9)
+            video.glide(center(field), 0.9)
             video.click()
             video.chord(Keys.CONTROL, "a")
             video.type("120")
@@ -1784,7 +1591,7 @@ class TestReviewDemos:
             )
             video.pause(1.2)
             video.caption("The eye hides one from view; it is still kept out")
-            eye = _center(marked_element(screen, "scene-eye-Stock"))
+            eye = center(marked_element(screen, "scene-eye-Stock"))
             video.glide((eye[0] - 120, eye[1]), 0.6)
             video.glide(eye, 0.6)
             video.click(
@@ -1801,20 +1608,26 @@ class TestReviewDemos:
                 )
             )
             video.pause(0.6)
-            video.caption("+ draws a new keep-out on the floor")
-            video.glide(_center(marked_element(screen, "scene-draw")), 0.8)
+            video.caption("+ adds a keep-out: draw one on the floor")
+            video.glide(center(marked_element(screen, "scene-add-menu")), 0.8)
             video.click()
-            item = _settled(
-                screen, lambda: marked_element(screen, "scene-panel-draw-box")
-            )
+            item = _settled(screen, lambda: marked_element(screen, "scene-add-keepout"))
             video.pause(0.3)
-            video.glide(_center(item), 0.6)
+            video.glide(center(item), 0.6)
             video.click(
-                settle=lambda: wait(screen).until(
-                    lambda _: probe(screen, "drawing")["active"]
+                settle=lambda: _settled(
+                    screen, lambda: marked_element(screen, "keepout-draw")
                 )
             )
-            start, end = probe(screen, "drawingPlane", [[0.3, 0.2], [0.38, 0.28]])
+            press_mark(
+                video,
+                "keepout-draw",
+                settle=lambda: wait(screen).until(
+                    lambda _: probe(screen, "drawing")["active"]
+                ),
+            )
+            # From the card's point on the floor, 300 mm in front of the arm.
+            start, end = probe(screen, "drawingPlane", [[0, 0.2], [0.08, 0.28]])
             video.glide(tuple(start), 0.8)
             video.press()
             video.glide(tuple(end), 2.0)
@@ -1861,9 +1674,9 @@ class TestReviewDemos:
             video.caption("Right-click the floor, Workcell library…")
             video.glide(floor, 1.0)
             video.context_click()
-            item = _menu_item(screen, "Workcell library")
+            item = menu_item(screen, "Workcell library")
             video.pause(0.4)
-            video.glide(_center(item), 0.6)
+            video.glide(center(item), 0.6)
             video.click(
                 settle=lambda: wait(screen).until(
                     lambda _: marked_element(screen, "workcell-library").is_displayed()
@@ -1872,10 +1685,10 @@ class TestReviewDemos:
             video.caption("It opens in the scene panel, beside the program")
             video.pause(1.2)
             video.caption("Name the objects and save them")
-            video.glide(_center(marked_element(screen, "workcell-name")), 0.8)
+            video.glide(center(marked_element(screen, "workcell-name")), 0.8)
             video.click()
             video.type("bench")
-            video.glide(_center(marked_element(screen, "workcell-save")), 0.6)
+            video.glide(center(marked_element(screen, "workcell-save")), 0.6)
             video.click(
                 settle=lambda: wait(screen).until(
                     lambda _: "Saved bench"
@@ -1891,23 +1704,23 @@ class TestReviewDemos:
                     == ["shape:Stock"]
                 )
             )
-            video.glide(_center(marked_element(screen, "object-actions")), 0.8)
+            video.glide(center(marked_element(screen, "object-actions")), 0.8)
             video.click()
             delete = _settled(screen, lambda: marked_element(screen, "object-delete"))
             video.pause(0.3)
-            video.glide(_center(delete), 0.6)
+            video.glide(center(delete), 0.6)
             video.click(
                 settle=lambda: confirmed(screen, lambda: len(handle.shapes) == 1)
             )
             video.pause(0.8)
             video.caption("Load bench puts the saved objects back")
-            video.glide(_center(marked_element(screen, "workcell-load:bench")), 1.0)
+            video.glide(center(marked_element(screen, "workcell-load:bench")), 1.0)
             video.click(
                 settle=lambda: confirmed(screen, lambda: handle.shapes == shapes)
             )
             video.pause(1.4)
             video.caption("Or insert them into the program as code")
-            video.glide(_center(marked_element(screen, "workcell-insert")), 0.8)
+            video.glide(center(marked_element(screen, "workcell-insert")), 0.8)
             video.click(
                 settle=lambda: wait(screen).until(
                     lambda _: "set_shapes("
@@ -1969,7 +1782,7 @@ def test_comparing_plan_and_prediction(screen):
         video.caption("The plan, with the physics prediction drawn where it leaves it")
         video.pause(2.5)
         video.caption("Peak jumps to the largest deviation")
-        video.glide(_center(peak), 1.2)
+        video.glide(center(peak), 1.2)
         video.click(
             settle=lambda: wait(screen).until(
                 lambda _: scene_js(

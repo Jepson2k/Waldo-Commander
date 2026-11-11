@@ -1,4 +1,5 @@
-"""Transient primitive drawing on the floor or a resolved box face."""
+"""New keep-outs on the floor or a resolved box face: placed at a default
+size, or drawn there with the pointer."""
 
 from __future__ import annotations
 
@@ -6,12 +7,18 @@ import math
 from typing import Any
 
 import numpy as np
-from nicegui import ui
 from scipy.spatial.transform import Rotation
-from waldoctl.shapes import SHAPE_PREFIX, pose_matrix
+from waldoctl.shapes import SHAPE_PREFIX, Shape, pose_matrix
 
 from waldo_commander.scene3d.interaction import finite
 from .shape_editing_mixin import ShapeEditingMixin, _KINDS, _PLACEABLE
+
+# Reasonable birth sizes (m) so a fresh shape is visible and grabbable.
+_DEFAULT_DIMS: dict[str, dict[str, float]] = {
+    "box": {"x": 0.1, "y": 0.1, "z": 0.1},
+    "sphere": {"radius": 0.05},
+    "cylinder": {"radius": 0.05, "length": 0.1},
+}
 
 
 def surface_frame(normal: np.ndarray, preferred: np.ndarray) -> np.ndarray:
@@ -24,6 +31,11 @@ def surface_frame(normal: np.ndarray, preferred: np.ndarray) -> np.ndarray:
         tangent = tangent - normal * np.dot(tangent, normal)
     tangent = tangent / np.linalg.norm(tangent)
     return np.column_stack((tangent, np.cross(normal, tangent), normal))
+
+
+def _plane_rotation(normal: np.ndarray) -> np.ndarray:
+    """The frame a shape made on a plane with *normal* stands in."""
+    return surface_frame(normal, np.eye(3)[0 if abs(normal[0]) < 0.9 else 1])
 
 
 class ShapeDrawingMixin(ShapeEditingMixin):
@@ -42,6 +54,7 @@ class ShapeDrawingMixin(ShapeEditingMixin):
         self._context_surface = None
         self._drawing = None
         self._drawing_session = 0
+        self._keepout_card = None
 
     def _resolve_draw_surface(self, args):
         raw = args.get("surface")
@@ -69,36 +82,71 @@ class ShapeDrawingMixin(ShapeEditingMixin):
         local[axis] = math.copysign(half[axis], local[axis])
         origin = transform[:3, 3] + transform[:3, :3] @ local
         self._context_surface = {
+            "id": key,
             "origin": origin.tolist(),
             "normal": normal.tolist(),
             "label": f"Face of {shape.name}",
         }
 
-    def _populate_draw_menu(self, point, surface=None):
-        plane = surface or {
-            "origin": list(point),
-            "normal": [0, 0, 1],
-            "label": "Floor",
-        }
-        context = self.object_history.context()
-        ui.separator()
-        ui.item(f"Draw keep-out · {plane['label']}").classes("font-bold text-sm")
-        for kind in _PLACEABLE:
-            ui.menu_item(
-                f"Draw {kind.capitalize()}…",
-                on_click=lambda k=kind, p=plane: self._start_shape_drawing(
-                    k, p, context
-                ),
-            ).mark(f"scene-draw-{kind}")
+    async def _add_shape(
+        self, label: str, shape: Shape, context, *, installation: bool, resize=False
+    ) -> bool:
+        """Commit the new *shape*, selected (in its resize handles with
+        *resize*), or into the installation proposal; whether it was taken."""
+        handle = self._shape_handle()
+        if installation:
+            return await self._commit_objects(
+                label,
+                list(handle.shapes),
+                context,
+                draft=(*handle.installation_draft, shape),
+            )
+        if not await self._commit_objects(label, [*handle.shapes, shape], context):
+            return False
+        if resize:
+            self._object_mode = "resize"
+        self._select_objects([f"{SHAPE_PREFIX}{shape.name}"])
+        return True
 
-    def _start_shape_drawing(self, kind, plane, context):
+    async def _place_shape(self, kind: str, plane, *, installation=False) -> bool:
+        """A default-sized *kind* standing on *plane* at its origin; whether
+        it was added."""
+        if self._shape_handle() is None or kind not in _PLACEABLE:
+            return False
+        dims = dict(_DEFAULT_DIMS[kind])
+        lift = (
+            dims["z"] / 2
+            if kind == "box"
+            else dims["length"] / 2
+            if kind == "cylinder"
+            else dims["radius"]
+        )
+        normal = np.array(plane["normal"], dtype=float)
+        rotation = _plane_rotation(normal)
+        # To the millimetre, as a position typed into the program would be.
+        center = [round(float(v), 3) for v in np.array(plane["origin"]) + normal * lift]
+        # Upright, its angles are written as plain zeros.
+        turn = (
+            (0.0, 0.0, 0.0)
+            if np.allclose(rotation, np.eye(3))
+            else tuple(Rotation.from_matrix(rotation).as_euler("xyz").tolist())
+        )
+        shape = _KINDS[kind](
+            name=self._fresh_shape_name(kind), pose=(*center, *turn), **dims
+        )
+        return await self._add_shape(
+            "Create object",
+            shape,
+            self.object_history.context(),
+            installation=installation,
+        )
+
+    def _start_shape_drawing(self, kind, plane, context, *, installation=False):
+        """Arm a drawing of *kind* on *plane*; its session. ValueError says
+        why the world cannot take one now."""
         if kind not in _PLACEABLE:
-            return
-        try:
-            self.object_history.guard(context)
-        except ValueError as error:
-            self._notify(str(error), warning=True)
-            return
+            raise ValueError(f"A {kind} cannot be drawn")
+        self.object_history.guard(context)
         # Taking control for the drawing is no change of control to end it.
         self._admitted()
         self._cancel_shape_drawing()
@@ -106,23 +154,41 @@ class ShapeDrawingMixin(ShapeEditingMixin):
         self.cancel_target_edit()
         self.inspection.clear_cursor()
         self.suspend_hover()
-        normal = np.array(plane["normal"], dtype=float)
-        rotation = surface_frame(normal, np.eye(3)[0 if abs(normal[0]) < 0.9 else 1])
+        rotation = _plane_rotation(np.array(plane["normal"], dtype=float))
         self._drawing_session += 1
         self._drawing = {
             "session": self._drawing_session,
             "primitive": kind,
             "origin": plane["origin"],
             "quaternion": Rotation.from_matrix(rotation).as_quat().tolist(),
-            "label": plane["label"],
             "context": context,
+            "installation": installation,
         }
         self._push_interaction()
+        self._drawing_changed()
+        return self._drawing_session
 
     def _shape_draw_state(self):
         if self._drawing is None:
             return None
-        return {k: v for k, v in self._drawing.items() if k != "context"}
+        return {
+            k: self._drawing[k]
+            for k in ("session", "primitive", "origin", "quaternion")
+        }
+
+    def _drawing_changed(self) -> None:
+        if self._keepout_card is not None:
+            self._keepout_card.follow()
+
+    def _on_draw_phase(self, event) -> None:
+        args = event.args
+        if (
+            self._drawing is not None
+            and isinstance(args, dict)
+            and args.get("session") == self._drawing["session"]
+            and self._keepout_card is not None
+        ):
+            self._keepout_card.show_phase(args)
 
     def _cancel_shape_drawing(self, event=None):
         if self._drawing is None:
@@ -133,6 +199,7 @@ class ShapeDrawingMixin(ShapeEditingMixin):
         self.scene.gestures.abort("draw")
         self.resume_hover()
         self._push_interaction()
+        self._drawing_changed()
 
     def check_drawing_context(self):
         if self._drawing and self._drawing["context"] != self.object_history.context():
@@ -184,10 +251,16 @@ class ShapeDrawingMixin(ShapeEditingMixin):
         )
 
         async def commit():
-            if await self._commit_objects(
-                "Draw object", [*self._shape_handle().shapes, shape], state["context"]
+            if not await self._add_shape(
+                "Draw object",
+                shape,
+                state["context"],
+                installation=state["installation"],
+                resize=True,
             ):
-                self._object_mode = "resize"
-                self._select_objects([f"{SHAPE_PREFIX}{shape.name}"])
+                return
+            card = self._keepout_card
+            if card is not None and card.session == state["session"]:
+                card.close()
 
         self._spawn(commit())

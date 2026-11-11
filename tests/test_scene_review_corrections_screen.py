@@ -11,10 +11,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import (
-    click_tab,
-    close_panel,
     click_marked,
-    marked_element,
     run_in_app,
     viewport,
 )
@@ -22,8 +19,6 @@ from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     end_target_edit,
-    PATH_PROGRAM,
-    PATH_VIEW,
     at_start,
     camera_kept,
     choose,
@@ -34,7 +29,6 @@ from tests.helpers.scene_screen import (
     grab_ring,
     hold,
     marker_mm,
-    path_point,
     probe,
     program_previewed,
     zoom,
@@ -300,76 +294,3 @@ class TestReviewCorrections:
                 ActionChains(screen.selenium).release().perform()
                 if run_in_app(lambda: scene._edit_active):
                     end_target_edit(screen)
-
-    def test_path_uses_the_simulator_and_shared_timeline(self, class_screen):
-        screen = class_screen
-        screen_wait_for_scene_ready(screen, timeout_s=40)
-        at_start(screen)
-        with (
-            viewport(screen, 1920, 1080),
-            camera_kept(screen),
-            program_previewed(PATH_PROGRAM),
-        ):
-            evidence = VisualEvidence(screen, "review-corrections/scrubbing")
-            try:
-                scene_js(
-                    screen,
-                    "S.setCameraPose(arguments[0])",
-                    PATH_VIEW,
-                )
-                wait_for_scene_idle(screen)
-                blocks = scene_js(screen, "return S.inspection().records[0].blocks")
-                block = next(b for b in blocks if b["line"] == 7)
-                x, y, _ = path_point(screen, block["command"], 0.7)
-                before = waldoctl.commander.status.joints.angles.rad.copy()
-                action = ActionChains(screen.selenium)
-                pointer_to(screen, x, y, action)
-                action.perform()
-                wait_for_scene_idle(screen)
-                assert not scene_js(screen, "return S.inspection().current")
-                assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
-                    before
-                )
-                evidence.capture("01-hover-does-not-preview-1920")
-                ActionChains(screen.selenium).click().perform()
-                wait(screen).until(
-                    lambda _: not np.allclose(
-                        waldoctl.commander.status.joints.angles.rad, before
-                    )
-                )
-                assert not screen.selenium.find_elements(
-                    By.CSS_SELECTOR, ".wc-path-card"
-                )
-                state = scene_js(screen, "return S.inspection()")
-                assert run_in_app(
-                    lambda: waldoctl.commander.programs.active.dry_run.playback.playback_time
-                ) == pytest.approx(state["time"])
-                evidence.capture("02-simulator-scrub-1920")
-                click_tab(screen, "program")
-                timeline = marked_element(screen, "editor-scrub-slider")
-                action = ActionChains(screen.selenium, duration=0)
-                action.move_to_element_with_offset(
-                    timeline, -timeline.size["width"] / 2 + 3, 0
-                ).click().perform()
-
-                # The pinned point follows the scrub bar back to near the start.
-                def followed(_) -> bool:
-                    shown = scene_js(screen, "return S.inspection().time")
-                    playback = run_in_app(
-                        lambda: waldoctl.commander.programs.active.dry_run.playback.playback_time
-                    )
-                    return (
-                        shown is not None
-                        and shown < state["time"]
-                        and abs(shown - playback) < 0.05
-                    )
-
-                wait(screen).until(followed)
-                evidence.capture("03-shared-timeline-1920")
-                evidence.finish()
-            finally:
-                evidence.stop()
-                ActionChains(screen.selenium).send_keys(Keys.ESCAPE).perform()
-                # A failure before the panel opened must not hide behind this.
-                if screen.selenium.find_elements(By.CSS_SELECTOR, ".program-panel"):
-                    close_panel(screen, "program-panel")

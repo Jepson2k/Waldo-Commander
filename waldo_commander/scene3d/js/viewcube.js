@@ -17,11 +17,13 @@ import { setStyle } from "./dom.js";
 const BAND = 0.26;
 // The rounding of the edges and corners, as a fraction of a side, and the
 // steps each rounding is drawn in.
-const ROUND = 0.16;
-const ROUND_STEPS = 5;
+const ROUND = 0.06;
+const ROUND_STEPS = 3;
 // The drawing's half-width in sides: the cube and its axes past the corner.
-const EXTENT = 0.86;
+const EXTENT = 1.1;
 const TEXTURE = 256;
+// The width of the line drawn round each face, in texels.
+const EDGE = 3;
 // Where else a point is looked for, in pixels, when the ray there finds nothing.
 const NUDGES = [[0, 0], [0.3, 0.3], [-0.3, -0.3]];
 // How far a press may move and still be a click, in pixels.
@@ -34,20 +36,21 @@ const SHADE = 0.62;
 // How close to straight up or down an orbit may look.
 const POLE = 1e-6;
 // The axes run along the edges from the left front bottom corner, just
-// outside the cube, and past it a little.
+// outside the cube, and well past it: that corner is the far one in the
+// usual view, so only what passes the cube shows.
 const AXIS_OFFSET = 0.035;
-const AXIS_END = 0.56;
-const AXIS_RADIUS = 0.022;
+const AXIS_END = 0.8;
+const AXIS_RADIUS = 0.03;
 
 // Each face: the direction it is seen from, and its right and up as its
 // label reads.
 export const FACES = [
-  { label: "FRONT", n: [0, -1, 0], r: [1, 0, 0], u: [0, 0, 1] },
-  { label: "BACK", n: [0, 1, 0], r: [-1, 0, 0], u: [0, 0, 1] },
-  { label: "RIGHT", n: [1, 0, 0], r: [0, 1, 0], u: [0, 0, 1] },
-  { label: "LEFT", n: [-1, 0, 0], r: [0, -1, 0], u: [0, 0, 1] },
-  { label: "TOP", n: [0, 0, 1], r: [1, 0, 0], u: [0, 1, 0] },
-  { label: "BOTTOM", n: [0, 0, -1], r: [1, 0, 0], u: [0, -1, 0] },
+  { label: "Front", n: [0, -1, 0], r: [1, 0, 0], u: [0, 0, 1] },
+  { label: "Back", n: [0, 1, 0], r: [-1, 0, 0], u: [0, 0, 1] },
+  { label: "Right", n: [1, 0, 0], r: [0, 1, 0], u: [0, 0, 1] },
+  { label: "Left", n: [-1, 0, 0], r: [0, -1, 0], u: [0, 0, 1] },
+  { label: "Top", n: [0, 0, 1], r: [1, 0, 0], u: [0, 1, 0] },
+  { label: "Bottom", n: [0, 0, -1], r: [1, 0, 0], u: [0, -1, 0] },
 ];
 
 // The faces in the order a box geometry's groups are: +x, -x, +y, -y, +z, -z.
@@ -190,6 +193,7 @@ export class ViewCube {
     const family = token("font-sans") || "sans-serif";
     this.colors = {
       face: token("control"),
+      edge: token("glass-border"),
       label: token("text-muted"),
       lit: app.action || token("action"),
       litLabel: token("on-bright"),
@@ -219,6 +223,9 @@ export class ViewCube {
       ctx.fillStyle = c.lit;
       ctx.fillRect((x0 + 0.5) * TEXTURE, (0.5 - y1) * TEXTURE, (x1 - x0) * TEXTURE, (y1 - y0) * TEXTURE);
     }
+    ctx.strokeStyle = c.edge;
+    ctx.lineWidth = EDGE;
+    ctx.strokeRect(EDGE / 2, EDGE / 2, TEXTURE - EDGE, TEXTURE - EDGE);
     ctx.font = this.font;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";

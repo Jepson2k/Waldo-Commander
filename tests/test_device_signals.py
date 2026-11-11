@@ -22,7 +22,6 @@ from tests.helpers.wait import (
     ensure_robot_ready_for_motion,
     poll_until,
 )
-from tests.test_editor_integration import _set_selection
 from waldo_commander.services.path_preview_client import PathPreviewClient
 from waldo_commander.services.programs import (
     is_any_program_recording,
@@ -207,18 +206,23 @@ async def test_saved_named_output_readback_wait_cancellation_and_disconnection(
         user.find(marker="tab-program").click()
         textarea = ui_state.active_textarea
         assert textarea is not None
-        # The call the editor generates for a saved mapping, run as a selection.
+        # The calls the editor generates for saved mappings, in one program.
+        # Time an operator holds it at a step is not the first write's budget.
         entries, _ = library(ui_state.active_robot)
-        snippet = call_source(
+        held_write = call_source(
+            entries["waldo.write_signal"],
+            {"signal": signal, "value": False, "timeout": 0.5},
+        )
+        generated = call_source(
             entries["waldo.write_signal"],
             {
                 "signal": SetupStore(tmp_path).load("cell").signals["valve"],
-                "value": True,
+                "value": False,
             },
         )
         textarea.value = (
             "from parol6 import RobotClient\nwith RobotClient() as rbt:\n"
-            + textwrap.indent(snippet, "    ")
+            + textwrap.indent(held_write + "\n" + generated, "    ")
             + "\n"
         )
         await asyncio.sleep(0)
@@ -231,42 +235,6 @@ async def test_saved_named_output_readback_wait_cancellation_and_disconnection(
             error is not None
             and "Named signals need an explicit SignalFixture" in error
         )
-        call = next(
-            number
-            for number, line in enumerate(str(textarea.value).split("\n"), start=1)
-            if "_skill_waldo_write_signal(" in line
-        )
-        _set_selection(textarea, call, call)
-        await asyncio.sleep(0)
-        user.find(marker="editor-run-selection").click()
-        editor = ui_state.editor_panel
-        async with asyncio.timeout(30):
-            await asyncio.sleep(0.1)
-            while editor._running_selection or is_any_program_running():
-                await asyncio.sleep(0.05)
-        assert script_exec.last_exit_code == 0, "\n".join(
-            entry.text for entry in waldoctl.commander.programs.active.log.entries
-        )
-        assert (await client.io())[2] == 1, (
-            "generated Python did not write the selected mapping"
-        )
-        await write_signal.async_call(client, signal, True)
-        with pytest.raises(MissingCapability):
-            await read_signal.async_call(
-                client, DigitalSignal("par6", "input", 0, 2, 2)
-            )
-
-        # Time an operator holds a program at a step is not the write's budget.
-        snippet = call_source(
-            entries["waldo.write_signal"],
-            {"signal": signal, "value": False, "timeout": 0.5},
-        )
-        textarea.value = (
-            "from parol6 import RobotClient\nwith RobotClient() as rbt:\n"
-            + textwrap.indent(snippet, "    ")
-            + "\n"
-        )
-        await asyncio.sleep(0)
         await script_exec.start(paused=True)
         await poll_until(
             client.io,
@@ -286,6 +254,13 @@ async def test_saved_named_output_readback_wait_cancellation_and_disconnection(
         assert script_exec.last_exit_code == 0, "\n".join(
             entry.text for entry in waldoctl.commander.programs.active.log.entries
         )
+        assert (await client.io())[2] == 0, (
+            "generated Python did not write the selected mapping"
+        )
+        with pytest.raises(MissingCapability):
+            await read_signal.async_call(
+                client, DigitalSignal("par6", "input", 0, 2, 2)
+            )
 
         # At 1 Hz the frame a client holds can be a second old; a wait must
         # not report the level it shows as a match.

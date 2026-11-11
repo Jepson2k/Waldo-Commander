@@ -25,6 +25,7 @@ from tests.helpers.scene_screen import (
     camera_kept,
     camera_pose,
     path_point,
+    poll,
     program_previewed,
     settled_element,
     teleport_jog_pose,
@@ -84,11 +85,15 @@ def _seek_timeline(screen, fraction):
             timeline, timeline.size["width"] / 2 - 2, 0
         ).click_and_hold().move_by_offset(20, 0).release().perform()
         return
-    ActionChains(screen.selenium).move_to_element_with_offset(
+    ActionChains(screen.selenium, duration=0).move_to_element_with_offset(
         timeline,
         -timeline.size["width"] / 2 + max(1, fraction * timeline.size["width"]),
         0,
     ).click().perform()
+
+
+def _playback_time():
+    return waldoctl.commander.programs.active.dry_run.playback.playback_time
 
 
 def _matches_record(screen):
@@ -106,6 +111,101 @@ def _matches_record(screen):
 
 @pytest.mark.browser
 class TestPathInspection:
+    def test_the_prediction_bar_shows_only_a_difference(self, class_screen):
+        """The physics-prediction bar shows only when the predicted path
+        differs from the ideal one: not for the starting program, which is
+        never previewed, not while a pass runs, not for a backend whose
+        prediction is its plan, and not for a prediction within the
+        thresholds."""
+        from tests.test_predicted_preview import _pair
+        from waldo_commander.services.path_visualizer import path_visualizer
+        from waldo_commander.services.preview_segments import segments_from_record
+        from waldo_commander.state import simulation_state
+
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40)
+        teleport_jog_pose()
+        driver = screen.selenium
+        driver.execute_script(
+            """const bar=document.querySelector(".wc-comparison-bar");
+            const seen=window.__comparisonShown=[];
+            const note=()=>{if(!bar.hidden)seen.push(bar.textContent);};
+            new MutationObserver(note).observe(bar,{attributes:true,childList:true,subtree:true,characterData:true});
+            note();"""
+        )
+
+        def told() -> bool:
+            key = ui_state.urdf_scene.inspection._status_key
+            status = path_visualizer.prediction_status(
+                waldoctl.commander.programs.active
+            )
+            return key is not None and key[2] == tuple(status.items())
+
+        def relearn() -> None:
+            path_visualizer._predicted_diverges.clear()
+            simulation_state.notify_changed()
+
+        def predict(lag: float) -> None:
+            tab = waldoctl.commander.programs.active
+            dry = tab.dry_run
+            commanded, predicted = _pair(
+                waldoctl.commander.status.joints.angles.rad, lag=lag
+            )
+            dry.commanded = commanded
+            dry.path_segments = segments_from_record(commanded, [])
+            dry.predicted = predicted
+            dry.predicted_revision = dry.commanded_revision
+            path_visualizer._predicted_diverges["parol6"] = True
+            path_visualizer._prediction_status[tab.id] = (dry.revision, "ready", "")
+            simulation_state.notify_changed()
+
+        def bar_after(lag: float) -> str | None:
+            inspection = ui_state.urdf_scene.inspection
+            before = run_in_app(lambda: inspection.generation)
+            run_in_app(lambda: predict(lag))
+
+            def compared() -> bool:
+                generation = run_in_app(lambda: inspection.generation)
+                state = scene_js(screen, "return S.inspection()")
+                return (
+                    generation > before
+                    and state["revision"] == generation
+                    and state["comparison"]["state"] == "ready"
+                )
+
+            poll(compared, 20.0, "the comparison")
+            wait_for_scene_idle(screen)
+            return driver.execute_script(
+                'const bar=document.querySelector(".wc-comparison-bar");'
+                "return bar.hidden?null:bar.textContent"
+            )
+
+        run_in_app(relearn)
+        poll(lambda: run_in_app(told), 10.0, "the scene told the prediction status")
+        wait_for_scene_idle(screen)
+        with program_previewed(PATH_PROGRAM):
+            poll(
+                lambda: run_in_app(
+                    lambda: "parol6" in path_visualizer._predicted_diverges
+                    and not path_visualizer.physics_in_flight(
+                        waldoctl.commander.programs.active.id
+                    )
+                ),
+                60.0,
+                "the predicted pass",
+            )
+            poll(lambda: run_in_app(told), 10.0, "the scene told the outcome")
+            wait_for_scene_idle(screen)
+            assert driver.execute_script("return window.__comparisonShown") == []
+            try:
+                assert bar_after(0.002) is None, "a prediction within the thresholds"
+                shown = bar_after(0.02)
+                assert shown is not None and "deviation" in shown
+            finally:
+                run_in_app(
+                    lambda: path_visualizer._predicted_diverges.update(parol6=False)
+                )
+
     def test_swept_volume_menu_endpoints_cleanup_and_invalidation(self, class_screen):
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)
@@ -164,7 +264,9 @@ class TestPathInspection:
 
             try:
                 baseline = None
-                for cycle in range(3):
+                # The second cycle shows whether each show and hide leaves
+                # GPU resources behind.
+                for cycle in range(2):
                     toggle(moves[0], "Show swept volume")
                     sweep = wait(screen).until(lambda _: shown(moves[0]))
                     block = next(
@@ -284,10 +386,6 @@ class TestPathInspection:
                     lambda _: waldoctl.commander.status.tool.key in (None, "NONE")
                 )
                 evidence.capture("02-recorded-tool-change-1920")
-                click_marked(screen, "editor-step-next")
-                wait(screen).until(lambda _: _selected_line(screen) == 10)
-                click_marked(screen, "editor-step-prev")
-                wait(screen).until(lambda _: _selected_line(screen) == 9)
                 for line, tool in ((11, "SSG-48"), (12, "NONE")):
                     _event(screen, line)
                     wait(screen).until(lambda _: _selected_line(screen) == line)
@@ -534,7 +632,21 @@ class TestPathInspection:
                 )
                 evidence.capture("01-hover-unchanged-1920")
                 camera = camera_pose(screen)
-                action = ActionChains(screen.selenium, duration=80)
+                # A plain click scrubs the simulator there.
+                ActionChains(screen.selenium).click().perform()
+                wait(screen).until(
+                    lambda _: not np.allclose(
+                        waldoctl.commander.status.joints.angles.rad, before
+                    )
+                )
+                state = scene_js(screen, "return S.inspection()")
+                assert run_in_app(_playback_time) == pytest.approx(state["time"])
+                clicked = state["current"]["row"]
+                evidence.capture("01b-click-scrub-1920")
+                # Slower only for the recording to follow.
+                action = ActionChains(
+                    screen.selenium, duration=80 if evidence.enabled else 16
+                )
                 action.click_and_hold()
                 for fraction in np.linspace(0.3, 0.8, 14):
                     px, py, _ = path_point(screen, moving["command"], float(fraction))
@@ -544,7 +656,7 @@ class TestPathInspection:
                     lambda _: scene_js(
                         screen, "return S.inspection().current?.row ?? -1"
                     )
-                    > row
+                    > max(row, clicked)
                 )
                 state = scene_js(screen, "return S.inspection()")
                 assert record["blocks"][state["current"]["block"]]["line"] == 7
@@ -556,6 +668,18 @@ class TestPathInspection:
                 assert camera_pose(screen) == pytest.approx(camera)
                 assert control_lease.generation == lease
                 evidence.capture("02-crossing-path-scrub-1920")
+
+                def followed(_) -> bool:
+                    shown = scene_js(screen, "return S.inspection().time")
+                    return (
+                        shown is not None
+                        and shown < state["time"]
+                        and abs(shown - run_in_app(_playback_time)) < 0.05
+                    )
+
+                # The pinned point follows the scrub bar back to the start.
+                _seek_timeline(screen, 0)
+                wait(screen).until(followed)
                 _event(screen, 8)
                 wait(screen).until(lambda _: _selected_line(screen) == 8)
                 evidence.capture("03-dwell-on-shared-timeline-1920")

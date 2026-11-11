@@ -20,18 +20,53 @@ from waldo_commander.state import ui_state
 app_storage: Any = getattr(ng_app, "storage")
 
 
+async def _reconciled() -> None:
+    """Wait for every page's offset reconcile to finish, pushes included."""
+    from nicegui import background_tasks
+
+    assert await wait_until(
+        lambda: not any(
+            t.get_name() == "tcp-offset-reconcile"
+            for t in background_tasks.running_tasks
+        ),
+        timeout_s=10.0,
+    ), "the TCP offset reconcile never finished"
+
+
 @pytest.mark.integration
-async def test_settings_dialog_rows_drive_their_settings(user: User) -> None:
+async def test_settings_rows_drive_and_follow_the_controller(user: User) -> None:
     """The gear opens the Settings dialog with every category's rows built.
     Show Route and the envelope mode reach ``commander.settings.view``; the
     tool select persists each choice, shows a variant row only for a tool
     with variants, and offers a TCP correction for fitted tools and the bare
-    flange alike."""
+    flange alike.
+
+    A transform set outside Settings -- by another client, or by a program
+    on the same tool -- is where the next nudge starts from, and a finished
+    run shows it in the inputs.
+
+    Settings binds TCP edits to the tool the controller actually carries,
+    and follows a variant another client selected."""
     import waldoctl
     from waldoctl import EnvelopeMode
 
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.programs import is_any_program_running
+
     await user.open("/")
     await wait_for_app_ready()
+    client = ui_state.control_panel.client
+
+    def shown(marker: str):
+        return next(iter(user.find(marker=marker).elements))
+
+    async def expect_transform(expected: list[float]) -> None:
+        await poll_until(
+            client.tcp_transform,
+            lambda got: [round(float(v), 3) for v in got] == expected,
+            timeout_s=5.0,
+            what=f"controller TCP transform {expected}",
+        )
 
     assert not ui_state.settings_content.dialog.value
     user.find(marker="tab-settings").click()
@@ -128,19 +163,127 @@ async def test_settings_dialog_rows_drive_their_settings(user: User) -> None:
     await asyncio.sleep(0)
     assert not ui_state.settings_content.dialog.value
 
+    # Picking the bare flange re-applies its remembered offset once the
+    # select's handler is done; a transform set from outside must land after.
+    content = ui_state.settings_content
+    assert await wait_until(lambda: not content._tool_lock.locked(), timeout_s=10.0), (
+        "the tool select's handler never finished"
+    )
+    await _reconciled()
+
+    try:
+        index = await client.select_tool("NONE")
+        assert index >= 0 and await client.wait_command(index, timeout=5)
+        user.find(marker="tab-settings").click()
+        await user.should_see("TCP offset")
+
+        index = await client.set_tcp_transform(10.0, 0.0, 0.0, 0.0, 0.0, 30.0)
+        assert index >= 0 and await client.wait_command(index, timeout=5)
+        user.find(marker="tcp-offset-y").trigger("update:modelValue", 1.0)
+        await expect_transform([10.0, 1.0, 0.0, 0.0, 0.0, 30.0])
+
+        user.find(marker="tab-program").click()
+        await asyncio.sleep(0)
+        textarea = ui_state.active_textarea
+        assert textarea is not None
+        textarea.value = (
+            "from parol6 import RobotClient\n"
+            "with RobotClient() as rbt:\n"
+            "    index = rbt.set_tcp_transform(20.0, 1.0, 0.0, 0.0, 0.0, 45.0)\n"
+            "    assert rbt.wait_command(index, timeout=5)\n"
+        )
+        await script_exec.start()
+        async with asyncio.timeout(30):
+            while is_any_program_running():
+                await asyncio.sleep(0.05)
+        assert script_exec.last_exit_code == 0
+
+        user.find(marker="tab-settings").click()
+        await poll_until(
+            lambda: [
+                round(float(shown(f"tcp-offset-{axis}").value), 3)
+                for axis in ("x", "yaw")
+            ],
+            lambda values: values == [20.0, 45.0],
+            timeout_s=5.0,
+            what="Settings showing the transform the program set",
+        )
+        user.find(marker="tcp-offset-z").trigger("update:modelValue", 2.0)
+        await expect_transform([20.0, 1.0, 2.0, 0.0, 0.0, 45.0])
+    finally:
+        await client.set_tcp_transform()
+
+    user.find(marker="tab-settings").click()
+    await asyncio.sleep(0)
+
+    async def completed(index: int) -> None:
+        assert index >= 0 and await client.wait_command(index, timeout=5)
+
+    try:
+        # A program fits a tool that has variants without naming one.
+        await completed(await client.select_tool("SSG-48"))
+        await wait_for_tool_key("SSG-48", timeout_s=5)
+        await poll_until(
+            lambda: shown("select-tool").value,
+            lambda v: v == "SSG-48",
+            timeout_s=5,
+            what="Settings adopting SSG-48",
+        )
+        await user.should_see("TCP offset")
+        user.find(marker="tcp-offset-x").trigger("update:modelValue", 3.0)
+        await expect_transform([3.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+        # Variants selected elsewhere are followed, not just tool keys.
+        await completed(await client.select_tool("PNEUMATIC", variant_key="horizontal"))
+        await wait_for_tool_key("PNEUMATIC", timeout_s=5)
+        await poll_until(
+            lambda: shown("select-tool-variant").value,
+            lambda v: v == "horizontal",
+            timeout_s=5,
+            what="the variant select adopting horizontal",
+        )
+        await completed(await client.select_tool("PNEUMATIC", variant_key="vertical"))
+        await poll_until(
+            lambda: shown("select-tool-variant").value,
+            lambda v: v == "vertical",
+            timeout_s=5,
+            what="the variant select adopting vertical",
+        )
+        assert app_storage.general.get("tool_variant_PNEUMATIC") == "vertical"
+    finally:
+        await client.set_tcp_transform()
+        await client.select_tool("NONE")
+
 
 @pytest.mark.integration
-async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
+async def test_tcp_offset_reaches_the_controller_across_page_loads(
     user: User,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An offset typed into Settings is the offset the controller plans
     with, not a browser-local number: it lands via ``set_tcp_offset`` and
     reads back; a tool change (which resets the controller's offset) gets
     the remembered offset pushed again; and an offset another client set
-    is adopted when the page opens instead of being clobbered."""
+    is adopted when the page opens instead of being clobbered.
+
+    A page load carries no human intent to drive. With an AI session
+    holding control, the browser's remembered offset must not replace the
+    controller's, even on a controller this app has never told: the AI plans
+    its Cartesian moves with the TCP it has. And the controller's offset
+    belongs to the tool it carries: a page that remembers a different tool
+    must not file that offset under its own.
+
+    A run's end or a reconnect re-reads the controller's TCP, after any
+    Settings push in flight. A page that went away mid-push takes its push
+    task with it, so its lock is never released; the refresh must not wait
+    on it.
+
+    Edits go out one at a time, newest last. One still waiting when its
+    page disconnects has nobody left to see it land, so it never does."""
+    from waldo_commander.components import settings
+    from waldo_commander.components.settings import refresh_applied_tcp
     from waldo_commander.services import tcp_calibration
-    from waldo_commander.state import ui_state
+    from waldo_commander.services.control_lease import MCP, control_lease
 
     confirmed = asyncio.Event()
     release_readback = asyncio.Event()
@@ -251,163 +394,6 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
         await client.set_tcp_offset(0.0, 0.0, 0.0)
         await client.select_tool("NONE")
 
-
-@pytest.mark.integration
-async def test_settings_follows_controller_variants_and_setup_applied_tcp(
-    user: User,
-) -> None:
-    """Settings binds TCP edits to the tool the controller actually carries,
-    and follows a variant another client selected."""
-    await user.open("/")
-    await wait_for_app_ready()
-    client = ui_state.control_panel.client
-    user.find(marker="tab-settings").click()
-    await asyncio.sleep(0)
-
-    def shown(marker: str):
-        return next(iter(user.find(marker=marker).elements))
-
-    async def completed(index: int) -> None:
-        assert index >= 0 and await client.wait_command(index, timeout=5)
-
-    async def expect_transform(expected: list[float]) -> None:
-        await poll_until(
-            client.tcp_transform,
-            lambda got: [round(float(v), 3) for v in got] == expected,
-            timeout_s=5.0,
-            what=f"controller TCP transform {expected}",
-        )
-
-    try:
-        # A program fits a tool that has variants without naming one.
-        await completed(await client.select_tool("SSG-48"))
-        await wait_for_tool_key("SSG-48", timeout_s=5)
-        await poll_until(
-            lambda: shown("select-tool").value,
-            lambda v: v == "SSG-48",
-            timeout_s=5,
-            what="Settings adopting SSG-48",
-        )
-        await user.should_see("TCP offset")
-        user.find(marker="tcp-offset-x").trigger("update:modelValue", 3.0)
-        await expect_transform([3.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-
-        # Variants selected elsewhere are followed, not just tool keys.
-        await completed(await client.select_tool("PNEUMATIC", variant_key="horizontal"))
-        await wait_for_tool_key("PNEUMATIC", timeout_s=5)
-        await poll_until(
-            lambda: shown("select-tool-variant").value,
-            lambda v: v == "horizontal",
-            timeout_s=5,
-            what="the variant select adopting horizontal",
-        )
-        await completed(await client.select_tool("PNEUMATIC", variant_key="vertical"))
-        await poll_until(
-            lambda: shown("select-tool-variant").value,
-            lambda v: v == "vertical",
-            timeout_s=5,
-            what="the variant select adopting vertical",
-        )
-        assert app_storage.general.get("tool_variant_PNEUMATIC") == "vertical"
-    finally:
-        await client.set_tcp_transform()
-        await client.select_tool("NONE")
-
-
-@pytest.mark.integration
-async def test_program_tcp_change_survives_a_settings_nudge(user: User) -> None:
-    """A transform set outside Settings -- by another client, or by a program
-    on the same tool -- is where the next nudge starts from, and a finished
-    run shows it in the inputs."""
-    from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.services.programs import is_any_program_running
-
-    await user.open("/")
-    await wait_for_app_ready()
-    client = ui_state.control_panel.client
-
-    def shown(marker: str):
-        return next(iter(user.find(marker=marker).elements))
-
-    async def expect_transform(expected: list[float]) -> None:
-        await poll_until(
-            client.tcp_transform,
-            lambda got: [round(float(v), 3) for v in got] == expected,
-            timeout_s=5.0,
-            what=f"controller TCP transform {expected}",
-        )
-
-    try:
-        index = await client.select_tool("NONE")
-        assert index >= 0 and await client.wait_command(index, timeout=5)
-        user.find(marker="tab-settings").click()
-        await user.should_see("TCP offset")
-
-        index = await client.set_tcp_transform(10.0, 0.0, 0.0, 0.0, 0.0, 30.0)
-        assert index >= 0 and await client.wait_command(index, timeout=5)
-        user.find(marker="tcp-offset-y").trigger("update:modelValue", 1.0)
-        await expect_transform([10.0, 1.0, 0.0, 0.0, 0.0, 30.0])
-
-        user.find(marker="tab-program").click()
-        await asyncio.sleep(0)
-        textarea = ui_state.active_textarea
-        assert textarea is not None
-        textarea.value = (
-            "from parol6 import RobotClient\n"
-            "with RobotClient() as rbt:\n"
-            "    index = rbt.set_tcp_transform(20.0, 1.0, 0.0, 0.0, 0.0, 45.0)\n"
-            "    assert rbt.wait_command(index, timeout=5)\n"
-        )
-        await script_exec.start()
-        async with asyncio.timeout(30):
-            while is_any_program_running():
-                await asyncio.sleep(0.05)
-        assert script_exec.last_exit_code == 0
-
-        user.find(marker="tab-settings").click()
-        await poll_until(
-            lambda: [
-                round(float(shown(f"tcp-offset-{axis}").value), 3)
-                for axis in ("x", "yaw")
-            ],
-            lambda values: values == [20.0, 45.0],
-            timeout_s=5.0,
-            what="Settings showing the transform the program set",
-        )
-        user.find(marker="tcp-offset-z").trigger("update:modelValue", 2.0)
-        await expect_transform([20.0, 1.0, 2.0, 0.0, 0.0, 45.0])
-    finally:
-        await client.set_tcp_transform()
-
-
-async def _reconciled() -> None:
-    """Wait for every page's offset reconcile to finish, pushes included."""
-    from nicegui import background_tasks
-
-    assert await wait_until(
-        lambda: not any(
-            t.get_name() == "tcp-offset-reconcile"
-            for t in background_tasks.running_tasks
-        ),
-        timeout_s=10.0,
-    ), "the TCP offset reconcile never finished"
-
-
-@pytest.mark.integration
-async def test_opening_a_page_adopts_only_what_is_safe(
-    user: User, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A page load carries no human intent to drive. With an AI session
-    holding control, the browser's remembered offset must not replace the
-    controller's, even on a controller this app has never told: the AI plans
-    its Cartesian moves with the TCP it has. And the controller's offset
-    belongs to the tool it carries: a page that remembers a different tool
-    must not file that offset under its own."""
-    from waldo_commander.components import settings
-    from waldo_commander.services.control_lease import MCP, control_lease
-
-    await user.open("/")
-    await wait_for_app_ready()
     client = ui_state.control_panel.client
     monkeypatch.setattr(settings, "_pushed_offset_tools", set())
     try:
@@ -450,21 +436,33 @@ async def test_opening_a_page_adopts_only_what_is_safe(
         await client.set_tcp_offset(0.0, 0.0, 0.0)
         await client.select_tool("NONE")
 
+    gone = ui_state.settings_content
+    assert gone is not None
+    await gone._tool_lock.acquire()
+    try:
+        await reload_page(user)
+        await asyncio.wait_for(
+            refresh_applied_tcp(ui_state.control_panel.client), timeout=5.0
+        )
+    finally:
+        gone._tool_lock.release()
 
-@pytest.mark.integration
-async def test_an_edit_queued_when_the_page_goes_is_dropped(
-    user: User, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Edits go out one at a time, newest last. One still waiting when its
-    page disconnects has nobody left to see it land, so it never does."""
-    page = await user.open("/")
-    await wait_for_app_ready()
+    page = user.client
     client = ui_state.control_panel.client
     content = ui_state.settings_content
     assert content is not None
 
     user.find(marker="tab-settings").click()
     await asyncio.sleep(0)
+    # This page may have opened before the controller dropped the tool fitted
+    # above; picking PNEUMATIC has to be a change, as on a fresh page.
+    await wait_for_tool_key("NONE", timeout_s=5.0)
+    await poll_until(
+        lambda: next(iter(user.find(marker="select-tool").elements)).value,
+        lambda shown: shown == "NONE",
+        what="Settings showing the bare flange",
+    )
+    await _reconciled()
     replaced = next(iter(user.find(marker="tcp-offset-x").elements))
     next(iter(user.find(marker="select-tool").elements)).set_value("PNEUMATIC")
     await wait_for_tool_key("PNEUMATIC", timeout_s=5.0)
@@ -501,27 +499,3 @@ async def test_an_edit_queued_when_the_page_goes_is_dropped(
         gate.set()
         await client.set_tcp_offset(0.0, 0.0, 0.0)
         await client.select_tool("NONE")
-
-
-@pytest.mark.integration
-async def test_a_page_that_is_gone_does_not_hold_up_the_tcp_refresh(
-    user: User,
-) -> None:
-    """A run's end or a reconnect re-reads the controller's TCP, after any
-    Settings push in flight. A page that went away mid-push takes its push
-    task with it, so its lock is never released; the refresh must not wait
-    on it."""
-    from waldo_commander.components.settings import refresh_applied_tcp
-
-    await user.open("/")
-    await wait_for_app_ready()
-    gone = ui_state.settings_content
-    assert gone is not None
-    await gone._tool_lock.acquire()
-    try:
-        await reload_page(user)
-        await asyncio.wait_for(
-            refresh_applied_tcp(ui_state.control_panel.client), timeout=5.0
-        )
-    finally:
-        gone._tool_lock.release()
