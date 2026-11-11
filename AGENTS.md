@@ -289,11 +289,14 @@ To make `nicegui/` edits live in WC's running process, run `pip install -e niceg
 
 ### NiceGUI fork
 
-WC pins NiceGUI to a SHA on `Jepson2k/nicegui`'s `combo-all-prs` branch — a synthetic branch that merges all of our open upstream PRs together so WC can use them as one unit. SHA pin (not branch ref) for reproducibility.
+WC pins NiceGUI to a SHA on `Jepson2k/nicegui`'s `combo-all-prs` branch — a synthetic branch that merges the fork's CodeMirror branches onto upstream `main` so WC can use them as one unit: `cm-selection-change`, `cm-diagnostics`, and `cm-insert-snippet` (which contains `cm-custom-completions`). The 3D view is WC's own element and needs nothing from the fork. SHA pin (not branch ref) for reproducibility.
 
-When an underlying PR branch changes, combo goes stale. Rebuilding it means
-merging the open PR branches into a fresh `combo-all-prs` and re-pinning WC's
-`pyproject.toml` to the new SHA. (In Claude Code the `/nicegui-combo-bump`
+When one of those branches changes, combo goes stale. Rebuilding it means
+merging them into a fresh `combo-rebuild-<date>` branch cut from upstream
+`main`, rebuilding the CodeMirror bundle there (`npm run clean && npm run
+build` in `nicegui/elements/codemirror/`), moving `combo-all-prs` to it, and
+re-pinning WC's `pyproject.toml` to the new SHA. The dated branches stay, so
+older pins remain installable. (In Claude Code the `/nicegui-combo-bump`
 skill does this; other agents do it by hand.)
 
 **Never commit directly to `combo-all-prs`** — it's regenerated each cycle and direct commits get clobbered. Anything that needs to persist must land on a feature branch first.
