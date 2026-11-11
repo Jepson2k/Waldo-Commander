@@ -355,6 +355,57 @@ async def test_commander_runs_on_the_par6_runtime(
             present = {row["node"] for row in table.rows if row["present"] == "yes"}
             assert {0, 1, 2, 3, 4, 5} <= present, f"scan rows: {table.rows}"
 
+        if any(
+            ep.name == "par6-contact" for ep in entry_points(group="waldoctl.panels")
+        ):
+            # par6's Contact tab: the runtime's own readout on screen, and a
+            # limit edited there applied to the running arm — read back from
+            # the runtime, not from the form.
+            await user.should_see(marker="tab-par6-contact")
+            user.find(marker="tab-par6-contact").click()
+            await asyncio.sleep(0)
+            await user.should_see(marker="contact-rows")
+            await poll_until(
+                lambda: _text("contact-trips"),
+                lambda t: t.startswith("Stops: 0"),
+                timeout_s=10.0,
+                what="the contact readout from the runtime",
+            )
+            shipped = await client.contact()
+            assert shipped is not None
+            limit = next(iter(user.find(marker="contact-sustained-0").elements))
+            await poll_until(
+                lambda: limit.value,
+                lambda v: v == pytest.approx(shipped.sustained_nm[0]),
+                what="the J1 limit seeded from the runtime",
+            )
+            limit.value = shipped.sustained_nm[0] + 0.5
+            await poll_until(
+                lambda: _text("contact-note"),
+                lambda note: note == "Edited, not applied",
+                what="the form to say the edit is pending",
+            )
+            user.find(marker="contact-apply").click()
+            applied = await poll_until(
+                client.contact,
+                lambda r: (
+                    r is not None
+                    and r.sustained_nm[0]
+                    == pytest.approx(shipped.sustained_nm[0] + 0.5)
+                ),
+                what="the edited limit in force on the runtime",
+            )
+            assert applied.sustained_nm[1:] == pytest.approx(shipped.sustained_nm[1:])
+            snippet = next(iter(user.find(marker="contact-snippet").elements))
+            assert (
+                f"sustained_nm = [{shipped.sustained_nm[0] + 0.5:g}," in snippet.content
+            )
+            await client.set_contact_limits(
+                reaction=shipped.reaction,
+                sustained_nm=shipped.sustained_nm,
+                impact_nm=shipped.impact_nm,
+            )
+
         import numpy as np
         from waldo_commander.skills import gripper_open, gripper_close, retract
         from waldoctl.setup import Pose
@@ -818,3 +869,84 @@ async def test_native_managed_timeout_cancels_the_accepted_move(
         robot = getattr(ui_state, "robot", None)
         if robot is not None:
             robot.stop()
+
+
+#: A post on the tool's circle that the runtime is never told about: the
+#: physics holds it, the collision world does not, so the arm finds it by
+#: running into it.
+_UNDECLARED_POST = """
+[obstacle]
+size_m = [0.06, 0.06, 0.4]
+pose = [0.3204, 0.185, 0.2, 0.0, 0.0, 0.0]
+"""
+
+
+@pytest.fixture
+def par6_with_a_post(par6_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """The simulator the app spawns holds the post. Ordered ahead of `user`
+    for the reason `par6_env` is: the daemon is spawned during its setup."""
+    scenario = tmp_path / "post.toml"
+    scenario.write_text(_UNDECLARED_POST)
+    monkeypatch.setenv("PAR6_SIM_SCENARIO", str(scenario))
+
+
+@requires_par6
+@pytest.mark.integration
+async def test_a_protective_stop_raises_its_banner_and_reset_takes_it_down(
+    par6_with_a_post: None, user: User
+) -> None:
+    """The arm runs into something, stops itself and holds. The control
+    panel says so — what it stopped for and what to do — for as long as
+    the stop stands, and its Reset is the reset that re-arms the arm."""
+    import asyncio
+
+    import numpy as np
+    import waldoctl
+    from par6.client import RobotError
+    from par6.protocol import ErrorCode
+
+    from waldo_commander.state import robot_state
+
+    await user.open("/")
+    await wait_for_app_ready(timeout_s=60)
+    client = waldoctl.commander.client
+    # Reaching down in front of the base, tool about 0.37 m out.
+    reach = [math.degrees(q) for q in (0.0, -0.25, 4.35, 0.0, -1.28, 0.0)]
+    await client.reset()
+    async with asyncio.timeout(20):
+        while True:
+            with contextlib.suppress(RobotError):
+                await client.teleport(reach)
+            if await client.wait_status(
+                lambda s: s.homed and np.allclose(s.angles, reach, atol=0.5),
+                timeout=0.5,
+            ):
+                break
+    await user.should_not_see(marker="protective-stop")
+
+    through = list(reach)
+    through[0] = 60.0
+    with pytest.raises(RobotError) as stopped:
+        await client.move_j(through, speed=0.5, wait=True, timeout=20)
+    assert stopped.value.code == ErrorCode.SYS_CONTACT
+
+    await poll_until(
+        lambda: robot_state.protective_stop,
+        bool,
+        what="the protective stop on the status pipeline",
+    )
+    assert waldoctl.commander.status.controller.enabled, (
+        "a protective stop leaves the controller enabled"
+    )
+    await user.should_see(marker="protective-stop", retries=30)
+    await user.should_see("Protective stop: Contact detected")
+    await user.should_see("Clear what the arm touched, then send reset.")
+
+    user.find(marker="btn-protective-reset").click()
+    await poll_until(
+        lambda: not robot_state.protective_stop,
+        bool,
+        what="Reset to clear the protective stop",
+    )
+    await user.should_not_see(marker="protective-stop", retries=30)
+    assert robot_state.standing_error is None

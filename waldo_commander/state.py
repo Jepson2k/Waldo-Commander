@@ -148,6 +148,10 @@ class RobotState(ChangeNotifierMixin):
     # The controller's latched error, or None; self-clearing conditions are
     # on commander.status.warnings.
     standing_error: RobotError | None = None
+    # The arm stopped itself and holds, enabled, refusing motion until
+    # reset(): `standing_error` says what for. False on a backend that
+    # reports no such state.
+    protective_stop: bool = False
     executing_index: int = -1
     completed_index: int = -1
     # Held jogs the control panel ended because the direction ran out of
@@ -170,6 +174,7 @@ class RobotState(ChangeNotifierMixin):
         self.gripper_calibrated = False
         self.controller_session = None
         self.standing_error = None
+        self.protective_stop = False
         self.executing_index = -1
         self.completed_index = -1
         self.jog_limit_stops = 0

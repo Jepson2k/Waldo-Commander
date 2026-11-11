@@ -627,6 +627,8 @@ def update_ui_from_status() -> None:
 
     if control_panel.estop:
         control_panel.estop.check_state_change()
+    if control_panel.protective_stop:
+        control_panel.protective_stop.update()
 
     # Skip notifying listeners until the scene is built to avoid a race with
     # NiceGUI page serialization (envelope proximity updates depend on this).
@@ -1805,6 +1807,7 @@ async def _status_consumer() -> None:
     error_shadow: waldoctl.RobotError | None = None
     malformed_shadow: list[object] = []
     robot_state.standing_error = None
+    robot_state.protective_stop = False
     estop_shadow = 1
     try:
         # Wait for server to be responsive before subscribing to multicast
@@ -2012,6 +2015,9 @@ async def _status_consumer() -> None:
                         standing, waldoctl.RobotError
                     ):
                         standing = waldoctl.RobotError.from_wire(standing)
+                    protective = bool(getattr(status, "protective_stop", False))
+                    if robot_state.protective_stop != protective:
+                        robot_state.protective_stop = protective
                     if standing != error_shadow:
                         error_shadow = standing
                         robot_state.standing_error = standing
