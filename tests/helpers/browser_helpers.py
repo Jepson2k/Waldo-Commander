@@ -349,9 +349,9 @@ def dismiss_dialogs(screen: "Screen", timeout: float = 2.0) -> None:
             // Accept any unchecked checkboxes (e.g. welcome/disclaimer dialogs)
             const cbs = document.querySelectorAll('.q-dialog .q-checkbox:not(.q-checkbox--truthy)');
             cbs.forEach(cb => cb.click());
-            // Fallback: click the backdrop
+            // Fallback: press on the backdrop, which is what dismisses a dialog
             const backdrop = document.querySelector('.q-dialog__backdrop');
-            if (backdrop) backdrop.click();
+            if (backdrop) backdrop.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
             """,
         )
         # After checking checkboxes, wait a tick for Vue reactivity, then click continue/ok
