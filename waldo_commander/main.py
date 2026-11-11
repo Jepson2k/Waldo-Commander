@@ -535,6 +535,7 @@ async def check_ping() -> None:
         readout_panel.update_conn_io()
     if control_panel is not None:
         control_panel.sync_gizmo_for_jog_state()
+        # The lease announces every change but a holder or client ageing out.
         control_panel.refresh_control_indicator()
 
 

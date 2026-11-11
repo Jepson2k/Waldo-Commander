@@ -540,8 +540,10 @@ class TestShellLayout:
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
         try:
-            control_lease.seize(MCP, "screen-mcp", "MCP session screen-m")
-            # The 1 Hz active-tab loop refreshes the indicator.
+            # On the app's loop, as a lease change redraws the indicator.
+            run_in_app(
+                lambda: control_lease.seize(MCP, "screen-mcp", "MCP session screen-m")
+            )
             for selector in (".control-lease-glow", ".btn-take-control"):
                 wait(screen, 5).until(
                     lambda _, s=selector: not no_visible(screen, s),
@@ -559,7 +561,7 @@ class TestShellLayout:
                 f"glow does not cover the viewport: {rect}"
             )
         finally:
-            browser_try_acquire(ui_state.active_client_id)
+            run_in_app(lambda: browser_try_acquire(ui_state.active_client_id))
         assert control_lease.held_by(BROWSER, ui_state.active_client_id)
         wait(screen, 5).until(lambda _: no_visible(screen, ".control-lease-glow"))
 

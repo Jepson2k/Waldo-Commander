@@ -109,13 +109,13 @@ async def test_mcp_tools_drive_the_live_app(
         finally:
             waldoctl.commander.settings.jog.speed = original
 
-        # J1 swept 20° in 2 s peaks at no less than its 10°/s average, and no
+        # J1 swept 10° in 1 s peaks at no less than its 10°/s average, and no
         # profile peaks at more than a few times its average.
         rbt = waldoctl.commander.client
         await teleport_to_jog_pose(rbt)
         target = list(JOG_SAFE_POSE_DEG)
-        target[0] -= 20.0
-        assert await rbt.move_j(target, duration=2.0) >= 0
+        target[0] -= 10.0
+        assert await rbt.move_j(target, duration=1.0) >= 0
         peak = 0.0
         deadline = time.monotonic() + 8.0
         while time.monotonic() < deadline:
@@ -167,7 +167,6 @@ async def test_mcp_tools_drive_the_live_app(
 
             waiter = await _refuse_and_wait(0)
             with ng_client:
-                panel.refresh_control_indicator()
                 assert panel._approval_kind == "action"
                 panel._resolve_approval(True)
             assert _payload(await waiter) == {"outcome": "allowed"}
@@ -178,7 +177,6 @@ async def test_mcp_tools_drive_the_live_app(
 
             waiter = await _refuse_and_wait(1)
             with ng_client:
-                panel.refresh_control_indicator()
                 panel._resolve_approval(False)
             assert _payload(await waiter) == {"outcome": "denied"}
         _reset_gates()
@@ -202,7 +200,6 @@ async def test_mcp_tools_drive_the_live_app(
                     "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
                 )
             with ng_client:
-                panel.refresh_control_indicator()
                 assert panel._approval_kind == "action"
                 panel._resolve_approval(True)
             # Retry the same move: the one-shot approval lets it through.
@@ -263,7 +260,6 @@ async def test_mcp_tools_drive_the_live_app(
 
             # The GUI surfaces the prompt; the human denies it.
             with ng_client:
-                panel.refresh_control_indicator()
                 assert panel._approval_sid is not None
                 panel._resolve_approval(False)
 
@@ -284,7 +280,6 @@ async def test_mcp_tools_drive_the_live_app(
             assert pending_consents() != {}
 
             with ng_client:
-                panel.refresh_control_indicator()
                 panel._resolve_approval(True)
             await client.call_tool(
                 "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
@@ -297,8 +292,6 @@ async def test_mcp_tools_drive_the_live_app(
             )
             assert pending_consents() == {}
 
-            with ng_client:
-                panel.refresh_control_indicator()
             user.find(marker="btn-take-control").click()
             assert await wait_until(
                 lambda: control_lease.held_by(cl.BROWSER, ui_state.active_client_id)

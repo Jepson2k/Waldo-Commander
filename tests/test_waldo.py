@@ -1,10 +1,10 @@
-"""The status chip's Waldo wears the robot's state.
+"""The status chip and its Waldo wear the robot's state.
 
 Driven through the real paths on the fake-serial controller — the E-STOP
 and Reset buttons, jog and home buttons, the editor's play and record
 buttons, the settings switches, an MCP session taking control — and read
-back off the Waldo element the page renders. How the browser draws each mood
-and reaction is covered in ``test_animations_screen.py``.
+back off the chip and the Waldo element the page renders. How the browser
+draws each mood and reaction is covered in ``test_animations_screen.py``.
 """
 
 import asyncio
@@ -16,6 +16,7 @@ import waldoctl
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from nicegui import app as ng_app
+from nicegui import ui
 from nicegui.testing import User
 
 from tests.helpers.wait import (
@@ -48,6 +49,17 @@ def _waldo(user: User, marker: str) -> Waldo:
     return element
 
 
+def _chip_reading(user: User) -> tuple[str, str, str]:
+    """The status chip's word and its fill and text colours."""
+    chip = next(iter(user.find(marker="footer-mode").elements))
+    word = next(
+        e
+        for e in chip.descendants()
+        if isinstance(e, ui.label) and "footer-mode-word" in e.classes
+    )
+    return word.text, chip.props["color"], chip.props["text-color"]
+
+
 def _record_reactions(waldo: Waldo) -> list[Reaction]:
     """Every reaction *waldo* is sent from here on, not only the latest: one
     can follow another before a check looks."""
@@ -72,14 +84,16 @@ async def _wait_for(condition: Callable[[], bool], timeout: float = 10.0) -> boo
 
 
 @pytest.mark.integration
-async def test_chip_waldo_wears_the_robots_state(
+async def test_status_chip_and_its_waldo_wear_the_robots_state(
     user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Neutral in the simulator, alarmed for as long as an E-STOP is latched
-    (with its own alarmed Waldo in the dialog), focused on the arm while it
-    moves, and looking the way each jog goes while it is pressed: along the
-    arm for J1, a head tilt for the wrist's roll. A new tool and its gripper
-    each get a reaction.
+    """The chip names the state in its colours: Simulator, E-STOP, Disconnected.
+
+    Its Waldo is neutral in the simulator, alarmed for as long as an E-STOP
+    is latched (with its own alarmed Waldo in the dialog), focused on the arm
+    while it moves, and looking the way each jog goes while it is pressed:
+    along the arm for J1, a head tilt for the wrist's roll. A new tool and its
+    gripper each get a reaction.
 
     A run starts with Waldo settling in; a clean exit is celebrated and a
     crash winced at, in the chip and by the run bar's Waldo peeking over the
@@ -90,6 +104,8 @@ async def test_chip_waldo_wears_the_robots_state(
     antenna tips and, holding control, drives them; a request it makes waits
     with a question on both the chip and the approval card, and the human's
     answer gets a nod or a head shake; a new control mode flashes the tips.
+    Control changing hands and a waiting request show the moment the MCP call
+    returns, not at the next connectivity ping.
 
     Jogging a joint into its limit gets a shrug; a calibration homing that
     completes gets the homing reaction. Only the simulator's Waldo may fall
@@ -137,12 +153,14 @@ async def test_chip_waldo_wears_the_robots_state(
 
     user.find(marker="btn-estop").click()
     assert await _wait_for(lambda: chip.mood == Mood.ALARMED)
+    assert _chip_reading(user) == ("E-STOP", "wc-error-soft", "wc-estop")
     assert _waldo(user, "estop-waldo").mood == Mood.ALARMED
 
     user.find(marker="btn-estop-resume").click()
     assert await _wait_for(lambda: chip.mood == Mood.NEUTRAL), (
         "Reset clears the E-STOP, so Waldo calms back down"
     )
+    assert _chip_reading(user) == ("Simulator", "wc-mode-sim-soft", "wc-mode-sim")
 
     # A new tool gets a spin; its gripper closing and opening get their own.
     reactions.clear()
@@ -226,7 +244,7 @@ async def test_chip_waldo_wears_the_robots_state(
     try:
         async with Client(get_mcp()) as mcp:
             await mcp.call_tool("control.take_control")
-            assert await _wait_for(lambda: chip.agent == Agent.DRIVING)
+            assert chip.agent == Agent.DRIVING
             assert chip.light is None, "the agent shows on the tips, not the bulbs"
 
             jog = {"joint": 0, "speed": 0.1, "duration": 0.01}
@@ -236,7 +254,7 @@ async def test_chip_waldo_wears_the_robots_state(
             ):
                 with pytest.raises(ToolError):
                     await mcp.call_tool("motion.jog_j", jog)
-                assert await _wait_for(lambda: chip.asking), (
+                assert chip.asking, (
                     "the chip should ask while the move waits for approval"
                 )
                 await user.should_see(marker="approval-waldo")
@@ -252,7 +270,7 @@ async def test_chip_waldo_wears_the_robots_state(
             assert await _wait_for(lambda: Reaction.AI_MODE in reactions), reactions
 
             await mcp.call_tool("control.release_control")
-            assert await _wait_for(lambda: chip.agent == Agent.PRESENT), (
+            assert chip.agent == Agent.PRESENT, (
                 "a connected agent that hands control back stays on the tips"
             )
     finally:
@@ -304,6 +322,7 @@ async def test_chip_waldo_wears_the_robots_state(
     try:
         user.find(marker="btn-robot-toggle").click()
         assert await _wait_for(lambda: chip.mood == Mood.SAD)
+        assert _chip_reading(user) == ("Disconnected", "wc-error-soft", "wc-error")
         assert chip.sleep_after_s == 0
         user.find(marker="btn-robot-toggle").click()
         assert await _wait_for(lambda: chip.mood == Mood.NEUTRAL)
