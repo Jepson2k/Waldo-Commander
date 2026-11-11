@@ -181,14 +181,16 @@ jobs:
           pip list
 
       # Review screenshots and videos are opt-in (--evidence); one leg
-      # records them for the uploaded review media.
+      # records them for the uploaded review media. On Linux, where the
+      # browser tests run, they take one lane and the rest the other.
       - name: Run tests
         env:
           PYTHONUNBUFFERED: '1'
           PYTHONUTF8: '1'
           EVIDENCE: ${{ (runner.os == 'Linux' && matrix.python == '3.13') && '--evidence' || '' }}
+          LANES: ${{ runner.os == 'Linux' && '-n 2 --dist loadgroup' || '' }}
         run: |
-          pytest -vv --tb=long --log-cli-level=DEBUG $EVIDENCE
+          pytest -vv --tb=long --log-cli-level=DEBUG $LANES $EVIDENCE
 
       - name: Preserve test report
         if: always()

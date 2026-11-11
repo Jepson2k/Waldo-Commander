@@ -718,6 +718,7 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     return None
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
@@ -725,7 +726,17 @@ def pytest_collection_modifyitems(
 
     We rely on NiceGUI/Quasar/Vue to provide a consistent cross-platform
     experience, so browser tests only need to run on Linux.
+
+    Under ``-n 2 --dist loadgroup`` the browser tests run in one lane and
+    the rest in the other: never two browsers at once, which the frame-rate
+    tests cannot share a machine with. Before xdist names the groups.
     """
+    if getattr(config.option, "loadgroup", False):
+        for item in items:
+            browser = {"screen", "class_screen"} & set(item.fixturenames)
+            lane = "browser" if browser else "simulated"
+            item.add_marker(pytest.mark.xdist_group(lane))
+
     if sys.platform == "linux" or "GITHUB_ACTIONS" not in os.environ:
         return
 
@@ -970,49 +981,43 @@ def reset_state(request: pytest.FixtureRequest):
     yield
 
 
-@pytest.fixture(scope="session", autouse=True)
-def kill_stale_controllers() -> Generator[None, None, None]:
-    """Kill any existing controller processes before and after test session.
-
-    Ensures no stale controllers from previous runs interfere with tests.
-    """
-    controller_port, _ = _get_test_ports()
-
-    def _kill() -> None:
-        try:
-            if sys.platform.startswith("linux") or sys.platform == "darwin":
-                # Kill all controller processes
-                subprocess.run(
-                    ["pkill", "-f", "parol6.server.controller"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-        except (OSError, subprocess.SubprocessError):
-            pass
-
-    # Pre-session cleanup
-    _kill()
+def _kill_controllers() -> None:
+    """Kill every controller process, so none from an earlier run interferes."""
+    if not (sys.platform.startswith("linux") or sys.platform == "darwin"):
+        return
     try:
-        yield
-    finally:
-        # Post-session cleanup
-        _kill()
-        # Best-effort verification (non-fatal)
-        try:
-            from waldo_commander.constants import config
+        subprocess.run(
+            ["pkill", "-f", "parol6.server.controller"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
 
-            probe = Robot(host=config.controller_host, port=controller_port)
-            if probe.is_available():
-                _kill()
-        except (OSError, subprocess.SubprocessError):
-            pass
+
+def _xdist_worker(config: pytest.Config) -> bool:
+    return hasattr(config, "workerinput")
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Before any controller starts. In an xdist run only the main process
+    does this, since a worker's kill would take the other worker's
+    controller with it."""
+    if not _xdist_worker(session.config):
+        _kill_controllers()
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    """After every session's own controller has stopped."""
+    if not _xdist_worker(session.config):
+        _kill_controllers()
 
 
 @pytest.fixture(scope="session", autouse=True)
 def session_controller(
     test_env_config: None,
-    kill_stale_controllers: None,
     warmup_jit_cache: None,
 ) -> Generator["Robot", None, None]:
     """Session-scoped controller shared by all tests.
