@@ -553,9 +553,7 @@ class EditorPanel(FileOperationsMixin):
         self._set_cursor_line(tab, line, 1, None)
         textarea.place_cursor(line)
         if not ui_state.program_panel_visible and ui_state._program_tab is not None:
-            ui.run_javascript(
-                f'document.getElementById("c{ui_state._program_tab.id}")?.click()'
-            )
+            ui.run_javascript(f"getHtmlElement({ui_state._program_tab.id})?.click()")
 
     def add_target_code(self, pose: list[float], move_type: str) -> int | None:
         """Add a move command to the editor.

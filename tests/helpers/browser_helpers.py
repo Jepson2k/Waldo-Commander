@@ -102,7 +102,7 @@ def marked_element(screen: "Screen", marker: str) -> WebElement:
     identifier = run_in_app(lookup)
     if identifier is None:
         raise NoSuchElementException(marker)
-    return screen.selenium.find_element(By.ID, f"c{identifier}")
+    return screen.selenium.find_element(By.ID, f"ng-{identifier}")
 
 
 def click_marked(screen: "Screen", marker: str, timeout: float = 10.0) -> None:

@@ -415,7 +415,7 @@ class TestEditorInteractivity:
             target = wait(screen).until(
                 lambda d: (
                     (found := element_id(marker)) is not None
-                    and (el := d.find_element(By.ID, f"c{found}")).is_displayed()
+                    and (el := d.find_element(By.ID, f"ng-{found}")).is_displayed()
                     and el
                 )
             )

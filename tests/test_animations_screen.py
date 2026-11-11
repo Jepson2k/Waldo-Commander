@@ -232,7 +232,7 @@ def _pad_arrow(screen, slot_id: str):
     from waldo_commander.state import ui_state
 
     element_id = run_in_app(lambda: ui_state.control_panel._cart_slot_elems[slot_id].id)
-    return screen.selenium.find_element(By.ID, f"c{element_id}")
+    return screen.selenium.find_element(By.ID, f"ng-{element_id}")
 
 
 def _wait_until_jog_allowed(timeout: float = 15.0) -> None:
