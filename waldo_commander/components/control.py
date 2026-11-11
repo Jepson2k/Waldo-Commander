@@ -228,46 +228,43 @@ class _ProtectiveStopBanner:
     def __init__(self, client: "RobotClient") -> None:
         self._client = client
         self._row: ui.row | None = None
-        self._title: ui.label | None = None
-        self._remedy: ui.label | None = None
         self._shown: waldoctl.RobotError | None = None
 
     def build(self) -> None:
         # The E-Stop hangs out of the row above into this one's right end;
         # the padding is the footprint the action row reserves for it.
-        with (
+        self._row = (
             ui.row()
             .classes("protective-stop items-center no-wrap gap-2 w-full pr-20")
-            .mark("protective-stop") as self._row
-        ):
-            ui.icon("front_hand", size="sm").classes("text-wc-error")
-            with ui.column().classes("gap-0 col min-w-0"):
-                self._title = (
-                    ui.label("")
-                    .classes("text-sm font-bold text-wc-error")
-                    .mark("protective-stop-title")
-                )
-                self._remedy = (
-                    ui.label("")
-                    .classes("text-xs text-wc-text-muted")
-                    .mark("protective-stop-remedy")
-                )
-            ui.button("Reset", on_click=self._reset).props(
-                "dense no-caps color=wc-action text-color=wc-on-bright"
-            ).mark("btn-protective-reset")
+            .mark("protective-stop")
+        )
         self._row.set_visibility(False)
 
     def update(self) -> None:
         """Follow ``robot_state``: shown for as long as the stop stands."""
-        if self._row is None or self._title is None or self._remedy is None:
+        if self._row is None:
             return
         error = robot_state.standing_error if robot_state.protective_stop else None
         if error == self._shown:
             return
         self._shown = error
+        # Emptied rather than only hidden: a hidden button is still on the
+        # page for anything that finds a control by its label, and the
+        # E-STOP dialog has a Reset of its own.
+        self._row.clear()
         if error is not None:
-            self._title.text = f"Protective stop: {error.title}"
-            self._remedy.text = error.remedy
+            with self._row:
+                ui.icon("front_hand", size="sm").classes("text-wc-error")
+                with ui.column().classes("gap-0 col min-w-0"):
+                    ui.label(f"Protective stop: {error.title}").classes(
+                        "text-sm font-bold text-wc-error"
+                    ).mark("protective-stop-title")
+                    ui.label(error.remedy).classes("text-xs text-wc-text-muted").mark(
+                        "protective-stop-remedy"
+                    )
+                ui.button("Reset", on_click=self._reset).props(
+                    "dense no-caps color=wc-action text-color=wc-on-bright"
+                ).mark("btn-protective-reset")
         self._row.set_visibility(error is not None)
 
     async def _reset(self) -> None:
