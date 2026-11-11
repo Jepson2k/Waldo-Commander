@@ -166,6 +166,7 @@ waldo-commander [options]
 | `WALDO_WEBAPP_REQUIRE_READY` | Wait for backend ready and enable status streaming on startup | `1` |
 | `WALDO_TRACE` | Enable TRACE-level logging in console and UI logs | off |
 | `WALDO_EXCLUSIVE_START` | Require exclusive controller ownership on start | `1` |
+| `WALDO_PROGRAM_DIR` | Program library: saved programs, `setups/`, `worlds/` and the copies programs run from. Give each Commander its own | `programs/` in the checkout |
 
 ### Status footer
 

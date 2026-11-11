@@ -6,6 +6,7 @@ import gc
 import importlib.metadata
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import asyncio
@@ -813,8 +814,36 @@ _session_pool = _SessionProcessPool()
 
 
 @pytest.fixture(scope="session", autouse=True)
-def setup_nicegui_process_pool() -> Generator[None, None, None]:
-    """One process pool for cpu_bound() previews, kept for the whole session."""
+def program_library(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Generator[Path, None, None]:
+    """A program library of this session's own, holding the shipped examples.
+
+    The app saves programs, setups and worlds in its library and runs each
+    program from a copy under ``.runtime/``. In the checkout's ``programs/``
+    two sessions, such as the two lanes' workers, overwrite each other's
+    files, and a run executes the copy another session wrote meanwhile.
+    """
+    checkout = Path(__file__).resolve().parent.parent
+    library = tmp_path_factory.mktemp("library") / "programs"
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "programs"], cwd=checkout, text=True
+    ).splitlines()
+    for relative in tracked:
+        source = checkout / relative
+        if source.exists():
+            target = library / Path(relative).relative_to("programs")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(source, target)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("WALDO_PROGRAM_DIR", str(library))
+        yield library
+
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_nicegui_process_pool(program_library: Path) -> Generator[None, None, None]:
+    """One process pool for cpu_bound() previews, kept for the whole session.
+    Made once the library is chosen, so its workers resolve the same one."""
     _session_pool.install()
     yield
     _session_pool.close()

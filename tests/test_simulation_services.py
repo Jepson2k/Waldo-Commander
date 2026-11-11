@@ -969,12 +969,20 @@ class TestSimPoseOverrideAutoClear:
 class TestScriptExecutionLifecycle:
     """Tests for ScriptExecutionController subprocess lifecycle."""
 
+    @pytest.fixture
+    def library(self, tmp_path, monkeypatch):
+        """A program library named before the app starts, which is when the
+        editor reads it."""
+        monkeypatch.setenv("WALDO_PROGRAM_DIR", str(tmp_path))
+        return tmp_path
+
     @pytest.mark.integration
     async def test_start_runs_a_subdir_program_and_reaps_one_whose_ui_fails(
-        self, user, tmp_path, monkeypatch, caplog
+        self, library, user, monkeypatch, caplog
     ):
-        """A program loaded from a subdirectory runs to completion; a UI
-        failure after launch reaps the child and clears run state."""
+        """A program loaded from a subdirectory runs to completion, from the
+        library ``WALDO_PROGRAM_DIR`` names; a UI failure after launch reaps
+        the child and clears run state."""
         from tests.helpers.wait import wait_for_app_ready
         from waldo_commander.components import script_execution as se
 
@@ -984,7 +992,6 @@ class TestScriptExecutionLifecycle:
         assert active_program is not None
         assert ui_state.active_textarea is not None
         assert ui_state.active_filename_input is not None
-        se.script_exec.set_program_dir(tmp_path)
 
         content = 'print("subdirectory program finished")\n'
         ui_state.active_textarea.value = content
@@ -1005,7 +1012,7 @@ class TestScriptExecutionLifecycle:
             while is_any_program_running() and time.monotonic() < deadline:
                 await asyncio.sleep(0.05)
             assert not is_any_program_running()
-            written = tmp_path / ".runtime" / "sub" / "regression.py"
+            written = library / ".runtime" / "sub" / "regression.py"
             assert written.read_text(encoding="utf-8") == content
         finally:
             if se.script_exec.script_handle is not None:

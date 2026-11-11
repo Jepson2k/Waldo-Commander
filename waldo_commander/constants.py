@@ -8,11 +8,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def default_program_dir() -> Path:
-    """The on-disk program library (example + saved programs)."""
-    legacy = REPO_ROOT / "PAROL-commander-software" / "GUI" / "files" / "Programs"
-    if legacy.exists():
-        return legacy
-    d = REPO_ROOT / "programs"
+    """The on-disk program library (example + saved programs).
+
+    ``WALDO_PROGRAM_DIR`` selects another folder: an installed Commander has
+    no checkout to keep ``programs/`` in, and two Commanders sharing one
+    library would run each other's ``.runtime/`` copies.
+    """
+    if selected := os.environ.get("WALDO_PROGRAM_DIR"):
+        d = Path(selected).expanduser().resolve()
+    else:
+        legacy = REPO_ROOT / "PAROL-commander-software" / "GUI" / "files" / "Programs"
+        if legacy.exists():
+            return legacy
+        d = REPO_ROOT / "programs"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

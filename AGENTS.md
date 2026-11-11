@@ -71,6 +71,7 @@ The following are **already configured in `conftest.py`** - do not set them manu
 - Headless browser mode is the default (only set `HEADED=1` to see the browser)
 - `PAROL6_STATUS_RATE_HZ=20` (vs 50Hz default) - reduces CI load
 - `PAROL6_FAKE_SERIAL=1` - uses simulator instead of hardware
+- `WALDO_PROGRAM_DIR` - a program library per session (so per xdist worker), seeded with the tracked examples; tests never write into the checkout's `programs/`
 
 **IMPORTANT: Do NOT prefix `pytest` commands with environment variables like `PAROL6_FAKE_SERIAL=1 pytest ...`. Everything is already set in conftest.py. Just run `pytest` directly.**
 
