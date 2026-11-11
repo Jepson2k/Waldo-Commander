@@ -102,7 +102,14 @@ def marked_element(screen: "Screen", marker: str) -> WebElement:
     identifier = run_in_app(lookup)
     if identifier is None:
         raise NoSuchElementException(marker)
-    return screen.selenium.find_element(By.ID, f"ng-{identifier}")
+    element = screen.selenium.find_element(By.ID, f"ng-{identifier}")
+    # Quasar gives a select's id to its hidden one-pixel focus target; the
+    # value box around it is what a user sees and presses.
+    return screen.selenium.execute_script(
+        "const e = arguments[0];"
+        "return e.matches('.q-select__focus-target') ? e.closest('.q-field__native') : e;",
+        element,
+    )
 
 
 def click_marked(screen: "Screen", marker: str, timeout: float = 10.0) -> None:
