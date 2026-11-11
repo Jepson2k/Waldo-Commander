@@ -284,12 +284,13 @@ if __name__ == '__main__':
 
     monkeypatch.setattr(launching, "fresh_state", held_fresh_state)
 
-    def restart():
-        return script_exec.start(
-            restart_entry="after_pick",
-            restart_reference=reference,
-            reviewed_source_digest=source_digest(source),
-        )
+    async def restart() -> bool:
+        with user:
+            return await script_exec.start(
+                restart_entry="after_pick",
+                restart_reference=reference,
+                reviewed_source_digest=source_digest(source),
+            )
 
     async def reading_state() -> asyncio.Task:
         gate.clear()

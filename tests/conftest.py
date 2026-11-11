@@ -12,12 +12,14 @@ import asyncio
 import time
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
+from nicegui import Client
 from nicegui import run as nicegui_run
 from nicegui import storage as nicegui_storage
+from nicegui.slot import get_task_id
 from nicegui.testing import general as nicegui_testing_general
 from nicegui.testing import User
 from nicegui.testing.general_fixtures import (
@@ -375,8 +377,26 @@ async def user(
     """NiceGUI's user fixture, with its unexpected-ERROR gate moved after the
     app has shut down. Failing inside the simulation throws into NiceGUI's
     lifespan generator, which then skips its shutdown, so the next test's app
-    never becomes ready."""
+    never becomes ready.
+
+    A test acts from the page it opens. ``ui.notify`` and ``ui.navigate``
+    address the page of the calling task: a handler gets that from its event,
+    and a caller outside any page enters one first, as the MCP tools do. A
+    test calling the same app code directly stands in for the page."""
     async with user_simulation(main_file=get_path_to_main_file(request)) as user:
+        open_page = user.open
+        entered: dict[int, Client] = {}
+
+        async def open_and_enter(path: str, **kwargs: Any) -> Client:
+            client = await open_page(path, **kwargs)
+            task_id = get_task_id()
+            if task_id in entered:
+                entered[task_id].__exit__(None, None, None)
+            client.__enter__()
+            entered[task_id] = client
+            return client
+
+        user.open = open_and_enter  # type: ignore[method-assign]
         yield user
     if any(r.levelname == "ERROR" for r in caplog.get_records("call")):
         pytest.fail("There were unexpected ERROR logs.", pytrace=False)
