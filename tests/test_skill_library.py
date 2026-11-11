@@ -22,6 +22,7 @@ from waldoctl.skills import MissingCapability, skill
 from tests.helpers.preview import block_end_tcp, motion_blocks
 from tests.test_editor_integration import (
     _fire_editor_event,
+    _place_cursor,
     _set_cursor_line,
     _set_selection,
 )
@@ -211,17 +212,7 @@ async def test_skill_fields_teach_preview_record_and_run_live(
         column = lines()[line - 1].index(after) + len(after) + 1
         area = ui_state.active_textarea
         _fire_editor_event(area, "focus-change", {"focused": True})
-        _fire_editor_event(
-            area,
-            "selection-change",
-            {
-                "line": line,
-                "column": column,
-                "from_line": line,
-                "to_line": line,
-                "empty": True,
-            },
-        )
+        _place_cursor(area, line, column)
 
     def edit_line(line: int, old: str, new: str) -> None:
         rows = lines()
