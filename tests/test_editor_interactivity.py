@@ -45,8 +45,8 @@ def _set_editor_content(screen: "Screen", text: str) -> None:
         """
         const text = arguments[0];
         const cm = document.querySelector('.cm-content');
-        if (!cm || !cm.cmView || !cm.cmView.view) return;
-        const view = cm.cmView.view;
+        const view = cm && getElement(cm.closest('.nicegui-codemirror'))?.editor;
+        if (!view) return;
         view.dispatch({
             changes: {from: 0, to: view.state.doc.length, insert: text}
         });
@@ -280,7 +280,8 @@ class TestEditorInteractivity:
                 lambda _: js(
                     screen,
                     "const c = document.querySelector('.program-panel .cm-content');"
-                    "return c && c.cmView ? c.cmView.view.state.doc.toString() : null;",
+                    "const view = c && getElement(c.closest('.nicegui-codemirror'))?.editor;"
+                    "return view ? view.state.doc.toString() : null;",
                 )
                 == program
             )
