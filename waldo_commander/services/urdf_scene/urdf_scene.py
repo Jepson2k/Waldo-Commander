@@ -439,8 +439,12 @@ class UrdfScene(
         # Wrapper hosts the context menu and edit bar overlays.
         self._scene_wrapper = ui.element("div").classes("relative w-full h-full")
         with self._scene_wrapper:
-            # The scene opens the menu once it is filled for the click.
-            self.context_menu = ui.context_menu().props("no-parent-event")
+            # The scene opens the menu once it is filled for the click. A pixel
+            # clear of the pointer, so a press where it opened still reaches
+            # the scene and closes it.
+            self.context_menu = ui.context_menu().props(
+                'no-parent-event :offset="[0, 1]"'
+            )
             self.scene = (
                 WcScene(
                     background=background_color,
