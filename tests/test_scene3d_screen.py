@@ -27,6 +27,7 @@ from tests.helpers.browser_session import no_visible, wait
 from tests.helpers.scene_surface import pointer_to, scene_js, wait_for_scene_idle
 from waldo_commander.common.theme import SceneColors, hex_of
 from waldo_commander.scene3d import ClipPlane, Node, WcScene
+from waldo_commander.services.urdf_scene.loader import load_urdf
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -164,6 +165,12 @@ class _Recorder:
         self.log.append(("end", aborted))
 
 
+def _parol6_urdf() -> URDF:
+    """PAROL6's URDF with its package:// meshes resolved, as the app loads it."""
+    root = Path(str(files("parol6") / "urdf_model"))
+    return load_urdf(root / "urdf/PAROL6.urdf", package_map={"parol6": root})
+
+
 def _arm() -> dict[str, Any]:
     """PAROL6's chain with a box for each link, under the page's pointer
     handling: links show their joint's ring, the last link the gizmo."""
@@ -171,9 +178,7 @@ def _arm() -> dict[str, Any]:
         return _page["arm"]
     scene = _scene()
     menu = _page["menu"]
-    urdf = URDF.load(
-        str(files("parol6") / "urdf_model/urdf/PAROL6.urdf"), lazy_load_meshes=True
-    )
+    urdf = _parol6_urdf()
     _page["box"].visible(False)
     joints, links = _chain(urdf, "a:")
     actuated = [j for j in urdf.joints if j.joint_type != "fixed"]
@@ -423,10 +428,7 @@ class TestSceneElement:
         synthetic = tmp_path / "synthetic.urdf"
         synthetic.write_text(_SYNTHETIC_URDF)
         arms = {
-            "p:": URDF.load(
-                str(files("parol6") / "urdf_model/urdf/PAROL6.urdf"),
-                lazy_load_meshes=True,
-            ),
+            "p:": _parol6_urdf(),
             "s:": URDF.load(str(synthetic), lazy_load_meshes=True),
         }
         built = {
