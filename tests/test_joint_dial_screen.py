@@ -27,11 +27,13 @@ from tests.helpers.scene_surface import (
     frames,
     frames_at_rest,
     scene_js,
+    shown_handles,
     wait_for_scene_idle,
 )
 from tests.helpers import visual_evidence
 from tests.helpers.visual_evidence import VisualEvidence
 from tests.helpers.wait import screen_wait_for_scene_ready
+from waldo_commander.common.theme import hex_of
 from waldo_commander.state import ui_state
 from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
 from waldo_commander.services.urdf_scene.angle_pipeline import urdf_to_panel
@@ -215,6 +217,19 @@ class TestJointDial:
                 )
                 grab_ring(screen, "link:L1", 0)
                 wait_for_scene_idle(screen)
+                # New colours redraw the rings; the one under the pointer stays.
+                scene = ui_state.urdf_scene.scene
+                colors = scene.interaction["colors"]
+                recolored = {**colors, "action": hex_of("axis-x")}
+                run_in_app(lambda: scene.set_interaction(colors=recolored))
+                wait(screen).until(
+                    lambda _: scene_js(
+                        screen, "return getElement(S.root).core.ix.colors.action"
+                    )
+                    == recolored["action"]
+                )
+                assert "ring:0" in shown_handles(screen)
+                run_in_app(lambda: scene.set_interaction(colors=colors))
                 camera = camera_pose(screen)
                 start = joint_deg(0)
                 evidence.capture("01-visible-handle-over-robot")
