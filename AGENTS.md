@@ -289,7 +289,7 @@ To make `nicegui/` edits live in WC's running process, run `pip install -e niceg
 
 ### NiceGUI fork
 
-WC pins NiceGUI to a SHA on `Jepson2k/nicegui`'s `combo-all-prs` branch — a synthetic branch that merges the fork's CodeMirror branches onto upstream `main` so WC can use them as one unit: `cm-selection-change`, `cm-diagnostics`, and `cm-insert-snippet` (which contains `cm-custom-completions`). The 3D view is WC's own element and needs nothing from the fork. SHA pin (not branch ref) for reproducibility.
+WC pins NiceGUI to a SHA on `Jepson2k/nicegui`'s `combo-all-prs` branch — a synthetic branch that merges the fork's CodeMirror branches onto upstream `main` so WC can use them as one unit: `cm-diagnostics` and `cm-insert-snippet` (which contains `cm-custom-completions`). The selection signal is upstream since NiceGUI 4.1. The 3D view is WC's own element and needs nothing from the fork. SHA pin (not branch ref) for reproducibility.
 
 When one of those branches changes, combo goes stale. Rebuilding it means
 merging them into a fresh `combo-rebuild-<date>` branch cut from upstream
