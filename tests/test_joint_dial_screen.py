@@ -318,19 +318,23 @@ class TestJointDial:
                     scene_js(screen, "S.setCameraPose(arguments[0])", camera)
                     grab_ring(screen, "link:L1", 0)
                     wait_for_scene_idle(screen)
-                    assert not scene_js(
+                    seen = scene_js(
                         screen,
                         """
-                        const p=getElement(S.root).core.pointer;
+                        const c=getElement(S.root).core, p=c.pointer, h=p.hover;
+                        if(!p.ring)return {lost:{target:h.target,shown:h.shown,pinned:h.pinned,
+                          hovered:p.hovered,rules:c.ix.rules,rings:Object.keys(c.ix.rings||{})}};
                         const visible=e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden';
                         const badges=[p.badge.element.firstChild].filter(visible);
                         const labels=[p.ring.label,...p.ring.scaleLabels].map(l=>l.element).filter(visible);
-                        return badges.some(b=>labels.some(l=>{
+                        return {overlap:badges.some(b=>labels.some(l=>{
                           const a=b.getBoundingClientRect(),c=l.getBoundingClientRect();
                           return a.left<c.right&&a.right>c.left&&a.top<c.bottom&&a.bottom>c.top;
-                        }));
+                        }))};
                         """,
-                    ), name
+                    )
+                    assert "lost" not in seen, f"{name}: J1's ring is gone: {seen}"
+                    assert not seen["overlap"], name
                     evidence.capture(name)
                 evidence.finish()
             finally:
