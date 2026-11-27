@@ -738,6 +738,9 @@ class TestScene:
                             )
                             and no_visible(screen, ".program-panel")
                         )
+                    # Closing the panel re-centres the view: a press where the
+                    # target was drawn before that lands beside it.
+                    settled_pixel(screen, f"target:{target}")
                     if touch:
                         tap(screen, *scene_object_pixel(screen, f"target:{target}"))
                     else:

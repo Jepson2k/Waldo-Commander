@@ -27,11 +27,13 @@ from tests.helpers.scene_surface import (
     frames,
     frames_at_rest,
     scene_js,
+    shown_handles,
     wait_for_scene_idle,
 )
 from tests.helpers import visual_evidence
 from tests.helpers.visual_evidence import VisualEvidence
 from tests.helpers.wait import screen_wait_for_scene_ready
+from waldo_commander.common.theme import hex_of
 from waldo_commander.state import ui_state
 from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
 from waldo_commander.services.urdf_scene.angle_pipeline import urdf_to_panel
@@ -215,6 +217,19 @@ class TestJointDial:
                 )
                 grab_ring(screen, "link:L1", 0)
                 wait_for_scene_idle(screen)
+                # New colours redraw the rings; the one under the pointer stays.
+                scene = ui_state.urdf_scene.scene
+                colors = scene.interaction["colors"]
+                recolored = {**colors, "action": hex_of("axis-x")}
+                run_in_app(lambda: scene.set_interaction(colors=recolored))
+                wait(screen).until(
+                    lambda _: scene_js(
+                        screen, "return getElement(S.root).core.ix.colors.action"
+                    )
+                    == recolored["action"]
+                )
+                assert "ring:0" in shown_handles(screen)
+                run_in_app(lambda: scene.set_interaction(colors=colors))
                 camera = camera_pose(screen)
                 start = joint_deg(0)
                 evidence.capture("01-visible-handle-over-robot")
@@ -303,19 +318,23 @@ class TestJointDial:
                     scene_js(screen, "S.setCameraPose(arguments[0])", camera)
                     grab_ring(screen, "link:L1", 0)
                     wait_for_scene_idle(screen)
-                    assert not scene_js(
+                    seen = scene_js(
                         screen,
                         """
-                        const p=getElement(S.root).core.pointer;
+                        const c=getElement(S.root).core, p=c.pointer, h=p.hover;
+                        if(!p.ring)return {lost:{target:h.target,shown:h.shown,pinned:h.pinned,
+                          hovered:p.hovered,rules:c.ix.rules,rings:Object.keys(c.ix.rings||{})}};
                         const visible=e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden';
                         const badges=[p.badge.element.firstChild].filter(visible);
                         const labels=[p.ring.label,...p.ring.scaleLabels].map(l=>l.element).filter(visible);
-                        return badges.some(b=>labels.some(l=>{
+                        return {overlap:badges.some(b=>labels.some(l=>{
                           const a=b.getBoundingClientRect(),c=l.getBoundingClientRect();
                           return a.left<c.right&&a.right>c.left&&a.top<c.bottom&&a.bottom>c.top;
-                        }));
+                        }))};
                         """,
-                    ), name
+                    )
+                    assert "lost" not in seen, f"{name}: J1's ring is gone: {seen}"
+                    assert not seen["overlap"], name
                     evidence.capture(name)
                 evidence.finish()
             finally:

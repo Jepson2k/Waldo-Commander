@@ -207,7 +207,12 @@ if os.environ.get("WALDO_STEP_SESSION"):
 
     with monkeypatch.context() as patched:
         patched.setattr(client, "tools", held_tools)
-        launch = asyncio.create_task(script_exec.start())
+
+        async def start_from_page() -> bool:
+            with user:
+                return await script_exec.start()
+
+        launch = asyncio.create_task(start_from_page())
         try:
             async with asyncio.timeout(5):
                 await reading.wait()

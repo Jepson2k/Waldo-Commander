@@ -79,7 +79,7 @@ def _click(screen, marker: str) -> None:
 
     def try_click(driver) -> bool:
         try:
-            driver.find_element(By.ID, f"c{id}").click()
+            driver.find_element(By.ID, f"ng-{id}").click()
             return True
         except (ElementClickInterceptedException, ElementNotInteractableException):
             # The tab's panel is still opening.
@@ -126,7 +126,7 @@ class TestSetupPanels:
 
         name_id, message_id = run_in_app(select_valve)
         wait(screen).until(
-            lambda driver: driver.find_element(By.ID, f"c{name_id}").get_attribute(
+            lambda driver: driver.find_element(By.ID, f"ng-{name_id}").get_attribute(
                 "value"
             )
             == "valve"
@@ -146,9 +146,9 @@ class TestSetupPanels:
         js(
             screen,
             "document.getElementById(arguments[0]).scrollIntoView({block: 'nearest'});",
-            f"c{message_id}",
+            f"ng-{message_id}",
         )
-        signals = js(screen, _FITS, f"c{message_id}", ".q-tab-panel")
+        signals = js(screen, _FITS, f"ng-{message_id}", ".q-tab-panel")
         assert signals["content"] <= signals["width"] + 1, signals
 
         _open_tab(screen, "TCP")
@@ -162,17 +162,19 @@ class TestSetupPanels:
 
         z_id, apply_id = run_in_app(select_tip)
         z_input = wait(screen).until(
-            lambda driver: (e := driver.find_element(By.ID, f"c{z_id}")).is_displayed()
+            lambda driver: (
+                e := driver.find_element(By.ID, f"ng-{z_id}")
+            ).is_displayed()
             and e
         )
         wait(screen).until(lambda _: float(z_input.get_attribute("value")) == 25.0)
         js(
             screen,
             "document.getElementById(arguments[0]).scrollIntoView({block: 'nearest'});",
-            f"c{apply_id}",
+            f"ng-{apply_id}",
         )
         assert "RMS 0.007 mm" in _page_text(screen)
-        tcp = js(screen, _FITS, f"c{apply_id}", ".q-tab-panel")
+        tcp = js(screen, _FITS, f"ng-{apply_id}", ".q-tab-panel")
         assert tcp["content"] <= tcp["width"] + 1, tcp
 
     def test_fixed_camera_calibration_layout(self, class_screen) -> None:
@@ -238,9 +240,9 @@ class TestSetupPanels:
             js(
                 screen,
                 "document.getElementById(arguments[0]).scrollIntoView({block: 'nearest', behavior: 'instant'});",
-                f"c{save_id}",
+                f"ng-{save_id}",
             )
-            screen.selenium.find_element(By.ID, f"c{save_id}").click()
+            screen.selenium.find_element(By.ID, f"ng-{save_id}").click()
             wait(screen).until(
                 lambda _: run_in_app(
                     lambda: "Saved bench/overhead"
@@ -250,11 +252,11 @@ class TestSetupPanels:
             js(
                 screen,
                 "document.getElementById(arguments[0]).scrollIntoView({block: 'nearest', behavior: 'instant'});",
-                f"c{message_id}",
+                f"ng-{message_id}",
             )
             wait(screen).until(
                 lambda driver: "Saved bench/overhead"
-                in driver.find_element(By.ID, f"c{message_id}").text
+                in driver.find_element(By.ID, f"ng-{message_id}").text
             )
 
             def result_visible(_driver) -> bool:
@@ -266,11 +268,11 @@ e.scrollIntoView({block: 'nearest', behavior: 'instant'});
 const a = e.getBoundingClientRect(), b = e.closest('.camera-panel-scroll').getBoundingClientRect();
 return a.top >= b.top - 1 && a.bottom <= b.bottom + 1;
 """,
-                    f"c{message_id}",
+                    f"ng-{message_id}",
                 )
 
             wait(screen).until(result_visible)
-            geometry = js(screen, _FITS, f"c{message_id}", ".camera-panel-scroll")
+            geometry = js(screen, _FITS, f"ng-{message_id}", ".camera-panel-scroll")
             assert geometry["content"] <= geometry["width"] + 1, geometry
         finally:
             run_in_app(camera_service.stop)

@@ -7,6 +7,7 @@ from nicegui.testing import User
 
 from tests.helpers.editor_events import (
     _fire_editor_event,
+    _place_cursor,
     _set_cursor_line,
     _set_selection,
 )
@@ -308,11 +309,7 @@ async def test_editor_controls_tabs_and_inserts(user: User) -> None:
     # selection-change (CodeMirror's echo of a programmatic value update)
     # must not count as cursor placement.
     assert tab.dry_run.playback.active_cursor_line == 0
-    _fire_editor_event(
-        textarea,
-        "selection-change",
-        {"line": 1, "column": 1, "from_line": 1, "to_line": 1, "empty": True},
-    )
+    _place_cursor(textarea, 1)
     assert tab.dry_run.playback.active_cursor_line == 0
     with textarea.client:
         editor._insert_command("delay")

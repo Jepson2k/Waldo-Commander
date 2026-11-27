@@ -11,6 +11,7 @@ owned state the renderer already manages — no external scene references need
 threading.
 """
 
+import asyncio
 import hashlib
 import logging
 import math
@@ -311,6 +312,9 @@ class WorkspaceEnvelope:
                     urdf_path,
                     joint_limits_rad,
                 )
+            except asyncio.CancelledError:
+                self._generating = False
+                raise
             except Exception as e:
                 # Fall back to sync in-process generation when the subprocess fails
                 # (common in test environments where the process pool is unavailable)

@@ -180,11 +180,15 @@ export class Pointer {
     this.ring = null;
   }
 
-  // The rings were drawn from specs or colours that have changed.
+  // The rings were drawn from specs or colours that have changed. The one the
+  // pointer rests on is drawn again: the hover still counts it as shown, so it
+  // would not come back before the pointer moved to something else.
   forgetRings() {
+    const shown = this.ring?.u;
     this.hideRing();
     for (const ring of this.rings.values()) ring.dispose();
     this.rings.clear();
+    if (shown !== undefined && this.hover.shown === `ring:${shown}`) this.showRing(shown);
   }
 
   // Every frame: the badge follows the tool, the ground mark the camera, and

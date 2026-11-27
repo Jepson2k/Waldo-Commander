@@ -102,7 +102,14 @@ def marked_element(screen: "Screen", marker: str) -> WebElement:
     identifier = run_in_app(lookup)
     if identifier is None:
         raise NoSuchElementException(marker)
-    return screen.selenium.find_element(By.ID, f"c{identifier}")
+    element = screen.selenium.find_element(By.ID, f"ng-{identifier}")
+    # Quasar gives a select's id to its hidden one-pixel focus target; the
+    # value box around it is what a user sees and presses.
+    return screen.selenium.execute_script(
+        "const e = arguments[0];"
+        "return e.matches('.q-select__focus-target') ? e.closest('.q-field__native') : e;",
+        element,
+    )
 
 
 def click_marked(screen: "Screen", marker: str, timeout: float = 10.0) -> None:
@@ -299,7 +306,9 @@ def close_panel(screen: "Screen", panel_class: str) -> None:
     """
     panel = screen.selenium.find_element(By.CSS_SELECTOR, f".{panel_class}")
     # Find all close buttons and click the last one (panel close, not tab close)
-    close_buttons = panel.find_elements(By.XPATH, ".//button[.//i[text()='close']]")
+    close_buttons = panel.find_elements(
+        By.XPATH, ".//button[.//i[normalize-space()='close']]"
+    )
     if not close_buttons:
         raise AssertionError(f"No close button found in .{panel_class}")
     close_buttons[-1].click()
@@ -349,9 +358,9 @@ def dismiss_dialogs(screen: "Screen", timeout: float = 2.0) -> None:
             // Accept any unchecked checkboxes (e.g. welcome/disclaimer dialogs)
             const cbs = document.querySelectorAll('.q-dialog .q-checkbox:not(.q-checkbox--truthy)');
             cbs.forEach(cb => cb.click());
-            // Fallback: click the backdrop
+            // Fallback: press on the backdrop, which is what dismisses a dialog
             const backdrop = document.querySelector('.q-dialog__backdrop');
-            if (backdrop) backdrop.click();
+            if (backdrop) backdrop.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
             """,
         )
         # After checking checkboxes, wait a tick for Vue reactivity, then click continue/ok

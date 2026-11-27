@@ -224,8 +224,8 @@ export class SceneCore {
     this.resizeHandles.load(null);
     this.drawingTool.load(null);
     this.gestures.abort("reset");
-    this.pointer.forgetRings();
     this.pointer.forgetHover();
+    this.pointer.forgetRings();
     this.nodes.reset();
     this.gestures.reset();
     this.fx.tweens.clear();

@@ -45,8 +45,8 @@ def _set_editor_content(screen: "Screen", text: str) -> None:
         """
         const text = arguments[0];
         const cm = document.querySelector('.cm-content');
-        if (!cm || !cm.cmView || !cm.cmView.view) return;
-        const view = cm.cmView.view;
+        const view = cm && getElement(cm.closest('.nicegui-codemirror'))?.editor;
+        if (!view) return;
         view.dispatch({
             changes: {from: 0, to: view.state.doc.length, insert: text}
         });
@@ -145,7 +145,7 @@ class TestEditorInteractivity:
         script = """
             const [icon, token] = arguments;
             const btn = document.evaluate(
-                `//button[.//i[text()='${icon}']]`, document, null,
+                `//button[.//i[normalize-space()='${icon}']]`, document, null,
                 XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
             if (!btn) return `no button with icon ${icon}`;
             const probe = document.createElement('span');
@@ -166,7 +166,7 @@ class TestEditorInteractivity:
                 "on-fill"
                 if "recording"
                 in class_screen.selenium.find_element(
-                    By.XPATH, "//button[.//i[text()='fiber_manual_record']]"
+                    By.XPATH, "//button[.//i[normalize-space()='fiber_manual_record']]"
                 ).get_attribute("class")
                 else "record"
             ),
@@ -280,7 +280,8 @@ class TestEditorInteractivity:
                 lambda _: js(
                     screen,
                     "const c = document.querySelector('.program-panel .cm-content');"
-                    "return c && c.cmView ? c.cmView.view.state.doc.toString() : null;",
+                    "const view = c && getElement(c.closest('.nicegui-codemirror'))?.editor;"
+                    "return view ? view.state.doc.toString() : null;",
                 )
                 == program
             )
@@ -415,7 +416,7 @@ class TestEditorInteractivity:
             target = wait(screen).until(
                 lambda d: (
                     (found := element_id(marker)) is not None
-                    and (el := d.find_element(By.ID, f"c{found}")).is_displayed()
+                    and (el := d.find_element(By.ID, f"ng-{found}")).is_displayed()
                     and el
                 )
             )

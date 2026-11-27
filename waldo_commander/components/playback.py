@@ -267,7 +267,7 @@ class PlaybackController:
             ):
                 self.speed_fab = speed_fab
                 self._speed_tooltip = ui.tooltip("Playback Speed").props(
-                    f'target="#c{speed_fab.id}"'
+                    f'target="#{speed_fab.html_id}"'
                 )
                 ui.fab_action(
                     "sym_o_speed_0_5x",

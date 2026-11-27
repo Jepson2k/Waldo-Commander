@@ -433,7 +433,7 @@ class EditorDecorations:
                 )
             tooltips[seg.line_number] = "".join(parts)
 
-        textarea._props["line-tooltips"] = tooltips
+        textarea.line_tooltips = tooltips
 
     def push_line_anchors(
         self, tab_id: str, *, textarea=None, sim_targets: bool = False

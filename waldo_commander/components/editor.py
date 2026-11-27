@@ -553,9 +553,7 @@ class EditorPanel(FileOperationsMixin):
         self._set_cursor_line(tab, line, 1, None)
         textarea.place_cursor(line)
         if not ui_state.program_panel_visible and ui_state._program_tab is not None:
-            ui.run_javascript(
-                f'document.getElementById("c{ui_state._program_tab.id}")?.click()'
-            )
+            ui.run_javascript(f"getHtmlElement({ui_state._program_tab.id})?.click()")
 
     def add_target_code(self, pose: list[float], move_type: str) -> int | None:
         """Add a move command to the editor.
@@ -1397,8 +1395,21 @@ class EditorPanel(FileOperationsMixin):
             return
         if tab.id not in self._focused_tab_ids:
             return
+        value = str(e.sender.value or "")
+
+        def position(index: int) -> tuple[int, int]:
+            # The selection is throttled apart from the text, so it can
+            # briefly point past a text that has since become shorter.
+            index = min(index, len(value))
+            return value.count("\n", 0, index) + 1, index - value.rfind("\n", 0, index)
+
+        main = e.main
+        line, column = position(main.head)
         self._set_cursor_line(
-            tab, e.line, e.column, None if e.empty else (e.from_line, e.to_line)
+            tab,
+            line,
+            column,
+            None if main.empty else (position(main.from_)[0], position(main.to)[0]),
         )
 
     def _set_cursor_line(

@@ -674,8 +674,8 @@
 
         // A panel put away stays mounted, so a tooltip showing on one of its
         // buttons would stay on screen with nothing under it.
-        for (const tip of document.querySelectorAll('.q-tooltip[id^="c"]')) {
-            getElement(tip.id.slice(1))?.hide?.();
+        for (const tip of document.querySelectorAll('.q-tooltip[id^="ng-"]')) {
+            getElement(tip)?.hide?.();
         }
 
         rememberTab(group, toTab);

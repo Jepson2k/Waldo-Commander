@@ -17,7 +17,7 @@ export default {
       this.$el,
       (name, args) => this.$emit(name, args),
       () => {
-        const definition = mounted_app.elements[this.$el.id.slice(1)];
+        const definition = mounted_app.elements[parseHtmlId(this.$el.id)];
         const tag = definition.tag;
         definition.tag = "";
         this.$nextTick(() => (definition.tag = tag));

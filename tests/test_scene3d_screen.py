@@ -79,7 +79,7 @@ def _build() -> None:
             .classes("w-full")
             .style("height: 600px")
         )
-        _page["menu"] = ui.context_menu().props("no-parent-event")
+        _page["menu"] = ui.context_menu().props('no-parent-event :offset="[0, 1]"')
     with scene:
         scene.lights(1.0)
         _page["box"] = (

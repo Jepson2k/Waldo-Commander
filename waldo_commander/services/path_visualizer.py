@@ -1037,12 +1037,6 @@ class PathVisualizer:
                 logger.error("Subprocess simulation failed (sim_id=%d): %s", sim_id, e)
                 return f"Simulation failed: {e}"
 
-            # run.cpu_bound swallows a cancellation and returns nothing, as it
-            # does once the app is stopping: there is no result to act on.
-            if result is None:
-                logger.debug("Simulation cancelled (sim_id=%d)", sim_id)
-                raise asyncio.CancelledError
-
             if result.get("error"):
                 report = logger.warning if result.get("unresolved") else logger.error
                 report("Simulation error (sim_id=%d): %s", sim_id, result["error"])

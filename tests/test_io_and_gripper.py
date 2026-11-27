@@ -6,7 +6,6 @@ import json
 import pytest
 import waldoctl
 from nicegui import Client
-from nicegui.outbox import Outbox
 from nicegui.testing import User
 from waldoctl import ElectricGripperTool
 
@@ -157,18 +156,19 @@ async def test_gripper_panel_and_quick_actions(
         )
         window_bytes = sum(len(json.dumps(s["data"])) for s in series)
         sent: list[int] = []
-        enqueue = Outbox.enqueue_message
+        outbox = chart.client.outbox
+        enqueue = outbox.enqueue_message
 
-        def counting(self, message_type, data, target_id):
+        def counting(message_type, data, target_id):
             text = json.dumps(data, default=str)
             if any(
                 f"{call}({chart.id}," in text
                 for call in ("runMethod", "liveChartAppend")
             ):
                 sent.append(len(text))
-            return enqueue(self, message_type, data, target_id)
+            return enqueue(message_type, data, target_id)
 
-        monkeypatch.setattr(Outbox, "enqueue_message", counting)
+        monkeypatch.setattr(outbox, "enqueue_message", counting)
         pushed = await wait_until(lambda: len(sent) >= 5, 5)
         monkeypatch.undo()
         assert pushed, f"the chart pushed {len(sent)} times while samples arrived"
